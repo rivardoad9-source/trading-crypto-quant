@@ -1,0 +1,59 @@
+{
+  "name": "flowmetrix-ai-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node src/scripts/copyAssets.mjs",
+    "dev": "node --import tsx --watch src/index.ts",
+    "start": "node dist/index.js",
+    "api": "node --import tsx src/api/server.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.scripts.json",
+    "research:once": "node --import tsx src/scripts/runResearcher.ts",
+    "dlmm:once": "node --import tsx src/scripts/runDlmmCycle.ts",
+    "snapshot:once": "node --import tsx src/scripts/runSnapshot.ts",
+    "db:reset": "node --import tsx src/scripts/resetDb.ts",
+    "dashboard:dev": "npm --prefix dashboard run dev",
+    "dashboard:build": "npm --prefix dashboard run build",
+    "test": "node --import tsx --test src/tests/**/*.test.ts",
+    "test:watch": "node --import tsx --test --watch src/tests/**/*.test.ts",
+    "smoke": "node --import tsx src/scripts/smokeServices.ts",
+    "seed:demo": "node --import tsx src/scripts/seedDemo.ts",
+    "backtest": "node --import tsx src/backtest/runBacktest.ts",
+    "test:local": "node --import tsx scripts/test-local.ts",
+    "audit:report": "node --import tsx scripts/generate-audit-report.ts",
+    "sweep": "node --import tsx src/scripts/sweepGuardrails.ts",
+    "research": "node --import tsx src/scripts/research.ts",
+    "report:final": "node --import tsx scripts/render-report.ts"
+  },
+  "dependencies": {
+    "@fastify/cors": "^10.0.1",
+    "@meteora-ag/dlmm": "^1.4.0",
+    "@solana/web3.js": "^1.95.8",
+    "axios": "^1.7.9",
+    "better-sqlite3": "^11.7.0",
+    "fastify": "^5.2.0",
+    "node-cron": "^3.0.3",
+    "openai": "^4.77.0",
+    "telegraf": "^4.16.3",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.10.2",
+    "@types/node-cron": "^3.0.11",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "allowScripts": {
+    "better-sqlite3@11.10.0": true,
+    "bigint-buffer@1.1.5": true,
+    "bufferutil@4.1.0": true,
+    "esbuild@0.28.2": true,
+    "utf-8-validate@5.0.10": true,
+    "utf-8-validate@6.0.6": true
+  }
+}

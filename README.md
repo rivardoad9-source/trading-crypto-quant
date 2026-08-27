@@ -1,0 +1,328 @@
+# FlowMetrix / Meteora AI Engine
+
+Modular AI agent stack for Solana **Meteora DLMM** liquidity research and **zero-capital paper
+trading**, with a local quant dashboard.
+
+> **No real funds are ever deployed.** The engine simulates liquidity positions and never signs a
+> Solana transaction. `DRY_RUN=true` is the default, and the process refuses to boot if it is set
+> to `false` (live execution is not implemented).
+
+---
+
+## What it does
+
+| Subsystem | What it does | Entry point |
+|---|---|---|
+| **Macro Researcher** | Pulls Fear & Greed, CoinGecko global + spot prices, DEXScreener trending, and optional FRED macro; asks DeepSeek for a 4-section Markdown brief; stores it and pushes it to Telegram. Runs 07:00 WIB. | `src/agents/researcherAgent.ts` |
+| **DLMM Paper Trader** | Screens live Meteora pools on hard quantitative filters, runs an anti-rug screen, asks DeepSeek (Zod-validated JSON) to pick a pool and bin range, then runs a position state machine tracking fee yield vs impermanent loss. Runs every 10 min. | `src/agents/dlmmTraderAgent.ts` |
+| **Post-Trade Reflection** | On close, asks DeepSeek for a one-sentence post-mortem and stores it. Failures are retried on later cycles. | `src/agents/postMortemAgent.ts` |
+| **REST API** | Fastify server on port 4000 serving the dashboard. | `src/api/server.ts` |
+| **Dashboard** | Next.js 16 + Tailwind v4 dark command center, polling every 10s. | `dashboard/` |
+
+---
+
+## Setup
+
+```bash
+npm install
+npm approve-scripts better-sqlite3 esbuild   # npm 11+ blocks native install scripts by default
+cp .env.example .env                         # then fill in DEEPSEEK_API_KEY
+
+cd dashboard && npm install && cd ..
+```
+
+Node 20+ required (developed on Node 24).
+
+### Required configuration
+
+Only `DEEPSEEK_API_KEY` is needed for the agents to make decisions. Without it the engine still
+screens pools and serves the API, but declines every entry and skips research runs.
+
+Telegram (`TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`) is optional; alerts fall back to console logs.
+`FRED_API_KEY` is optional and fills in DXY / US 10Y / S&P 500.
+
+---
+
+## Running
+
+```bash
+npm run dev              # orchestrator: cron schedulers + REST API (port 4000)
+npm run api              # REST API only, no schedulers
+npm run dashboard:dev    # Next.js dashboard on port 3000
+```
+
+Run `npm run dev` and `npm run dashboard:dev` in two terminals, then open http://localhost:3000.
+
+### Manual triggers
+
+```bash
+npm run dlmm:once        # one screen -> decide -> monitor cycle
+npm run research:once    # one macro research run
+npm run snapshot:once    # roll today's closed trades into daily_pnl_snapshots
+npm run smoke            # probe every external API and print screener output
+npm run seed:demo        # insert demo positions marked [DEMO] so the dashboard has data
+npm run db:reset         # wipe all tables
+```
+
+### Failure-avoidance guardrails
+
+Four hard gates, derived from ~13k enumerated entries and validated on a 15d/15d out-of-sample
+split. Together they cut the rate of losses worse than -10% from **6.5% to 1.5%** in-sample and
+**8.3% to 0.9%** out-of-sample.
+
+| Gate | Threshold | Big-loss lift when breached | Where |
+|---|---|---|---|
+| Pool age | >= 48h | 7.3x | `screenPools` |
+| 24h pump | <= +150% | 6.9x | `dlmmTraderAgent` |
+| 1h surge | <= +10% | 6.8x | `dlmmTraderAgent` |
+| Realized volatility | <= 20%/h | 5.8x | `dlmmTraderAgent` |
+| TVL band | $50k - $500k | 2.9x below, 0.00% mean net above | `screenPools` |
+
+Every gate **fails closed**: an unknown age, price change or volatility is rejected. Data that was
+never measured is not evidence of safety.
+
+Candidates that clear the gates are ranked by the plain `fee/TVL x volume` rule. The composite
+Pool Quality Score from `npm run research` is deliberately **not** wired in — it did not hold its
+sign across the two halves of the sample, so using it would be fitting to noise.
+
+### Backtest (survivorship-bias controlled)
+
+```bash
+npm run backtest                                          # 30 days, $100 compounding
+npm run backtest -- --days=30 --pools=16 --deadpools=10 --refresh
+npm run backtest -- --downside=20 --upside=20 --tp=3 --maxhours=48
+npm run backtest -- --gas=0.005 --slippage=2.5            # harsher execution costs
+```
+
+Runs the **same strategy twice over the same window** and prints the two side by side:
+
+| Run | Universe |
+|---|---|
+| **Biased** | survivor pools only — what a naive harness picking today's top pools measures |
+| **Unbiased** | survivors **plus** pools that died during or after the window |
+
+The gap between the two *is* the survivorship bias, measured rather than asserted.
+
+**How the dead cohort is found.** Meteora's pool listing is not pruned — it returns ~123k pools
+including ones created 600+ days ago now reporting `tvl: 0, volume: 0`. Dead pools are reachable;
+they are simply not near the top of a volume sort. `src/backtest/universe.ts` combines today's
+volume leaders with pools sorted by `pool_created_at` whose *lifetime* volume shows real past
+activity but whose current volume has collapsed.
+
+**Realistic execution.** Gas is charged at `--gas` SOL per transaction (two per position), forced
+exits pay `--slippage`, and a position whose pool lost all liquidity is marked to the worst forward
+price rather than an exit price nobody would have filled. Those trades are reported as `RUGGED`.
+
+#### The two assumptions that carry the result
+
+- **Modelled TVL.** No free provider serves historical TVL for Meteora DLMM pools. TVL at each bar
+  is estimated as `k x trailing-24h-volume`, with `k` fitted per pool where observable and
+  otherwise from the live cross-sectional median. Every entry filter runs against that estimate,
+  not a measurement, and the report prints `k`'s interquartile range so the looseness is visible.
+  A snapshot cannot be substituted: a rugged pool reads ~$0 TVL today, so a snapshot `MIN_TVL_USD`
+  filter would reject every dead pool and silently restore the bias.
+- **The universe is a sample**, not all 123k pools. Sampling deeper would surface more failures,
+  so whatever residual bias remains still points optimistic.
+
+Forward bars are consulted only to decide whether an exit was *executable* — whether there was
+anyone left to sell to. They never inform an entry or exit decision, which would be look-ahead bias
+in the strategy itself.
+
+### Local verification (pre-deploy smoke test)
+
+```bash
+npm run test:local              # 5-stage end-to-end check against live upstreams
+npm run test:local -- --keep-db # keep the throwaway database for inspection
+```
+
+Verifies env + migrations, every external service, the paper-trading state machine
+(open -> accrue -> trigger -> close -> snapshot), and all REST endpoints, then prints a
+PASS/FAIL/SKIP checklist. Exit code is 1 if anything FAILs.
+
+It runs against a **throwaway SQLite file in the OS temp dir**, never `./data/flowmetrix.db`,
+so it can never pollute real paper-trading history. Unconfigured optional services report
+**SKIP**, not PASS (which would claim a connection never made) and not FAIL (which would flag a
+healthy install as broken) — but a SKIP still means that path is unverified for the deploy.
+
+### Tests
+
+```bash
+npm test                                                  # full suite
+node --import tsx --test src/tests/math.test.ts           # a single file
+node --import tsx --test --test-name-pattern "impermanent" src/tests/math.test.ts
+```
+
+---
+
+## How the numbers are produced
+
+These are the figures the dashboard reports, and how they are derived. Read this before trusting
+any of them.
+
+**Position notional** is fixed at entry: `virtual_sol_amount × SOL/USD price at entry`. If the
+SOL price is unavailable the engine refuses to open a position rather than guess a size.
+
+**Fee yield** is accrued per monitor tick:
+
+```
+fee += notional × poolFeeTvlRatio24h × (hoursElapsed / 24)      … only while in range
+```
+
+This is a **pool-level approximation and a conservative lower bound**. Without per-bin liquidity
+depth there is no way to model the concentration multiplier that makes a tight DLMM range earn
+more than its pro-rata share, so a concentrated range is *not* credited with extra fees here.
+A position that drifts out of range accrues nothing, matching real DLMM behaviour.
+
+**Impermanent loss** uses the standard constant-product formula against holding:
+
+```
+IL_fraction = 2·√r / (1 + r) − 1        where r = currentPrice / entryPrice
+```
+
+**Net PnL** = accrued fees + impermanent loss (IL is negative or zero). IL and fees are kept as
+independent terms, which is why the notional is *not* re-marked as price moves — doing so would
+double-count the price change.
+
+> **Known issue — the live engine's PnL understates real losses.** `impermanentLossFraction`
+> measures how far the LP trailed *holding* the two tokens, not what happened to the capital. Those
+> diverge sharply: a token that halves gives **-5.7% against holding but -29.3% against capital**.
+> The backtest was fixed to use `lpValueReturnFraction` (`sqrt(r) - 1`), which is the number that
+> actually moves an account balance; the live engine in `dlmmTraderAgent.ts` still reports the
+> divergence figure as `realized_pnl_usd`. Switching it is a one-line change, but it redefines every
+> historical row, so it is left as an explicit decision rather than applied silently.
+
+**Win rate** is computed over closed trades by realised PnL sign; a break-even trade counts as a
+loss, not a win.
+
+**Max drawdown** is the largest peak-to-trough decline of the realised equity curve, which starts
+at `STARTING_BALANCE_USD` and steps once per closed trade in close order. Open positions are
+excluded deliberately: including floating PnL would make the figure jump on every poll and stop
+being reproducible from stored history.
+
+**Profit factor** is gross profit ÷ gross loss over closed trades. It is `null` — not `0`, not
+`Infinity` — when the ratio is undefined (no closed trades, or no losing trades yet); the dashboard
+renders that as `∞` or `—` rather than as a measurement.
+
+### Fee/TVL units — a live trap
+
+The upstream `fee_tvl_ratio.24h` field is expressed in **percent** (`0.4877` means 0.4877%), while
+`MIN_FEE_TVL_RATIO=0.008` is a **ratio** (0.8%). Comparing them directly would pass essentially
+every pool. `src/services/meteora.ts` therefore computes the ratio itself as `fees.24h / tvl` and
+never uses the upstream field. Do not "simplify" that.
+
+`MAX_FEE_TVL_RATIO` (default `2.0`) rejects pools reporting an implausible 24h fee/TVL — live data
+really does contain pools at 300%+, almost always a collapsed TVL denominator rather than real
+yield. Without the ceiling they dominate the `(fee/TVL) × volume` ranking.
+
+### Anti-rug screen
+
+Runs **before** any candidate reaches the LLM, on the non-quote leg of the pair (a SOL-USDC pool
+has no rug surface and passes automatically).
+
+| Rule | Env | Default |
+|---|---|---|
+| Top 10 holders below | `ANTIRUG_MAX_TOP10_HOLDER_PCT` | 25% |
+| Mint authority revoked | `ANTIRUG_REQUIRE_MINT_REVOKED` | true |
+| Freeze authority revoked | `ANTIRUG_REQUIRE_FREEZE_REVOKED` | true |
+
+A check returns one of three verdicts. `PASS` and `FAIL` are decisions; `UNKNOWN` means the check
+could not be executed. `ANTIRUG_ON_ERROR` decides what `UNKNOWN` means and **defaults to `reject`
+(fail closed)** — a filter that silently passes when it cannot run manufactures confidence that was
+never earned. A definitive `FAIL` is never overridable, even under `allow`.
+
+> **You need a paid RPC for this.** The public `api.mainnet-beta.solana.com` node permanently
+> rejects `getTokenLargestAccounts` with HTTP 429, so holder concentration always resolves to
+> `UNKNOWN` there and — under the default policy — **every candidate is rejected and the engine
+> never opens a position.** That is the filter working as designed, not a bug. Point
+> `SOLANA_RPC_URL` at Helius/Triton/QuickNode, or set `ANTIRUG_ON_ERROR=allow` if you accept
+> trading unscreened pools. Mint/freeze authority checks do work on the public node.
+
+Caveat on the concentration number: `getTokenLargestAccounts` returns raw SPL token accounts, so a
+pool vault, a CEX omnibus wallet or a vesting contract each count as one "holder". A high reading
+is evidence to investigate, not proof of a rug.
+
+### Priority fee estimation
+
+`getPriorityFeeEstimate()` samples `getRecentPrioritizationFees` (~150 recent slots) and takes the
+`PRIORITY_FEE_PERCENTILE` (default p75) — most slots report zero, so a mean would collapse to zero
+and a max would chase outliers. Total = priority portion (`µlamports/CU × PRIORITY_FEE_COMPUTE_UNITS
+÷ 1e6`) + the 5000-lamport base signature fee.
+
+The round-trip estimate (open + close) is recorded on each position as `est_gas_cost_usd` and fed
+into the LLM prompt so it can reject pools whose fee income cannot clear the cost.
+
+> **Gas is recorded, not deducted.** `realized_pnl_usd` stays fees + IL. Subtracting gas would
+> silently change what every existing PnL figure means. An unavailable estimate is stored as
+> `null`, never `0` — "unknown" and "free" are different claims.
+
+### Exit triggers, in priority order
+
+1. **Out of range** — price left `[lower, upper]`; the position stopped earning.
+2. **Take profit** — net PnL ≥ `TAKE_PROFIT_PCT`.
+3. **Stop loss** — net PnL ≤ `STOP_LOSS_PCT`.
+4. **Max age** — held longer than `MAX_POSITION_AGE_HOURS`.
+
+> **Known behaviour:** with the default `STOP_LOSS_PCT=-8` and typical bin ranges, the stop-loss is
+> nearly unreachable. Impermanent loss inside a ±10% band is under 0.2% of notional, so price
+> leaves the range and triggers rule 1 long before net PnL reaches −8%. Expect exits to be
+> dominated by `OUT_OF_RANGE` and `TIMEOUT`. Tighten `STOP_LOSS_PCT` toward −1 if you want it to
+> bind.
+
+---
+
+## Data sources
+
+| Source | Used for | Notes |
+|---|---|---|
+| `dlmm.datapi.meteora.ag/pools` | Pool screening + position marks | The PRD's `dlmm-api.meteora.ag/pair/all_by_groups` is **dead (404)**; this is the current host. |
+| Solana RPC (`SOLANA_RPC_URL`) | Priority fees, mint/freeze authority, holder concentration | `getTokenLargestAccounts` needs a paid provider — see the anti-rug section |
+| `api.alternative.me/fng` | Fear & Greed | |
+| `api.coingecko.com` | Global market cap, dominance, spot prices | Public tier, rate-limited |
+| `api.dexscreener.com/token-boosts/top/v1` | Trending tokens | Carries no ticker symbol; the first word of the description is used |
+| `api.stlouisfed.org` (FRED) | DXY, US 10Y, S&P 500 | Optional, needs a free key |
+
+**Not available:** BTC/ETH spot ETF net flows. Farside — the PRD's source — returns HTTP 403 to
+programmatic clients. Rather than fabricate the number, these fields stay `null` and every gap is
+listed in the prompt as `UNAVAILABLE` with an explicit instruction not to invent values.
+
+---
+
+## Layout
+
+```
+src/
+  config/     env.ts (Zod-validated), constants.ts (cron, endpoints, thresholds)
+  database/   db.ts (SQLite + auto-migration), schema.sql, repositories.ts (all SQL)
+  services/   meteora.ts (screener + position maths), deepseek.ts, marketData.ts,
+              solana.ts (RPC: priority fees, mint authorities, holder concentration),
+              metrics.ts (drawdown, profit factor), telegram.ts, http.ts (retry/soft-fail)
+  agents/     researcherAgent.ts, dlmmTraderAgent.ts, postMortemAgent.ts, snapshotJob.ts
+  api/        server.ts
+  scripts/    manual triggers, demo seed, smoke test
+  tests/      math.test.ts, lifecycle.test.ts
+dashboard/    Next.js app (own package.json)
+docs/prd/     the original PRD chapters
+```
+
+All SQL lives in `repositories.ts`; the API and the agents share it rather than each writing their
+own queries.
+
+---
+
+## API
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/overview` | KPI card data: equity, balance, floating PnL, today's realised, win rate, max drawdown, profit factor |
+| `GET /api/positions/active` | Open simulated positions |
+| `GET /api/positions/history?limit&offset` | Closed trades |
+| `GET /api/positions/:id` | One position |
+| `GET /api/pnl-calendar?month=YYYY-MM` | Per-day PnL for the calendar heatmap |
+| `GET /api/research/latest`, `/api/research/history?limit` | Macro briefs |
+| `GET /api/health` | Liveness + dry-run flag |
+
+The calendar aggregates live from closed trades rather than reading `daily_pnl_snapshots`, so
+today's PnL appears before the nightly snapshot job writes its row.
+
+`currentBalanceUSD` is a **simulation baseline** (`STARTING_BALANCE_USD = 1000` in `server.ts`)
+plus realised PnL. It is not a custodial balance.
