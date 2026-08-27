@@ -22,6 +22,8 @@ export const POSITION_STATUS = {
   CLOSED_LOSS: "CLOSED_LOSS",
   CLOSED_OUT_OF_RANGE: "CLOSED_OUT_OF_RANGE",
   CLOSED_TIMEOUT: "CLOSED_TIMEOUT",
+  /** Emergency manual close via the Telegram /close_all command. */
+  CLOSED_MANUAL: "CLOSED_MANUAL",
 } as const;
 
 export type PositionStatus = (typeof POSITION_STATUS)[keyof typeof POSITION_STATUS];
@@ -31,7 +33,15 @@ export const CLOSED_STATUSES: PositionStatus[] = [
   POSITION_STATUS.CLOSED_LOSS,
   POSITION_STATUS.CLOSED_OUT_OF_RANGE,
   POSITION_STATUS.CLOSED_TIMEOUT,
+  POSITION_STATUS.CLOSED_MANUAL,
 ];
+
+/**
+ * The dashboard's (and Telegram /status) notional starting balance. The engine
+ * deploys zero capital, so "balance" is a simulation baseline plus realised PnL,
+ * not a custodial figure.
+ */
+export const STARTING_BALANCE_USD = 1000;
 
 export const STRATEGY_TYPES = ["SPOT", "BID_ASK", "CURVE"] as const;
 export type StrategyType = (typeof STRATEGY_TYPES)[number];

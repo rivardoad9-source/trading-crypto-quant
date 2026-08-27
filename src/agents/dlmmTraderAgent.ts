@@ -13,6 +13,7 @@ import {
   screenPools,
   valuePosition,
   type BreakevenAssessment,
+  type DlmmPool,
   type ScreenedPool,
 } from "../services/meteora.js";
 import {
@@ -29,6 +30,7 @@ import {
   type TokenSafetyReport,
 } from "../services/solana.js";
 import { sendError, sendPositionClosed, sendPositionOpened } from "../services/telegram.js";
+import { isEnginePaused } from "../services/engineControl.js";
 import {
   closePosition,
   countActivePositions,
@@ -362,6 +364,51 @@ export interface MonitorSummary {
   reflected: number;
 }
 
+/**
+ * Valuates a position at a given price: accrues this interval's fees on top of
+ * the stored running total, then applies the LP value change. Shared by the
+ * monitor's exit rules and the Telegram emergency /close_all so both always use
+ * the same maths.
+ */
+function valuateAtPrice(
+  row: SimulatedPositionRow,
+  currentPrice: number,
+  feeTvlRatio24h: number,
+  now = new Date(),
+): {
+  netPnlUsd: number;
+  netPnlPct: number;
+  totalFeeUsd: number;
+  ageHours: number;
+  /** Divergence vs holding at this price. Diagnostic only, never part of PnL. */
+  divergenceVsHoldUsd: number;
+} {
+  const notionalUsd = positionNotionalUsd(row);
+  const intervalHours = hoursBetween(row.last_checked_at ?? row.opened_at, now);
+  const wasInRange = !isOutOfRange(currentPrice, row.lower_bin_price, row.upper_bin_price);
+
+  // Accrue this interval's fees on top of the running total already stored.
+  const accruedThisTick = estimateFeeYieldUsd(notionalUsd, feeTvlRatio24h, intervalHours, wasInRange);
+  const totalFeeUsd = (row.unclaimed_fee_usd ?? 0) + accruedThisTick;
+
+  const valuation = valuePosition({
+    positionValueUsd: notionalUsd,
+    entryPrice: row.entry_price,
+    currentPrice,
+    lowerBinPrice: row.lower_bin_price,
+    upperBinPrice: row.upper_bin_price,
+    accruedFeeUsd: totalFeeUsd,
+  });
+
+  return {
+    netPnlUsd: valuation.netPnlUsd,
+    netPnlPct: valuation.netPnlPct,
+    totalFeeUsd,
+    ageHours: hoursBetween(row.opened_at, now),
+    divergenceVsHoldUsd: valuation.divergenceVsHoldUsd,
+  };
+}
+
 async function monitorOpenPositions(): Promise<MonitorSummary> {
   const positions = getActivePositions();
   const summary: MonitorSummary = { checked: 0, closed: 0, stale: 0, reflected: 0 };
@@ -378,43 +425,21 @@ async function monitorOpenPositions(): Promise<MonitorSummary> {
       continue;
     }
 
-    const notionalUsd = positionNotionalUsd(row);
-    const intervalHours = hoursBetween(row.last_checked_at ?? row.opened_at, now);
-    const wasInRange = !isOutOfRange(pool.currentPrice, row.lower_bin_price, row.upper_bin_price);
-
-    // Accrue this interval's fees on top of the running total already stored.
-    const accruedThisTick = estimateFeeYieldUsd(
-      notionalUsd,
-      pool.feeTvlRatio24h,
-      intervalHours,
-      wasInRange,
-    );
-    const totalFeeUsd = (row.unclaimed_fee_usd ?? 0) + accruedThisTick;
-
-    const valuation = valuePosition({
-      positionValueUsd: notionalUsd,
-      entryPrice: row.entry_price,
-      currentPrice: pool.currentPrice,
-      lowerBinPrice: row.lower_bin_price,
-      upperBinPrice: row.upper_bin_price,
-      accruedFeeUsd: totalFeeUsd,
-    });
-
-    const ageHours = hoursBetween(row.opened_at, now);
+    const totals = valuateAtPrice(row, pool.currentPrice, pool.feeTvlRatio24h, now);
     const exit = evaluateExit({
-      netPnlPct: valuation.netPnlPct,
-      inRange: valuation.inRange,
-      ageHours,
+      netPnlPct: totals.netPnlPct,
+      inRange: !isOutOfRange(pool.currentPrice, row.lower_bin_price, row.upper_bin_price),
+      ageHours: totals.ageHours,
     });
 
     if (!exit.shouldClose) {
       updatePositionMetrics({
         positionId: row.position_id,
         currentPrice: pool.currentPrice,
-        unclaimedFeeUsd: totalFeeUsd,
-        impermanentLossUsd: valuation.divergenceVsHoldUsd,
-        positionValueChangeUsd: valuation.positionValueChangeUsd,
-        floatingPnlUsd: valuation.netPnlUsd,
+        unclaimedFeeUsd: totals.totalFeeUsd,
+        impermanentLossUsd: totals.divergenceVsHoldUsd,
+        positionValueChangeUsd: totals.netPnlUsd - totals.totalFeeUsd,
+        floatingPnlUsd: totals.netPnlUsd,
       });
       continue;
     }
@@ -423,18 +448,18 @@ async function monitorOpenPositions(): Promise<MonitorSummary> {
       positionId: row.position_id,
       status: exit.status,
       exitPrice: pool.currentPrice,
-      realizedPnlUsd: valuation.netPnlUsd,
-      realizedPnlPct: valuation.netPnlPct,
-      unclaimedFeeUsd: totalFeeUsd,
-      impermanentLossUsd: valuation.divergenceVsHoldUsd,
-      positionValueChangeUsd: valuation.positionValueChangeUsd,
+      realizedPnlUsd: totals.netPnlUsd,
+      realizedPnlPct: totals.netPnlPct,
+      unclaimedFeeUsd: totals.totalFeeUsd,
+      impermanentLossUsd: totals.divergenceVsHoldUsd,
+      positionValueChangeUsd: totals.netPnlUsd - totals.totalFeeUsd,
       closeReason: exit.reason,
     });
     summary.closed++;
 
     console.log(
       `[dlmm] closed ${row.pair_name} — ${exit.status} — ` +
-        `net $${valuation.netPnlUsd.toFixed(2)} (${valuation.netPnlPct.toFixed(2)}%)`,
+        `net $${totals.netPnlUsd.toFixed(2)} (${totals.netPnlPct.toFixed(2)}%)`,
     );
 
     await sendPositionClosed({
@@ -443,11 +468,11 @@ async function monitorOpenPositions(): Promise<MonitorSummary> {
       reason: exit.reason,
       entryPrice: row.entry_price,
       exitPrice: pool.currentPrice,
-      feeUsd: totalFeeUsd,
-      ilUsd: valuation.positionValueChangeUsd,
-      netPnlUsd: valuation.netPnlUsd,
-      netPnlPct: valuation.netPnlPct,
-      heldHours: ageHours,
+      feeUsd: totals.totalFeeUsd,
+      ilUsd: totals.netPnlUsd - totals.totalFeeUsd,
+      netPnlUsd: totals.netPnlUsd,
+      netPnlPct: totals.netPnlPct,
+      heldHours: totals.ageHours,
     });
 
     // Reflect on the position as it closes. Re-read the row so the analysis sees the
@@ -460,6 +485,160 @@ async function monitorOpenPositions(): Promise<MonitorSummary> {
   }
 
   return summary;
+}
+
+/* ------------------------------------------------------------------ */
+/* Stage: emergency manual close (Telegram /close_all)                 */
+/* ------------------------------------------------------------------ */
+
+export interface ManualCloseResult {
+  requested: number;
+  closed: number;
+  /** Positions that could not be closed at all (no live data AND no stored price). */
+  failed: Array<{ pairName: string; positionId: string; reason: string }>;
+  /**
+   * Positions valued at their last stored price because live pool data was
+   * unavailable. The price is a real measurement, just older — flagged so nobody
+   * mistakes it for a live mark.
+   */
+  stalePriced: string[];
+  totalNetPnlUsd: number;
+}
+
+export type ManualClosePoolSource = (
+  poolAddress: string,
+) => Promise<Pick<DlmmPool, "currentPrice" | "feeTvlRatio24h"> | null>;
+
+/**
+ * Emergency-close every active position (paper trading — no real funds).
+ *
+ * Values each position at the live pool price when available; falls back to the
+ * last stored price (flagged) when the pool cannot be fetched. Only positions
+ * with neither are left open and reported as failed.
+ *
+ * `fetchPool` and `reflect` are injectable so tests can run this without
+ * network or DeepSeek access.
+ */
+export async function forceCloseAllPositions(options: {
+  reason?: string;
+  fetchPool?: ManualClosePoolSource;
+  reflect?: (row: SimulatedPositionRow) => Promise<string | null>;
+} = {}): Promise<ManualCloseResult> {
+  const reason = options.reason ?? "Emergency manual close via Telegram /close_all";
+  const fetchPool = options.fetchPool ?? fetchPoolByAddress;
+  const reflect = options.reflect ?? reflectOnPosition;
+
+  const active = getActivePositions();
+  const result: ManualCloseResult = {
+    requested: active.length,
+    closed: 0,
+    failed: [],
+    stalePriced: [],
+    totalNetPnlUsd: 0,
+  };
+
+  for (const row of active) {
+    const pool = await fetchPool(row.pool_address);
+
+    if (pool && pool.currentPrice > 0) {
+      const totals = valuateAtPrice(row, pool.currentPrice, pool.feeTvlRatio24h);
+      closePosition({
+        positionId: row.position_id,
+        status: POSITION_STATUS.CLOSED_MANUAL,
+        exitPrice: pool.currentPrice,
+        realizedPnlUsd: totals.netPnlUsd,
+        realizedPnlPct: totals.netPnlPct,
+        unclaimedFeeUsd: totals.totalFeeUsd,
+        impermanentLossUsd: totals.divergenceVsHoldUsd,
+        positionValueChangeUsd: totals.netPnlUsd - totals.totalFeeUsd,
+        closeReason: reason,
+      });
+      result.closed++;
+      result.totalNetPnlUsd += totals.netPnlUsd;
+
+      console.log(
+        `[dlmm] manual close ${row.pair_name} @ ${pool.currentPrice} — ` +
+          `net $${totals.netPnlUsd.toFixed(2)} (${totals.netPnlPct.toFixed(2)}%)`,
+      );
+
+      await sendPositionClosed({
+        pairName: row.pair_name,
+        status: POSITION_STATUS.CLOSED_MANUAL,
+        reason,
+        entryPrice: row.entry_price,
+        exitPrice: pool.currentPrice,
+        feeUsd: totals.totalFeeUsd,
+        ilUsd: totals.netPnlUsd - totals.totalFeeUsd,
+        netPnlUsd: totals.netPnlUsd,
+        netPnlPct: totals.netPnlPct,
+        heldHours: totals.ageHours,
+      });
+
+      // Same reflection behaviour as a normal close; failures are retried later
+      // by the post-mortem sweep, so one bad reflection must not abort the loop.
+      const closedRow = getPositionById(row.position_id);
+      if (closedRow) {
+        try {
+          await reflect(closedRow);
+        } catch (err) {
+          console.warn(
+            `[dlmm] manual-close reflection failed for ${row.pair_name}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      }
+      continue;
+    }
+
+    // Emergency fallback: close at the last stored price rather than leave the
+    // position hanging. No new fees are accrued (feeTvlRatio24h = 0); the stored
+    // unclaimed total is already in unclaimed_fee_usd.
+    if (row.current_price !== null && row.current_price > 0) {
+      const totals = valuateAtPrice(row, row.current_price, 0);
+      closePosition({
+        positionId: row.position_id,
+        status: POSITION_STATUS.CLOSED_MANUAL,
+        exitPrice: row.current_price,
+        realizedPnlUsd: totals.netPnlUsd,
+        realizedPnlPct: totals.netPnlPct,
+        unclaimedFeeUsd: totals.totalFeeUsd,
+        impermanentLossUsd: totals.divergenceVsHoldUsd,
+        positionValueChangeUsd: totals.netPnlUsd - totals.totalFeeUsd,
+        closeReason: `${reason} (stale price: live pool data unavailable)`,
+      });
+      result.closed++;
+      result.stalePriced.push(row.pair_name);
+      result.totalNetPnlUsd += totals.netPnlUsd;
+
+      console.warn(
+        `[dlmm] manual close ${row.pair_name} at STALE price ${row.current_price} ` +
+          `(live data unavailable); net $${totals.netPnlUsd.toFixed(2)}`,
+      );
+
+      await sendPositionClosed({
+        pairName: row.pair_name,
+        status: POSITION_STATUS.CLOSED_MANUAL,
+        reason: `${reason} (stale price — live pool data unavailable)`,
+        entryPrice: row.entry_price,
+        exitPrice: row.current_price,
+        feeUsd: totals.totalFeeUsd,
+        ilUsd: totals.netPnlUsd - totals.totalFeeUsd,
+        netPnlUsd: totals.netPnlUsd,
+        netPnlPct: totals.netPnlPct,
+        heldHours: totals.ageHours,
+      });
+      continue;
+    }
+
+    result.failed.push({
+      pairName: row.pair_name,
+      positionId: row.position_id,
+      reason: "no live pool data and no stored price",
+    });
+  }
+
+  return result;
 }
 
 /* ------------------------------------------------------------------ */
@@ -835,7 +1014,23 @@ export async function runDlmmTradingCycle(): Promise<CycleResult | null> {
 
   try {
     const monitor = await monitorOpenPositions();
-    const entry = await seekNewEntry();
+
+    // /pause stops scanning for new entries but keeps monitoring open positions,
+    // so existing ones still accrue, exit and reflect normally.
+    const entry = isEnginePaused()
+      ? {
+          scanned: 0,
+          candidates: 0,
+          safeCandidates: 0,
+          rugRejected: [],
+          volatilityRejected: [],
+          breakevenRejected: [],
+          priorityFee: null,
+          decision: null,
+          opened: false,
+          skipReason: "engine paused via Telegram /pause — scanning disabled",
+        }
+      : await seekNewEntry();
 
     // Retry any reflection that failed on an earlier cycle.
     const postMortemsBackfilled = await runPostMortemSweep();
