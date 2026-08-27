@@ -1,0 +1,33 @@
+node_modules/
+dist/
+# Secrets: abaikan semua varian .env, kecuali template
+.env*
+!.env.example
+*.log
+npm-debug.log*
+
+# SQLite runtime data
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Next.js dashboard
+dashboard/.next/
+dashboard/out/
+dashboard/node_modules/
+dashboard/.env.local
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Backtest cache and output
+.cache/
+backtest_results_*.json
+
+# Generated audit reports
+reports/
