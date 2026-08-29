@@ -196,6 +196,48 @@ async function main(): Promise<void> {
     return `SOL $${prices.solUsd.toFixed(2)}, BTC $${prices.btcUsd.toFixed(0)}`;
   });
 
+  await check("2", "SOL/USD fallback chain", async () => {
+    const { SOL_PRICE_SOURCES } = marketData;
+
+    const live: string[] = [];
+    for (const source of SOL_PRICE_SOURCES) {
+      const price = await source.fetch().catch(() => null);
+      if (price !== null && price > 0) live.push(`${source.name} $${price.toFixed(2)}`);
+    }
+
+    if (live.length === 0) {
+      throw new Error("every SOL price source is down — the engine could not size a position");
+    }
+
+    /*
+     * One working source is enough to trade, but the whole point of this chain is that
+     * a single rate-limited API cannot stop the engine. Warn rather than fail: a
+     * transient 429 on one provider is not a reason to block a deploy.
+     */
+    const detail = `${live.length}/${SOL_PRICE_SOURCES.length} sources live — ${live.join(", ")}`;
+    if (live.length === 1) {
+      return { status: "PASS" as const, detail: `${detail} (no redundancy right now)` };
+    }
+    return detail;
+  });
+
+  await check("2", "SOL/USD chain rejects an implausible quote", async () => {
+    // A bad quote is permanent: notional is fixed at entry, so it is baked into that
+    // trade's PnL forever. The chain must reject it even if a source hands it over.
+    const price = await marketData.fetchSolPriceUsdFrom([
+      { name: "[SMOKE] garbage", fetch: async () => 0 },
+      { name: "[SMOKE] good", fetch: async () => 123.45 },
+    ]);
+    if (price !== 123.45) throw new Error(`expected the garbage quote to be skipped, got ${price}`);
+
+    const none = await marketData.fetchSolPriceUsdFrom([
+      { name: "[SMOKE] nan", fetch: async () => Number.NaN },
+    ]);
+    if (none !== null) throw new Error(`expected null when nothing is usable, got ${none}`);
+
+    return "0 and NaN rejected; null when nothing is usable";
+  });
+
   /*
    * The PRD names https://dlmm-api.meteora.ag/pair/all_by_groups. That host now answers
    * 404 for every path, so the check asserts the documented endpoint is genuinely gone

@@ -246,6 +246,15 @@ work out of the locked section unless it is a local DB write.
 `Number("1.5")` is a float; better-sqlite3 rejects both and the throw surfaced as a bare
 HTTP 500. `Math.max(Number(x) || d, 0)` only guards NaN — it is not enough.
 
+**SOL/USD is a chain, and the chain validates.** `fetchSolPriceUsd` walks
+`SOL_PRICE_SOURCES` (CoinGecko, then Jupiter, then a DexScreener SOL/USDC pool) and
+re-applies `usableSolPrice` to whatever each one returns. Do not move that check back
+inside the sources: a future source that forgot it would feed 0 or NaN into position
+sizing, and notional is fixed at entry, so a bad quote is baked into that trade's PnL
+permanently. All sources failing still returns null — fallbacks reduce how often the
+engine cannot size a position; they never license inventing a price. BTC/ETH have no
+fallback on purpose: nothing sizes a position from them.
+
 **Undefined metrics stay null.** `profitFactor` is null when there are no losing trades; returning
 `Infinity` or `0` would render on the dashboard as a real measurement. Max drawdown runs over the
 realised curve only — adding floating PnL would make it non-reproducible from history.
