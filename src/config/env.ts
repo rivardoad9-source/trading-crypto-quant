@@ -224,6 +224,15 @@ const EnvSchema = z
      */
     LOSS_CONTEXT_TRADES: numeric(5),
 
+    /**
+     * Hard ceiling on a single DeepSeek call, in milliseconds.
+     *
+     * The OpenAI SDK defaults to 10 minutes with 2 retries — up to half an hour of a
+     * silently stalled screener. deepseek-reasoner genuinely takes minutes, so this is
+     * generous, but bounded.
+     */
+    DEEPSEEK_TIMEOUT_MS: numeric(120_000),
+
     /* ---- Engine version cohorts ---- */
     /**
      * The instant the v1.1 "clean engine" took over: anti-churn cooldown/lockout plus

@@ -7,10 +7,19 @@ import { env, hasDeepSeek } from "../config/env.js";
  * rewritten baseURL. Do NOT swap this for an OpenAI/Anthropic model — the PRD pins
  * the provider to DeepSeek (deepseek-chat / deepseek-reasoner).
  */
+/*
+ * Explicit timeout and retry budget. The SDK defaults to a 10-MINUTE timeout with 2
+ * retries, so a hung DeepSeek endpoint could hold a trading cycle for ~30 minutes. The
+ * cron lock means that does not stack up ticks, but it does silently stop the screener
+ * for half an hour with nothing in the logs to explain it. deepseek-reasoner is slow by
+ * design, hence a budget in minutes rather than seconds — but a bounded one.
+ */
 const client = hasDeepSeek
   ? new OpenAI({
       apiKey: env.DEEPSEEK_API_KEY as string,
       baseURL: env.DEEPSEEK_BASE_URL,
+      timeout: env.DEEPSEEK_TIMEOUT_MS,
+      maxRetries: 1,
     })
   : null;
 

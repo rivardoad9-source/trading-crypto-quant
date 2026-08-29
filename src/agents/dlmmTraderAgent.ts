@@ -454,6 +454,20 @@ export interface MonitorSummary {
 }
 
 /**
+ * A close that still needs its notification and post-mortem.
+ *
+ * These are deliberately NOT done inside the pass: `sendPositionClosed` is a Telegram
+ * round trip and `reflectOnPosition` is a DeepSeek call with a timeout measured in
+ * minutes. Awaiting either while holding `positionMutex` would block the 60-second
+ * monitor for the duration — silently voiding the exit-timing guarantee that is the
+ * whole reason the fast monitor exists — for up to two minutes after every close.
+ */
+interface DeferredCloseWork {
+  positionId: string;
+  notify: Parameters<typeof sendPositionClosed>[0];
+}
+
+/**
  * Valuates a position at a given price: accrues this interval's fees on top of
  * the stored running total, then applies the LP value change. Shared by the
  * monitor's exit rules and the Telegram emergency /close_all so both always use
@@ -499,6 +513,37 @@ function valuateAtPrice(
 }
 
 /**
+ * Consecutive ticks each position has gone without a usable price.
+ *
+ * Exists purely to keep the log readable at a 60-second cadence: an unreachable pool
+ * would otherwise write the same warning 1440 times a day. Pruned to the live position
+ * set on every pass, so it cannot grow — a stale entry for a position that closed weeks
+ * ago is exactly the kind of slow leak a long-running VPS process dies of.
+ */
+const staleStreaks = new Map<string, number>();
+
+/** Log the first stale tick, then hourly, then once on recovery. Nothing in between. */
+function reportStale(positionId: string, pairName: string, poolAddress: string): void {
+  const streak = (staleStreaks.get(positionId) ?? 0) + 1;
+  staleStreaks.set(positionId, streak);
+
+  if (streak === 1 || streak % 60 === 0) {
+    console.warn(
+      `[dlmm] no live data for ${pairName} (${poolAddress}) — ` +
+        `${streak} consecutive tick${streak === 1 ? "" : "s"} skipped`,
+    );
+  }
+}
+
+function reportRecovered(positionId: string, pairName: string): void {
+  const streak = staleStreaks.get(positionId);
+  if (streak !== undefined && streak > 0) {
+    console.log(`[dlmm] live data recovered for ${pairName} after ${streak} skipped tick(s)`);
+  }
+  staleStreaks.set(positionId, 0);
+}
+
+/**
  * One valuation pass over every open position.
  *
  * Prices are fetched for the whole set up front rather than per position inside the
@@ -509,13 +554,24 @@ function valuateAtPrice(
  *
  * Callers must hold `positionMutex`.
  */
-async function monitorOpenPositions(): Promise<MonitorSummary> {
+async function monitorOpenPositions(): Promise<{
+  summary: MonitorSummary;
+  deferred: DeferredCloseWork[];
+}> {
   const positions = getActivePositions();
   const summary: MonitorSummary = { checked: 0, closed: 0, stale: 0, reflected: 0 };
-  if (positions.length === 0) return summary;
+  const deferred: DeferredCloseWork[] = [];
+  if (positions.length === 0) return { summary, deferred };
 
   const pools = await fetchPoolsByAddresses(positions.map((p) => p.pool_address));
   const now = new Date();
+
+  // Drop streak entries for positions that are no longer open, so the map stays bounded
+  // by MAX_CONCURRENT_POSITIONS rather than by uptime.
+  const live = new Set(positions.map((p) => p.position_id));
+  for (const id of staleStreaks.keys()) {
+    if (!live.has(id)) staleStreaks.delete(id);
+  }
 
   for (const row of positions) {
     summary.checked++;
@@ -524,9 +580,11 @@ async function monitorOpenPositions(): Promise<MonitorSummary> {
     if (!pool || !(pool.currentPrice > 0)) {
       // Leave the position untouched rather than marking it against a stale price.
       summary.stale++;
-      console.warn(`[dlmm] no live data for ${row.pair_name} (${row.pool_address}); skipping tick`);
+      reportStale(row.position_id, row.pair_name, row.pool_address);
       continue;
     }
+
+    reportRecovered(row.position_id, row.pair_name);
 
     const totals = valuateAtPrice(row, pool.currentPrice, pool.feeTvlRatio24h, now);
     const exit = evaluateExit({
@@ -581,29 +639,59 @@ async function monitorOpenPositions(): Promise<MonitorSummary> {
       }
     }
 
-    await sendPositionClosed({
-      pairName: row.pair_name,
-      status: exit.status,
-      reason: exit.reason,
-      entryPrice: row.entry_price,
-      exitPrice: pool.currentPrice,
-      feeUsd: totals.totalFeeUsd,
-      ilUsd: totals.netPnlUsd - totals.totalFeeUsd,
-      netPnlUsd: totals.netPnlUsd,
-      netPnlPct: totals.netPnlPct,
-      heldHours: totals.ageHours,
+    // Queued, not awaited — see DeferredCloseWork. Both are network calls and the
+    // position lock is still held here.
+    deferred.push({
+      positionId: row.position_id,
+      notify: {
+        pairName: row.pair_name,
+        status: exit.status,
+        reason: exit.reason,
+        entryPrice: row.entry_price,
+        exitPrice: pool.currentPrice,
+        feeUsd: totals.totalFeeUsd,
+        ilUsd: totals.netPnlUsd - totals.totalFeeUsd,
+        netPnlUsd: totals.netPnlUsd,
+        netPnlPct: totals.netPnlPct,
+        heldHours: totals.ageHours,
+      },
     });
+  }
 
-    // Reflect on the position as it closes. Re-read the row so the analysis sees the
-    // persisted close values rather than the in-memory pre-close state.
-    const closedRow = getPositionById(row.position_id);
-    if (closedRow) {
-      const text = await reflectOnPosition(closedRow);
-      if (text) summary.reflected++;
+  return { summary, deferred };
+}
+
+/**
+ * Runs the notification and post-mortem for closes from a finished pass.
+ *
+ * Must be called with `positionMutex` RELEASED. Failures are logged and swallowed: the
+ * position is already closed and persisted, so a Telegram outage or a DeepSeek timeout
+ * must not surface as a monitoring failure. `runPostMortemSweep` retries any reflection
+ * that does not land here.
+ */
+async function settleClosedPositions(deferred: DeferredCloseWork[]): Promise<number> {
+  let reflected = 0;
+
+  for (const item of deferred) {
+    try {
+      await sendPositionClosed(item.notify);
+    } catch (err) {
+      console.error("[dlmm] close notification failed:", err);
+    }
+
+    try {
+      // Re-read so the analysis sees the persisted close values, not pre-close state.
+      const closedRow = getPositionById(item.positionId);
+      if (closedRow) {
+        const text = await reflectOnPosition(closedRow);
+        if (text) reflected++;
+      }
+    } catch (err) {
+      console.error("[dlmm] post-mortem failed (the sweep will retry):", err);
     }
   }
 
-  return summary;
+  return reflected;
 }
 
 export interface FastMonitorResult extends MonitorSummary {
@@ -647,8 +735,17 @@ export async function runFastPositionMonitor(): Promise<FastMonitorResult> {
 
   if (!outcome.ran || outcome.value === null) return idle;
 
-  const summary = outcome.value;
-  if (summary.closed > 0 || summary.stale > 0) {
+  const { summary, deferred } = outcome.value;
+
+  // Outside the lock by design: these are network calls, and the next tick is 60s away.
+  summary.reflected = await settleClosedPositions(deferred);
+
+  /*
+   * Only a close is worth a line. This runs 1440 times a day: logging every tick, or
+   * every tick with a stale position, is how a VPS log file becomes unreadable. The
+   * staleness itself is already reported by reportStale, throttled to once an hour.
+   */
+  if (summary.closed > 0) {
     console.log(
       `[fast-monitor] checked ${summary.checked}, closed ${summary.closed}, stale ${summary.stale}`,
     );
@@ -1279,9 +1376,13 @@ export async function runDlmmTradingCycle(
      * Under the shared lock, and queued rather than skipped: unlike a fast tick, this
      * pass is the only monitoring a manual `dlmm:once` run will ever get.
      */
-    const monitor = options.skipMonitor
-      ? { checked: 0, closed: 0, stale: 0, reflected: 0 }
-      : await positionMutex.run(monitorOpenPositions);
+    let monitor: MonitorSummary = { checked: 0, closed: 0, stale: 0, reflected: 0 };
+    if (!options.skipMonitor) {
+      const pass = await positionMutex.run(monitorOpenPositions);
+      monitor = pass.summary;
+      // Same rule as the fast monitor: notify and reflect with the lock released.
+      monitor.reflected = await settleClosedPositions(pass.deferred);
+    }
 
     // /pause stops scanning for new entries but keeps monitoring open positions,
     // so existing ones still accrue, exit and reflect normally.

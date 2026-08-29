@@ -228,8 +228,18 @@ export async function fetchLivePools(options: FetchPoolsOptions = {}): Promise<D
   return collected;
 }
 
-/** Fetches a single pool's live state, used by the position monitor. */
-export async function fetchPoolByAddress(address: string): Promise<DlmmPool | null> {
+/**
+ * Fetches a single pool's live state, used by the position monitor.
+ *
+ * `quiet` suppresses the failure warning for callers that report staleness themselves.
+ * The 60s monitor is one: left loud, a single unreachable pool wrote this line 1440
+ * times a day on top of the monitor's own message — the same fact twice, every minute,
+ * burying anything real in the VPS log.
+ */
+export async function fetchPoolByAddress(
+  address: string,
+  options: { quiet?: boolean } = {},
+): Promise<DlmmPool | null> {
   const url = `${env.METEORA_API_URL}${ENDPOINTS.METEORA_POOLS}/${address}`;
   try {
     const raw = await getJson<unknown>(url);
@@ -240,9 +250,11 @@ export async function fetchPoolByAddress(address: string): Promise<DlmmPool | nu
         : raw;
     return toDomain(RawPoolSchema.parse(candidate));
   } catch (err) {
-    console.warn(
-      `[meteora] pool ${address} lookup failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    if (!options.quiet) {
+      console.warn(
+        `[meteora] pool ${address} lookup failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
     return null;
   }
 }
@@ -273,7 +285,11 @@ export async function fetchPoolsByAddresses(
   const found = new Map<string, DlmmPool>();
   if (unique.length === 0) return found;
 
-  const pools = await Promise.all(unique.map((address) => fetchPoolByAddress(address)));
+  // Quiet: the monitor throttles its own staleness reporting, so per-call warnings here
+  // would only duplicate it once a minute forever.
+  const pools = await Promise.all(
+    unique.map((address) => fetchPoolByAddress(address, { quiet: true })),
+  );
 
   // Keyed by the address we asked for, not the one echoed back: callers look the pool
   // up by the address stored on the position row.

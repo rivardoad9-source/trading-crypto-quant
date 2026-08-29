@@ -490,3 +490,69 @@ describe("cohort filtering — v1.0 legacy vs v1.1 clean engine", () => {
     );
   });
 });
+
+describe("CLOSED_MANUAL is invisible to the anti-churn gates", () => {
+  const close = (
+    positionId: string,
+    poolAddress: string,
+    status: "CLOSED_PROFIT" | "CLOSED_LOSS" | "CLOSED_OUT_OF_RANGE" | "CLOSED_MANUAL",
+    hoursAgo: number,
+  ): void => {
+    repos.insertPosition(newPosition(positionId, poolAddress));
+    repos.closePosition({
+      positionId,
+      status,
+      exitPrice: 100,
+      realizedPnlUsd: status === "CLOSED_PROFIT" ? 1 : -1,
+      realizedPnlPct: status === "CLOSED_PROFIT" ? 1 : -1,
+      unclaimedFeeUsd: 0,
+      impermanentLossUsd: 0,
+      positionValueChangeUsd: 0,
+      closeReason: `test ${status}`,
+    });
+    dbModule.db
+      .prepare(`UPDATE simulated_positions SET closed_at = datetime('now', ?) WHERE position_id = ?`)
+      .run(`-${hoursAgo} hours`, positionId);
+  };
+
+  it("does not start a cooldown", () => {
+    // A /close_all must not bench every pool it touched for POOL_COOLDOWN_HOURS —
+    // that would silently disable trading right after an operator intervention.
+    close("man-only", "poolManualOnly", "CLOSED_MANUAL", 0.1);
+
+    const record = repos.getPoolExitRecord("poolManualOnly");
+    assert.equal(record.lastClosedAt, null);
+    assert.equal(record.consecutiveFailures, 0);
+    assert.equal(repos.getPoolExitHistory().has("poolManualOnly"), false);
+  });
+
+  it("does not trip the lockout", () => {
+    close("man-a", "poolManualRun", "CLOSED_MANUAL", 3);
+    close("man-b", "poolManualRun", "CLOSED_MANUAL", 2);
+    close("man-c", "poolManualRun", "CLOSED_MANUAL", 1);
+
+    assert.equal(repos.getPoolExitRecord("poolManualRun").consecutiveFailures, 0);
+  });
+
+  it("does not clear a failure run either", () => {
+    /*
+     * The breaker measures what the POOL did. If a manual close reset the run, an
+     * operator flattening the book would silently un-arm a circuit breaker that two
+     * genuine failures had earned.
+     */
+    close("mix-a", "poolManualMix", "CLOSED_OUT_OF_RANGE", 5);
+    close("mix-b", "poolManualMix", "CLOSED_MANUAL", 4);
+    close("mix-c", "poolManualMix", "CLOSED_LOSS", 3);
+
+    assert.equal(repos.getPoolExitRecord("poolManualMix").consecutiveFailures, 2);
+  });
+
+  it("still lets a genuine win clear the run", () => {
+    close("win-a", "poolManualWin", "CLOSED_LOSS", 5);
+    close("win-b", "poolManualWin", "CLOSED_LOSS", 4);
+    close("win-c", "poolManualWin", "CLOSED_PROFIT", 3);
+
+    assert.equal(repos.getPoolExitRecord("poolManualWin").consecutiveFailures, 0);
+    assert.ok(repos.getPoolExitRecord("poolManualWin").lastClosedAt, "a real close still benches");
+  });
+});

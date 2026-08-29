@@ -94,10 +94,50 @@ function readCohort(raw: string | undefined) {
 
 const COHORT_ERROR = { error: "cohort must be one of: current, all" };
 
+/**
+ * Parses a query-string integer, refusing anything SQLite cannot bind.
+ *
+ * `Number("1e999")` is Infinity and `Number("1.5")` is a float; better-sqlite3 rejects
+ * both, and the resulting throw surfaced as a bare HTTP 500. Found by fuzzing the
+ * numeric parameters during the pre-flight audit — the route looked safe because
+ * `Math.max(Number(x) || d, 0)` only guards NaN, not Infinity and not fractions.
+ */
+function intParam(raw: string | undefined, fallback: number, min: number, max: number): number {
+  const n = Number(raw ?? fallback);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(Math.max(Math.trunc(n), min), max);
+}
+
+
 export function buildServer(): FastifyInstance {
   const app = Fastify({ logger: false });
 
   void app.register(cors, { origin: true });
+
+  /*
+   * With `logger: false` Fastify's default error handler answers 500 and writes
+   * NOTHING — a route that throws on the VPS would show as a broken dashboard with no
+   * trace in the logs at all. Log it ourselves, and return a generic body rather than
+   * the raw message so an internal error string never reaches the browser.
+   */
+  app.setErrorHandler((err: unknown, req, reply) => {
+    const fastifyErr = err as { statusCode?: number; message?: string };
+    const raw = fastifyErr.statusCode;
+    const status = typeof raw === "number" && raw >= 400 && raw <= 599 ? raw : 500;
+
+    if (status >= 500) {
+      console.error(`[api] ${req.method} ${req.url} failed:`, err);
+    }
+    void reply.code(status).send({
+      // 4xx messages are validation text and safe to echo; 5xx are not.
+      error: status >= 500 ? "internal error" : (fastifyErr.message ?? "bad request"),
+      statusCode: status,
+    });
+  });
+
+  app.setNotFoundHandler((req, reply) => {
+    void reply.code(404).send({ error: `no route for ${req.method} ${req.url}`, statusCode: 404 });
+  });
 
   app.get("/api/health", async () => ({
     status: "ok",
@@ -126,8 +166,8 @@ export function buildServer(): FastifyInstance {
       const cohort = readCohort(req.query.cohort);
       if (!cohort) return reply.code(400).send(COHORT_ERROR);
 
-      const limit = Math.min(Math.max(Number(req.query.limit ?? 100) || 100, 1), 500);
-      const offset = Math.max(Number(req.query.offset ?? 0) || 0, 0);
+      const limit = intParam(req.query.limit, 100, 1, 500);
+      const offset = intParam(req.query.offset, 0, 0, 1_000_000);
       return {
         positions: getClosedPositions(limit, offset, {
           openedAtFrom: cohort.openedAtFrom,
@@ -218,7 +258,7 @@ export function buildServer(): FastifyInstance {
   });
 
   app.get<{ Querystring: { limit?: string } }>("/api/research/history", async (req) => {
-    const limit = Math.min(Math.max(Number(req.query.limit ?? 30) || 30, 1), 200);
+    const limit = intParam(req.query.limit, 30, 1, 200);
     return {
       reports: getResearchHistory(limit).map((r) => ({
         reportDate: r.report_date,
