@@ -166,9 +166,15 @@ realised curve only — adding floating PnL would make it non-reproducible from 
 
 ## Known behaviour, not a bug
 
-With `STOP_LOSS_PCT=-8` and typical bin ranges the stop-loss is nearly unreachable: IL inside a ±10%
-band is under 0.2% of notional, so price exits the range and fires `CLOSED_OUT_OF_RANGE` first.
-Exits are dominated by out-of-range and timeout.
+**The stop-loss is the dominant exit, and it overshoots.** An older note here claimed the opposite —
+that with `STOP_LOSS_PCT=-8` the stop was nearly unreachable because IL inside a ±10% band is under
+0.2% of notional, so exits would be dominated by out-of-range and timeout. The 27-trade dry run in
+`exports/` falsifies it: **12 stop-loss, 7 out-of-range, 0 timeouts**. The old note was written when
+PnL was still driven by `impermanentLossFraction`; the engine now drives it from
+`lpValueReturnFraction` (`sqrt(r) - 1`), which is roughly five times larger for the same move, so -8%
+is reached easily. The stop also fires *past* its threshold — median -9.79%, worst -13.84% — because
+the position moves through the level between monitor ticks. That is granularity, not a broken
+comparison, but do not read `STOP_LOSS_PCT` as a guaranteed floor.
 
 ## Source of truth
 
