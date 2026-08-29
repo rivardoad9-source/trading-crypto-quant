@@ -31,6 +31,8 @@ const NO_PUSH = process.env.FLOWMETRIX_NO_PUSH === "1";
 
 const argIdx = process.argv.indexOf("--milestone");
 const MILESTONE = argIdx !== -1 ? Number(process.argv[argIdx + 1]) : null;
+// --push: unconditional export + git push (used by the nightly cron).
+const PUSH = process.argv.includes("--push");
 
 if (!fs.existsSync(DB_PATH)) {
   console.error(`DB not found: ${DB_PATH}`);
@@ -108,6 +110,9 @@ function gitPush(commitMsg) {
       .trim();
     if (dirty === "dirty") {
       execSync(`git commit -m "${commitMsg}"`, { cwd: REPO, stdio: ["ignore", "pipe", "pipe"] });
+      // Rebase onto remote first so a concurrent push from the laptop can't
+      // make the nightly push fail with a non-fast-forward rejection.
+      execSync("git pull --rebase origin main", { cwd: REPO, stdio: ["ignore", "pipe", "pipe"] });
       execSync("git push origin main", { cwd: REPO, stdio: ["ignore", "pipe", "pipe"] });
       const local = execSync("git rev-parse HEAD", { cwd: REPO }).toString().trim();
       const remote = execSync("git ls-remote origin main", { cwd: REPO })
@@ -136,6 +141,13 @@ if (MILESTONE) {
   const net = summary.totalRealizedPnlUsd;
   console.log(
     `📊 FlowMetrix: ${totalTrades} trade tercatat (kelipatan ${MILESTONE}) — data di-export & push ke GitHub ✅ (net ${net >= 0 ? "+" : ""}${net.toFixed(2)} USD, dry-run)`,
+  );
+} else if (PUSH) {
+  const summary = exportAll();
+  gitPush(`chore: export trading data (${totalTrades} trades)`);
+  const net = summary.totalRealizedPnlUsd;
+  console.log(
+    `📊 FlowMetrix: ${totalTrades} trade — data di-export & push ke GitHub ✅ (net ${net >= 0 ? "+" : ""}${net.toFixed(2)} USD, dry-run)`,
   );
 } else {
   exportAll();
