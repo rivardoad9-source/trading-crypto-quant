@@ -197,9 +197,15 @@ async function main(): Promise<void> {
   });
 
   /*
-   * The PRD names https://dlmm-api.meteora.ag/pair/all_by_groups. That host now
-   * answers 404 for every path, so the check asserts the documented endpoint is
-   * genuinely gone rather than silently testing something else.
+   * The PRD names https://dlmm-api.meteora.ag/pair/all_by_groups. That host now answers
+   * 404 for every path, so the check asserts the documented endpoint is genuinely gone
+   * rather than silently testing something else.
+   *
+   * Both outcomes are a PASS because both are verified observations — the request is
+   * made either way. This previously reported SKIP on the expected 404, which
+   * contradicted the harness's own contract that a SKIP means a path was left
+   * UNVERIFIED because an optional service was unconfigured. Confirming a documented
+   * endpoint is dead is a result, not an absence of one.
    */
   await check("2", "PRD Meteora endpoint (expected dead)", async () => {
     const res = await fetch("https://dlmm-api.meteora.ag/pair/all_by_groups", {
@@ -209,12 +215,14 @@ async function main(): Promise<void> {
     if (res && res.ok) {
       return {
         status: "PASS" as const,
-        detail: "PRD endpoint is alive again — consider switching back",
+        detail: "PRD endpoint is ALIVE again — docs/prd is no longer stale, consider switching back",
       };
     }
     return {
-      status: "SKIP" as const,
-      detail: `HTTP ${res?.status ?? "unreachable"} — superseded by dlmm.datapi.meteora.ag/pools`,
+      status: "PASS" as const,
+      detail:
+        `confirmed dead (HTTP ${res?.status ?? "unreachable"}) — ` +
+        `superseded by dlmm.datapi.meteora.ag/pools`,
     };
   });
 
@@ -547,6 +555,35 @@ async function main(): Promise<void> {
       `${best.pairName} benched ${verdict.hoursRemaining.toFixed(2)}h of ` +
       `${env.POOL_COOLDOWN_HOURS}h (${verdict.kind})`
     );
+  });
+
+  await check("3", "Fast monitor runs and yields the position lock", async () => {
+    const { runFastPositionMonitor } = await import("../src/agents/dlmmTraderAgent.js");
+    const { positionMutex } = await import("../src/services/mutex.js");
+
+    // With no open positions the tick must be a no-op that never takes the lock.
+    const idle = await runFastPositionMonitor();
+    if (idle.checked !== 0 || idle.closed !== 0) {
+      throw new Error(`idle tick did work: checked ${idle.checked}, closed ${idle.closed}`);
+    }
+
+    /*
+     * The property the 1m/10m split depends on: while the screener holds the lock, a
+     * fast tick must decline rather than run a second valuation over the same rows.
+     * Fee accrual measures from last_checked_at, so an overlapping pass books the same
+     * interval twice.
+     */
+    let observed: Awaited<ReturnType<typeof runFastPositionMonitor>> | null = null;
+    await positionMutex.run(async () => {
+      observed = await runFastPositionMonitor();
+    });
+
+    const skipped = observed as Awaited<ReturnType<typeof runFastPositionMonitor>> | null;
+    if (skipped === null) throw new Error("the contended tick never resolved");
+    if (skipped.ran) throw new Error("the fast monitor ran while the lock was held");
+    if (positionMutex.busy) throw new Error("the lock was not released");
+
+    return "idle tick is a no-op; contended tick declines and the lock releases";
   });
 
   await check("3", "daily_pnl_snapshots updated", async () => {

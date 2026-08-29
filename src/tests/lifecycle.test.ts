@@ -310,3 +310,73 @@ describe("pool exit history (cooldown & lockout source data)", () => {
   });
 });
 
+
+describe("getRecentFailurePostMortems — loss context for the entry prompt", () => {
+  const closeWithMortem = (
+    positionId: string,
+    status: "CLOSED_PROFIT" | "CLOSED_LOSS" | "CLOSED_OUT_OF_RANGE" | "CLOSED_TIMEOUT",
+    closedHoursAgo: number,
+    postMortem: string | null,
+  ): void => {
+    repos.insertPosition(newPosition(positionId, `pool-${positionId}`));
+    repos.closePosition({
+      positionId,
+      status,
+      exitPrice: 100,
+      realizedPnlUsd: -1,
+      realizedPnlPct: -1,
+      unclaimedFeeUsd: 0,
+      impermanentLossUsd: 0,
+      positionValueChangeUsd: 0,
+      closeReason: `test ${status}`,
+    });
+
+    dbModule.db
+      .prepare(
+        `UPDATE simulated_positions
+            SET closed_at = datetime('now', ?)
+          WHERE position_id = ?`,
+      )
+      .run(`-${closedHoursAgo} hours`, positionId);
+
+    if (postMortem !== null) repos.setPostMortem(positionId, postMortem);
+  };
+
+  before(() => {
+    closeWithMortem("pm-loss-old", "CLOSED_LOSS", 9, "oldest lesson");
+    closeWithMortem("pm-range", "CLOSED_OUT_OF_RANGE", 6, "wicked out of a tight range");
+    closeWithMortem("pm-loss-new", "CLOSED_LOSS", 3, "newest lesson");
+    closeWithMortem("pm-profit", "CLOSED_PROFIT", 2, "a win, not a lesson in failure");
+    closeWithMortem("pm-timeout", "CLOSED_TIMEOUT", 1, "aged out while still in range");
+    closeWithMortem("pm-nomortem", "CLOSED_LOSS", 1, null);
+  });
+
+  it("returns only failing closes", () => {
+    const ids = repos.getRecentFailurePostMortems(10).map((r) => r.position_id);
+
+    assert.ok(ids.includes("pm-loss-new"));
+    assert.ok(ids.includes("pm-range"));
+    assert.equal(ids.includes("pm-profit"), false, "a win is not a failure lesson");
+    assert.equal(
+      ids.includes("pm-timeout"),
+      false,
+      "a timeout is a neutral outcome, same rule as the lockout",
+    );
+  });
+
+  it("skips failures that carry no written post-mortem", () => {
+    // An empty lesson is not evidence; padding it would teach the model from nothing.
+    const ids = repos.getRecentFailurePostMortems(10).map((r) => r.position_id);
+    assert.equal(ids.includes("pm-nomortem"), false);
+  });
+
+  it("orders newest first so the freshest regime leads the prompt", () => {
+    const ids = repos.getRecentFailurePostMortems(10).map((r) => r.position_id);
+    assert.deepEqual(ids, ["pm-loss-new", "pm-range", "pm-loss-old"]);
+  });
+
+  it("honours the limit", () => {
+    assert.equal(repos.getRecentFailurePostMortems(2).length, 2);
+    assert.equal(repos.getRecentFailurePostMortems(0).length, 0);
+  });
+});

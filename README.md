@@ -118,6 +118,64 @@ Two failure modes it is explicitly built against:
   deliberately so: this gate protects returns, not capital, and a broken clock must not silently
   freeze the screener.
 
+### Two clocks: fast monitor and screener
+
+The engine runs position marking and pool screening on separate schedules, because they
+are limited by different things.
+
+| Loop | Cadence | Does | Costs |
+|---|---|---|---|
+| Fast monitor | 60s | Marks open positions (≤ `MAX_CONCURRENT_POSITIONS`), fires exits | ≤3 Meteora pool reads, fetched concurrently |
+| Screener | 10m | 600-pool scan, GeckoTerminal volume, anti-rug RPC, DeepSeek reasoning | Every rate-limited upstream in the project |
+
+**Why.** An exit threshold is only as tight as the interval that tests it. On the old
+single 10-minute loop the dry run in `exports/` fired its `STOP_LOSS_PCT=-8` stop at a
+median -9.79% and a worst **-13.84%**: price crossed the level and kept going while the
+engine sat between ticks. `evaluateExit` was never wrong — it just was not asked often
+enough. Checking every 60 seconds bounds the overshoot to what a pool moves in a minute.
+
+The screener stays on 10 minutes on purpose. It is the loop that touches the
+rate-limited upstreams, and running it 10x more often to fix an exit-timing problem
+would trade one failure for another. When `FAST_MONITOR_ENABLED` is true the screener
+skips its own monitor stage (`runDlmmTradingCycle({ skipMonitor: true })`); when it is
+false the stage returns, so positions are never left unmonitored.
+
+Prices for the fast monitor come from **Meteora**, not DexScreener. `entry_price`,
+`lower_bin_price` and `upper_bin_price` are all stored from `DlmmPool.currentPrice`, so
+marking against a differently-derived price could fire a stop-loss or an out-of-range
+exit on a unit mismatch rather than a real move.
+
+**Concurrency.** Both loops, plus Telegram's `/close_all`, mutate `simulated_positions`.
+Fee accrual is `rate x (now - last_checked_at)`, so two overlapping passes would book the
+same interval twice. Every write is taken under `positionMutex` (`src/services/mutex.ts`).
+The cron locks in `index.ts` only stop a job overlapping *itself*; this is the lock that
+stops different jobs overlapping each other. A fast tick that cannot take the lock
+**skips** rather than queues — whoever holds it is already valuing the same positions
+against fresher prices. `/close_all` and the screener's own writes queue instead, because
+those must happen.
+
+### In-context learning for the entry model
+
+The entry prompt carries a `RECENT LOSSES` block: the last `LOSS_CONTEXT_TRADES` losing
+closes that have a post-mortem, each with the range the position **actually** ran
+(reconstructed from the stored prices, so the floors in `computeBinRange` are reflected),
+how it closed, and the lesson written afterwards.
+
+The model is then given a bounded licence to improvise on range width:
+
+- Losses dominated by leaving the range — wicks, false breakouts, post-mortems describing
+  chop — are grounds to **widen** `binRangeDownsideCoverPct` / `binRangeUpsideCoverPct`.
+- Losses from sustained directional moves are not: a wider range would only have lost
+  more slowly, so `SKIP` is preferred.
+- `MIN_DOWNSIDE_COVER_PCT` / `MIN_UPSIDE_COVER_PCT` are quoted in the prompt and remain
+  hard floors — `computeBinRange` clamps regardless of what the model returns.
+- Widening is stated as a real cost (thinner liquidity, less fee income per unit), so it
+  has to be justified in the thesis rather than applied reflexively.
+
+With no qualifying history the block reads `RECENT LOSSES: UNAVAILABLE` and the model is
+told not to assume a regime it has no evidence for — the same contract the macro metrics
+use. Nothing is fabricated to fill the slot.
+
 ### Backtest (survivorship-bias controlled)
 
 ```bash
@@ -176,6 +234,11 @@ It runs against a **throwaway SQLite file in the OS temp dir**, never `./data/fl
 so it can never pollute real paper-trading history. Unconfigured optional services report
 **SKIP**, not PASS (which would claim a connection never made) and not FAIL (which would flag a
 healthy install as broken) — but a SKIP still means that path is unverified for the deploy.
+
+SKIP is reserved for exactly that: a path left unverified because an optional service
+(DeepSeek, Telegram, FRED) is unconfigured. A check that made its request and got the answer it
+expected is a PASS, even when the expected answer is "this endpoint is dead". With every optional
+service configured the run reports **0 skipped**.
 
 ### Tests
 

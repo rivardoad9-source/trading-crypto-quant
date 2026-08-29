@@ -247,6 +247,43 @@ export async function fetchPoolByAddress(address: string): Promise<DlmmPool | nu
   }
 }
 
+/**
+ * Fetches several pools at once for the fast position monitor.
+ *
+ * Concurrent rather than a single multi-address request: the Meteora pools endpoint
+ * serves one pool per path segment. With MAX_CONCURRENT_POSITIONS capped at 3 this is
+ * three parallel requests a minute, which is negligible next to the screener's 600-pool
+ * page walk — and it costs one round trip of wall-clock instead of three.
+ *
+ * Deliberately NOT sourced from DexScreener. `lower_bin_price` / `upper_bin_price` and
+ * `entry_price` are all stored from `DlmmPool.currentPrice`, i.e. Meteora's own
+ * quote-denominated `current_price`. Marking a position against a differently-derived
+ * price — DexScreener's `priceUsd`, or its `priceNative` computed off a different
+ * reserve pair — would compare two different quantities and could fire a stop-loss or
+ * an out-of-range exit on a unit mismatch rather than a real move. Same source in,
+ * same source out.
+ *
+ * Pools that fail to resolve are simply absent from the map; the caller must treat a
+ * missing entry as "no fresh price this tick" and leave the position untouched.
+ */
+export async function fetchPoolsByAddresses(
+  addresses: string[],
+): Promise<Map<string, DlmmPool>> {
+  const unique = [...new Set(addresses)];
+  const found = new Map<string, DlmmPool>();
+  if (unique.length === 0) return found;
+
+  const pools = await Promise.all(unique.map((address) => fetchPoolByAddress(address)));
+
+  // Keyed by the address we asked for, not the one echoed back: callers look the pool
+  // up by the address stored on the position row.
+  unique.forEach((address, i) => {
+    const pool = pools[i];
+    if (pool) found.set(address, pool);
+  });
+  return found;
+}
+
 /* ------------------------------------------------------------------ */
 /* Quantitative screening                                              */
 /* ------------------------------------------------------------------ */

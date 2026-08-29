@@ -3,7 +3,7 @@ import { CRON } from "./config/constants.js";
 import { env, hasDeepSeek, hasTelegram } from "./config/env.js";
 import { closeDatabase, initDatabase } from "./database/db.js";
 import { runMacroResearcher } from "./agents/researcherAgent.js";
-import { runDlmmTradingCycle } from "./agents/dlmmTraderAgent.js";
+import { runDlmmTradingCycle, runFastPositionMonitor } from "./agents/dlmmTraderAgent.js";
 import { runDailySnapshot } from "./agents/snapshotJob.js";
 import { startApiServer, stopApiServer } from "./api/server.js";
 import { startTelegramCommands, stopTelegramCommands } from "./services/telegramCommands.js";
@@ -55,11 +55,37 @@ async function main(): Promise<void> {
 
   const tasks = [
     cron.schedule(CRON.DAILY_MACRO, withLock("macro", runMacroResearcher), { timezone: env.TZ }),
-    cron.schedule(CRON.DLMM_LOOP, withLock("dlmm", runDlmmTradingCycle), { timezone: env.TZ }),
+    /*
+     * The screener skips its own monitor stage: the 1-minute loop below owns position
+     * marking, and a second pass on the 10-minute clock would only re-measure what was
+     * already measured 60 seconds ago. If the fast monitor is switched off, this stage
+     * comes back so positions are never left unmonitored.
+     */
+    cron.schedule(
+      CRON.DLMM_LOOP,
+      withLock("dlmm", () => runDlmmTradingCycle({ skipMonitor: env.FAST_MONITOR_ENABLED })),
+      { timezone: env.TZ },
+    ),
     cron.schedule(CRON.DAILY_SNAPSHOT, withLock("snapshot", () => runDailySnapshot()), {
       timezone: env.TZ,
     }),
   ];
+
+  if (env.FAST_MONITOR_ENABLED) {
+    /*
+     * Its own cron job with its own lock, so a screener cycle that overruns its
+     * 10-minute window cannot delay an exit. The two contend only for positionMutex,
+     * and a fast tick that loses that race skips rather than queues.
+     */
+    tasks.push(
+      cron.schedule(CRON.FAST_MONITOR, withLock("fast-monitor", runFastPositionMonitor), {
+        timezone: env.TZ,
+      }),
+    );
+    console.log(`[cron] monitor  ${CRON.FAST_MONITOR}      (${env.TZ})`);
+  } else {
+    console.warn("[cron] fast monitor DISABLED — exits are only checked on the 10m screener tick");
+  }
 
   console.log(`[cron] macro    ${CRON.DAILY_MACRO}    (${env.TZ})`);
   console.log(`[cron] dlmm     ${CRON.DLMM_LOOP}   (${env.TZ})`);

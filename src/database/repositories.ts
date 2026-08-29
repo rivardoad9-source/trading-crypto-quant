@@ -1,5 +1,5 @@
 import { db } from "./db.js";
-import { CLOSED_STATUSES, POSITION_STATUS } from "../config/constants.js";
+import { CLOSED_STATUSES, FAILURE_STATUSES, POSITION_STATUS } from "../config/constants.js";
 import { summarisePoolExits, type PoolExitRecord } from "../services/meteora.js";
 import type {
   ClosePositionInput,
@@ -11,6 +11,7 @@ import type {
 } from "./types.js";
 
 const CLOSED_LIST = CLOSED_STATUSES.map((s) => `'${s}'`).join(", ");
+const FAILURE_LIST = FAILURE_STATUSES.map((s) => `'${s}'`).join(", ");
 
 /* ------------------------------------------------------------------ */
 /* Positions                                                           */
@@ -80,6 +81,31 @@ export function getPositionsAwaitingPostMortem(limit = 5): SimulatedPositionRow[
         WHERE status IN (${CLOSED_LIST})
           AND (post_mortem IS NULL OR post_mortem = '')
         ORDER BY closed_at DESC
+        LIMIT ?`,
+    )
+    .all(limit) as SimulatedPositionRow[];
+}
+
+/**
+ * The most recent losing closes that carry a written post-mortem.
+ *
+ * Feeds the entry prompt's loss-history block, so the model sees how its last few
+ * choices actually played out instead of judging each candidate from scratch. Rows
+ * without a post-mortem are excluded rather than padded with a placeholder: an empty
+ * lesson is not evidence, and the prompt contract elsewhere in this project is that
+ * missing data is stated as missing, never invented.
+ *
+ * Restricted to FAILURE_STATUSES for the same reason the lockout is — a timeout or a
+ * manual close says nothing about the range having been wrong.
+ */
+export function getRecentFailurePostMortems(limit = 5): SimulatedPositionRow[] {
+  return db
+    .prepare(
+      `SELECT * FROM simulated_positions
+        WHERE status IN (${FAILURE_LIST})
+          AND post_mortem IS NOT NULL
+          AND TRIM(post_mortem) <> ''
+        ORDER BY closed_at DESC, id DESC
         LIMIT ?`,
     )
     .all(limit) as SimulatedPositionRow[];
