@@ -1,0 +1,11 @@
+{
+  "exportedAt": "2026-08-29T12:55:20.273Z",
+  "sourceDb": "flowmetrix.db",
+  "totalSimulatedTrades": 27,
+  "activePositions": 3,
+  "closedProfit": 5,
+  "closedLoss": 12,
+  "totalRealizedPnlUsd": -25.456626128176275,
+  "researchLogs": 2,
+  "dailyPnlSnapshots": 2
+}
