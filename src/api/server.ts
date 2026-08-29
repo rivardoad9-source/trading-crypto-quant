@@ -11,6 +11,7 @@ import {
   getResearchHistory,
 } from "../database/repositories.js";
 import { computeOverview } from "../services/overview.js";
+import { DEFAULT_COHORT_ID, isCohortId, resolveCohort } from "../services/cohort.js";
 import { localDateString } from "../agents/researcherAgent.js";
 import type { SimulatedPositionRow } from "../database/types.js";
 
@@ -77,6 +78,22 @@ function toPositionDto(row: SimulatedPositionRow) {
 /* Routes                                                              */
 /* ------------------------------------------------------------------ */
 
+
+/**
+ * Reads ?cohort= off a request.
+ *
+ * Absent means all-time: an unparameterised call must never return a silent subset.
+ * An unrecognised value is rejected rather than defaulted, because quietly serving
+ * the archive to a client that asked for the clean run would mislabel the numbers.
+ */
+function readCohort(raw: string | undefined) {
+  const id = raw ?? DEFAULT_COHORT_ID;
+  if (!isCohortId(id)) return null;
+  return resolveCohort(id);
+}
+
+const COHORT_ERROR = { error: "cohort must be one of: current, all" };
+
 export function buildServer(): FastifyInstance {
   const app = Fastify({ logger: false });
 
@@ -88,18 +105,37 @@ export function buildServer(): FastifyInstance {
     isDryRun: env.DRY_RUN,
   }));
 
-  app.get("/api/overview", async () => computeOverview());
+  app.get<{ Querystring: { cohort?: string } }>("/api/overview", async (req, reply) => {
+    const cohort = readCohort(req.query.cohort);
+    if (!cohort) return reply.code(400).send(COHORT_ERROR);
+    return computeOverview(cohort);
+  });
 
-  app.get("/api/positions/active", async () => ({
-    positions: getActivePositions().map(toPositionDto),
-  }));
+  app.get<{ Querystring: { cohort?: string } }>("/api/positions/active", async (req, reply) => {
+    const cohort = readCohort(req.query.cohort);
+    if (!cohort) return reply.code(400).send(COHORT_ERROR);
+    return {
+      positions: getActivePositions({ openedAtFrom: cohort.openedAtFrom }).map(toPositionDto),
+      cohort: cohort.id,
+    };
+  });
 
-  app.get<{ Querystring: { limit?: string; offset?: string } }>(
+  app.get<{ Querystring: { limit?: string; offset?: string; cohort?: string } }>(
     "/api/positions/history",
-    async (req) => {
+    async (req, reply) => {
+      const cohort = readCohort(req.query.cohort);
+      if (!cohort) return reply.code(400).send(COHORT_ERROR);
+
       const limit = Math.min(Math.max(Number(req.query.limit ?? 100) || 100, 1), 500);
       const offset = Math.max(Number(req.query.offset ?? 0) || 0, 0);
-      return { positions: getClosedPositions(limit, offset).map(toPositionDto), limit, offset };
+      return {
+        positions: getClosedPositions(limit, offset, {
+          openedAtFrom: cohort.openedAtFrom,
+        }).map(toPositionDto),
+        limit,
+        offset,
+        cohort: cohort.id,
+      };
     },
   );
 
@@ -109,7 +145,12 @@ export function buildServer(): FastifyInstance {
     return toPositionDto(row);
   });
 
-  app.get<{ Querystring: { month?: string } }>("/api/pnl-calendar", async (req, reply) => {
+  app.get<{ Querystring: { month?: string; cohort?: string } }>(
+    "/api/pnl-calendar",
+    async (req, reply) => {
+    const cohort = readCohort(req.query.cohort);
+    if (!cohort) return reply.code(400).send(COHORT_ERROR);
+
     // month = 'YYYY-MM', defaults to the current month in env.TZ.
     const month = req.query.month ?? localDateString().slice(0, 7);
     if (!/^\d{4}-\d{2}$/.test(month)) {
@@ -127,7 +168,9 @@ export function buildServer(): FastifyInstance {
 
     // Aggregated live from closed trades so today's PnL appears before the
     // nightly snapshot job writes its row.
-    const rows = aggregateClosedTradesByDate(startDate, endDate);
+    const rows = aggregateClosedTradesByDate(startDate, endDate, {
+      openedAtFrom: cohort.openedAtFrom,
+    });
     const byDate = new Map(rows.map((r) => [r.date, r]));
 
     const days = Array.from({ length: daysInMonth }, (_, i) => {
@@ -156,8 +199,10 @@ export function buildServer(): FastifyInstance {
       monthNetPnlUsd,
       monthTrades,
       monthWinRatePct: monthTrades > 0 ? (monthWins / monthTrades) * 100 : 0,
+      cohort: cohort.id,
     };
-  });
+    },
+  );
 
   app.get("/api/research/latest", async () => {
     const row = getLatestResearch();

@@ -176,6 +176,44 @@ With no qualifying history the block reads `RECENT LOSSES: UNAVAILABLE` and the 
 told not to assume a regime it has no evidence for — the same contract the macro metrics
 use. Nothing is fabricated to fill the slot.
 
+### Session / cohort filter
+
+The engine changed materially at `ENGINE_V11_CUTOFF`: the anti-churn cooldown/lockout and
+the 60-second exit monitor went in together. Trades either side of that line came from
+different machines, and averaging them hides whether the fix worked. The dashboard reads
+one cohort at a time, defaulting to the clean run.
+
+| Cohort | `?cohort=` | Contents |
+|---|---|---|
+| Current Run (v1.1) | `current` | Positions **opened** at or after the cutoff |
+| All-Time Archive | `all` | Every simulated trade, both versions |
+
+`?cohort=` is accepted by `/api/overview`, `/api/positions/active`,
+`/api/positions/history` and `/api/pnl-calendar`. An unknown value is a **400**, never a
+silent fallback — serving the archive to a client that asked for the clean run would
+mislabel the numbers. Omitting it means `all`, so an unparameterised call never returns a
+subset by surprise; the dashboard therefore sends its choice on every request. The
+Telegram `/status` command keeps reading the unfiltered archive.
+
+**Membership is decided by `opened_at`, not `closed_at`.** The cohort names the engine
+that made the *entry* decision, so a position the old screener picked stays v1.0's trade
+however long it took to close. Ordering still runs on `closed_at` where a chronological
+curve is needed.
+
+**Filtered figures are rebased, and the UI says so.** In `current`, equity, drawdown and
+profit factor restart from `startingBalanceUSD` at the cutoff. They answer *what would
+this engine version have done from a standing start* — not what the account holds. The
+payload carries `cohort.filtered`, `excludedTrades` and `excludedRealizedPnLUSD` so the
+banner can quantify exactly what was left out, and the dashboard renders that as a
+warning strip rather than leaving a rebased number to be read as a balance.
+
+**Setting the cutoff.** The default is the v1.1 commit, `2026-08-29T13:20:40Z` — not
+midnight that day. 13 of the 27 legacy trades were opened later that same morning, the
+last at 12:40Z, so a date-only cutoff would file pre-fix trades under "Clean Engine".
+Set `ENGINE_V11_CUTOFF` to the moment you actually **restart** the engine on v1.1: the
+commit time is a safe floor, not a deploy record, and anything opened between the commit
+and the restart is still v1.0's work.
+
 ### Backtest (survivorship-bias controlled)
 
 ```bash

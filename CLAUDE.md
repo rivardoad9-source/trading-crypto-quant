@@ -189,6 +189,24 @@ written post-mortem are excluded rather than padded, and an empty history is sta
 never invented. The adaptive widening the prompt permits is bounded by
 `MIN_DOWNSIDE_COVER_PCT` / `MIN_UPSIDE_COVER_PCT`, which `computeBinRange` still clamps.
 
+**Cohort membership is `opened_at`, and filtered equity is rebased.** The dashboard's
+Session/Cohort filter splits history at `ENGINE_V11_CUTOFF`. It filters on `opened_at`
+because the cohort names the engine that made the ENTRY decision — switching it to
+`closed_at` would file a v1.0 position under v1.1 merely because it closed late. In a
+filtered cohort `currentBalanceUSD` / `currentEquityUSD` / drawdown restart from
+`STARTING_BALANCE_USD`, so they are a hypothetical ("this engine from a standing start"),
+not the account. `computeOverview` therefore returns `cohort.filtered`, `excludedTrades`
+and `excludedRealizedPnLUSD`, and the UI must keep showing them; a rebased figure with no
+label is a fabricated balance. The API default is `all` — never make it `current`, or an
+unparameterised caller silently gets a subset. An unknown `?cohort=` is a 400, not a
+fallback.
+
+**The cutoff is a deploy time, not a date.** `ENGINE_V11_CUTOFF` defaults to the v1.1
+commit (2026-08-29T13:20:40Z) rather than midnight that day, because 13 of the 27 legacy
+trades were opened that same morning up to 12:40Z. A date-only cutoff files pre-fix trades
+as clean. Committed-but-not-restarted code has produced no trades, so the operator must
+move the cutoff to the actual restart.
+
 **Undefined metrics stay null.** `profitFactor` is null when there are no losing trades; returning
 `Infinity` or `0` would render on the dashboard as a real measurement. Max drawdown runs over the
 realised curve only — adding floating PnL would make it non-reproducible from history.

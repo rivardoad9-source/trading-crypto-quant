@@ -769,6 +769,52 @@ async function main(): Promise<void> {
       });
     }
 
+    await check("4", "Cohort filter splits the archive from the clean run", async () => {
+      const [allRes, currentRes] = await Promise.all([
+        fetch(`${base}/overview?cohort=all`, { signal: AbortSignal.timeout(15_000) }),
+        fetch(`${base}/overview?cohort=current`, { signal: AbortSignal.timeout(15_000) }),
+      ]);
+      if (!allRes.ok || !currentRes.ok) {
+        throw new Error(`HTTP ${allRes.status}/${currentRes.status}`);
+      }
+
+      const all = (await allRes.json()) as {
+        cohort: { id: string; filtered: boolean };
+        totalSimulatedTrades: number;
+        excludedTrades: number;
+      };
+      const current = (await currentRes.json()) as typeof all;
+
+      if (all.cohort.id !== "all" || all.cohort.filtered) {
+        throw new Error("the archive cohort reported itself as filtered");
+      }
+      if (current.cohort.id !== "current" || !current.cohort.filtered) {
+        throw new Error("the clean cohort did not report itself as filtered");
+      }
+      if (all.excludedTrades !== 0) {
+        throw new Error(`the unfiltered archive claims ${all.excludedTrades} exclusions`);
+      }
+
+      // The identity the banner's honesty depends on.
+      const expectedExcluded = all.totalSimulatedTrades - current.totalSimulatedTrades;
+      if (current.excludedTrades !== expectedExcluded) {
+        throw new Error(
+          `excludedTrades ${current.excludedTrades} != archive - current ${expectedExcluded}`,
+        );
+      }
+
+      return `archive ${all.totalSimulatedTrades} trades, current ${current.totalSimulatedTrades}, ${current.excludedTrades} excluded`;
+    });
+
+    await check("4", "Unknown cohort rejected with 400", async () => {
+      // Defaulting an unknown cohort would serve the archive under a "clean run" label.
+      const res = await fetch(`${base}/overview?cohort=v0.9`, {
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (res.status !== 400) throw new Error(`expected 400, got ${res.status}`);
+      return "400 with an error payload";
+    });
+
     await check("4", "Invalid month rejected with 400", async () => {
       const res = await fetch(`${base}/pnl-calendar?month=oops`, {
         signal: AbortSignal.timeout(15_000),

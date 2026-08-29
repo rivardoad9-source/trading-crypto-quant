@@ -6,12 +6,14 @@ import StatusHeader from "@/components/StatusHeader";
 import KpiCards from "@/components/KpiCards";
 import TradeHistory from "@/components/TradeHistory";
 import PnlCalendar from "@/components/PnlCalendar";
+import CohortFilter from "@/components/CohortFilter";
 import {
   fetchActivePositions,
   fetchLatestResearch,
   fetchOverview,
   fetchPnlCalendar,
   fetchPositionHistory,
+  type CohortId,
   type Overview,
   type PnlCalendar as PnlCalendarData,
   type Position,
@@ -32,6 +34,12 @@ export default function CommandCenter() {
   const [calendar, setCalendar] = useState<PnlCalendarData | null>(null);
   const [research, setResearch] = useState<ResearchReport | null>(null);
 
+  /*
+   * Defaults to the clean v1.1 run. The API defaults to the all-time archive, so this
+   * choice has to be sent explicitly on every request rather than relied upon.
+   */
+  const [cohort, setCohort] = useState<CohortId>("current");
+
   const [month, setMonth] = useState<string>(currentMonth);
   const [connected, setConnected] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -48,13 +56,21 @@ export default function CommandCenter() {
     monthRef.current = month;
   }, [month]);
 
+  /* Same reason as monthRef: changing cohort must not restart the poll interval. */
+  const cohortRef = useRef(cohort);
+  useEffect(() => {
+    cohortRef.current = cohort;
+  }, [cohort]);
+
   const refresh = useCallback(async (signal: AbortSignal) => {
     try {
+      // Not named `active` — that is the open-positions state in this component.
+      const cohortId = cohortRef.current;
       const [ov, act, hist, cal, res] = await Promise.all([
-        fetchOverview(signal),
-        fetchActivePositions(signal),
-        fetchPositionHistory(100, signal),
-        fetchPnlCalendar(monthRef.current, signal),
+        fetchOverview(cohortId, signal),
+        fetchActivePositions(cohortId, signal),
+        fetchPositionHistory(cohortId, 100, signal),
+        fetchPnlCalendar(cohortId, monthRef.current, signal),
         fetchLatestResearch(signal),
       ]);
 
@@ -103,13 +119,39 @@ export default function CommandCenter() {
   // Refetch just the calendar when the user pages to another month.
   useEffect(() => {
     const controller = new AbortController();
-    fetchPnlCalendar(month, controller.signal)
+    fetchPnlCalendar(cohort, month, controller.signal)
       .then(setCalendar)
       .catch(() => {
         /* the poll loop surfaces connection errors */
       });
     return () => controller.abort();
-  }, [month]);
+  }, [cohort, month]);
+
+  /*
+   * Switching cohort re-pulls everything immediately instead of waiting for the next
+   * poll: leaving v1.0 numbers under a "Current Run" label for up to 10 seconds would
+   * mislabel them, which matters more here than an extra request.
+   */
+  useEffect(() => {
+    const controller = new AbortController();
+    const signal = controller.signal;
+
+    Promise.all([
+      fetchOverview(cohort, signal),
+      fetchActivePositions(cohort, signal),
+      fetchPositionHistory(cohort, 100, signal),
+    ])
+      .then(([ov, act, hist]) => {
+        setOverview(ov);
+        setActive(act);
+        setHistory(hist);
+      })
+      .catch(() => {
+        /* the poll loop surfaces connection errors */
+      });
+
+    return () => controller.abort();
+  }, [cohort]);
 
   return (
     <div className="grid-backdrop min-h-screen">
@@ -128,6 +170,8 @@ export default function CommandCenter() {
             </div>
           </div>
         )}
+
+        <CohortFilter cohort={cohort} onChange={setCohort} overview={overview} />
 
         <KpiCards overview={overview} />
 
