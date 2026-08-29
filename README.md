@@ -85,6 +85,39 @@ Candidates that clear the gates are ranked by the plain `fee/TVL x volume` rule.
 Pool Quality Score from `npm run research` is deliberately **not** wired in — it did not hold its
 sign across the two halves of the sample, so using it would be fitting to noise.
 
+### Anti-churn: pool cooldown & failure lockout
+
+The guardrails above judge a pool on its live metrics alone. They have no memory of what
+this engine already did to it, so a pool that ranks first keeps ranking first — live paper
+trading re-opened the same pair within minutes of closing it out of range, paying entry gas
+and forced-exit slippage on every lap. Two rules in `assessPoolCooldown` supply that memory.
+
+| Rule | Trigger | Bench | Env |
+|---|---|---|---|
+| Cooldown | any close, profit included | `POOL_COOLDOWN_HOURS` (4h) from `closed_at` | `POOL_COOLDOWN_HOURS` |
+| Lockout | N consecutive `CLOSED_LOSS` / `CLOSED_OUT_OF_RANGE` | `POOL_LOCKOUT_HOURS` (24h) from the last failure | `POOL_LOCKOUT_CONSECUTIVE_FAILURES`, `POOL_LOCKOUT_HOURS` |
+
+Lockout is evaluated first, being the longer and the more serious of the two. The failure run
+is counted newest-first and **reset by any non-failing close** — a win or a timeout clears it.
+A timeout is deliberately not a failure: the position simply aged out while still in range.
+Setting any of the three values to `0` disables that gate; all three are validated as
+non-negative at boot.
+
+The gate runs **before** the anti-rug, volatility and breakeven screens, because it is the only
+one answered from local state — skipping a pool here saves several RPC and HTTP round trips per
+candidate. It is not a safety gate and never overrides one.
+
+Two failure modes it is explicitly built against:
+
+- **Timestamp zones.** SQLite's `CURRENT_TIMESTAMP` is `YYYY-MM-DD HH:MM:SS` in UTC with no zone
+  marker, which `new Date()` reads as *local* time — a 7-hour error on an Asia/Jakarta box, enough
+  for a 4-hour cooldown to expire before it began. `parseDbTimestamp` normalises it; the monitor
+  and the gate share that one parser so they cannot drift apart.
+- **Unreadable clocks fail open.** A record whose timestamp will not parse is treated as expired,
+  not as an indefinite ban. This is the opposite of the anti-rug screen's fail-closed rule, and
+  deliberately so: this gate protects returns, not capital, and a broken clock must not silently
+  freeze the screener.
+
 ### Backtest (survivorship-bias controlled)
 
 ```bash

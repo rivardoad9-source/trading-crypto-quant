@@ -1,5 +1,6 @@
 import { db } from "./db.js";
 import { CLOSED_STATUSES, POSITION_STATUS } from "../config/constants.js";
+import { summarisePoolExits, type PoolExitRecord } from "../services/meteora.js";
 import type {
   ClosePositionInput,
   DailyPnlSnapshotRow,
@@ -111,6 +112,65 @@ export function hasActivePositionForPool(poolAddress: string): boolean {
     )
     .get(poolAddress) as { hit: number } | undefined;
   return row !== undefined;
+}
+
+/**
+ * Per-pool exit history for the cooldown and lockout gates.
+ *
+ * Reads every closed trade newest-first and folds each pool's run of outcomes into a
+ * single record. Ordering is `closed_at DESC, id DESC`: the consecutive-failure count
+ * is taken from the front of each pool's list, so a different order would change the
+ * verdict rather than just the presentation.
+ *
+ * `lookbackHours` bounds the scan — a trade far older than the longest lockout window
+ * can no longer block anything, but it CAN still be the non-failing close that breaks
+ * a run, so the default window is generously wider than POOL_LOCKOUT_HOURS.
+ */
+export function getPoolExitHistory(lookbackHours = 24 * 30): Map<string, PoolExitRecord> {
+  const rows = db
+    .prepare(
+      `SELECT pool_address, status, closed_at
+         FROM simulated_positions
+        WHERE status IN (${CLOSED_LIST})
+          AND closed_at IS NOT NULL
+          AND closed_at >= datetime('now', ?)
+        ORDER BY closed_at DESC, id DESC`,
+    )
+    .all(`-${lookbackHours} hours`) as Array<{
+    pool_address: string;
+    status: string;
+    closed_at: string | null;
+  }>;
+
+  const byPool = new Map<string, Array<{ status: string; closed_at: string | null }>>();
+  for (const row of rows) {
+    const list = byPool.get(row.pool_address);
+    if (list) list.push(row);
+    else byPool.set(row.pool_address, [row]);
+  }
+
+  const history = new Map<string, PoolExitRecord>();
+  for (const [poolAddress, poolRows] of byPool) {
+    history.set(poolAddress, summarisePoolExits(poolAddress, poolRows));
+  }
+  return history;
+}
+
+/** The exit history of a single pool, for logging a lockout as it is triggered. */
+export function getPoolExitRecord(poolAddress: string, limit = 20): PoolExitRecord {
+  const rows = db
+    .prepare(
+      `SELECT status, closed_at
+         FROM simulated_positions
+        WHERE pool_address = ?
+          AND status IN (${CLOSED_LIST})
+          AND closed_at IS NOT NULL
+        ORDER BY closed_at DESC, id DESC
+        LIMIT ?`,
+    )
+    .all(poolAddress, limit) as Array<{ status: string; closed_at: string | null }>;
+
+  return summarisePoolExits(poolAddress, rows);
 }
 
 export function updatePositionMetrics(input: PositionUpdateInput): void {

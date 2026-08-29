@@ -33,6 +33,26 @@ export const CLOSED_STATUSES: PositionStatus[] = [
   POSITION_STATUS.CLOSED_TIMEOUT,
 ];
 
+/**
+ * Closes that count towards the per-pool circuit breaker.
+ *
+ * Deliberately narrower than CLOSED_STATUSES: a timeout is a neutral outcome (the
+ * position simply aged out while still in range) and a profit obviously is not a
+ * failure. Only a stop-loss or a range exit says the pool moved against the range we
+ * chose, which is the pattern the lockout is meant to interrupt.
+ *
+ * Note that with the default STOP_LOSS_PCT the stop is nearly unreachable, so in
+ * practice the run is built almost entirely out of CLOSED_OUT_OF_RANGE.
+ */
+export const FAILURE_STATUSES: PositionStatus[] = [
+  POSITION_STATUS.CLOSED_LOSS,
+  POSITION_STATUS.CLOSED_OUT_OF_RANGE,
+];
+
+export function isFailureStatus(status: string): boolean {
+  return (FAILURE_STATUSES as string[]).includes(status);
+}
+
 export const STRATEGY_TYPES = ["SPOT", "BID_ASK", "CURVE"] as const;
 export type StrategyType = (typeof STRATEGY_TYPES)[number];
 
