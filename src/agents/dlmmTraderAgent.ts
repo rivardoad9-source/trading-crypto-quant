@@ -4,15 +4,19 @@ import { env } from "../config/env.js";
 import { MAX_CANDIDATE_POOLS, POSITION_STATUS, type PositionStatus } from "../config/constants.js";
 import {
   assessBreakeven,
+  defaultCooldownThresholds,
   defaultThresholds,
   estimateFeeYieldUsd,
   fetchLivePools,
   fetchPoolByAddress,
+  filterPoolsOnCooldown,
+  hoursSince,
   isOutOfRange,
   riskMintOf,
   screenPools,
   valuePosition,
   type BreakevenAssessment,
+  type CooldownBlockKind,
   type ScreenedPool,
 } from "../services/meteora.js";
 import {
@@ -33,6 +37,8 @@ import {
   closePosition,
   countActivePositions,
   getActivePositions,
+  getPoolExitHistory,
+  getPoolExitRecord,
   getPositionById,
   hasActivePositionForPool,
   insertPosition,
@@ -293,13 +299,12 @@ export function computeBinRange(
   };
 }
 
-function hoursBetween(fromIso: string | null, to: Date): number {
-  if (!fromIso) return 0;
-  // SQLite CURRENT_TIMESTAMP is 'YYYY-MM-DD HH:MM:SS' in UTC with no zone marker.
-  const from = new Date(fromIso.includes("T") ? fromIso : `${fromIso.replace(" ", "T")}Z`);
-  const ms = to.getTime() - from.getTime();
-  return Number.isFinite(ms) && ms > 0 ? ms / (1000 * 60 * 60) : 0;
-}
+/**
+ * SQLite CURRENT_TIMESTAMP is 'YYYY-MM-DD HH:MM:SS' in UTC with no zone marker.
+ * Parsing lives in meteora.ts so the cooldown gate and the position monitor cannot
+ * drift apart on how they read a stored timestamp.
+ */
+const hoursBetween = (fromIso: string | null, to: Date): number => hoursSince(fromIso, to);
 
 /* ------------------------------------------------------------------ */
 /* Exit rules                                                          */
@@ -437,6 +442,22 @@ async function monitorOpenPositions(): Promise<MonitorSummary> {
         `net $${valuation.netPnlUsd.toFixed(2)} (${valuation.netPnlPct.toFixed(2)}%)`,
     );
 
+    /*
+     * Surface the circuit breaker at the moment it trips rather than only when the
+     * screener later refuses the pool. Read back from the database so the run counts
+     * the close that was just persisted.
+     */
+    const cooldown = defaultCooldownThresholds();
+    if (cooldown.lockoutConsecutiveFailures > 0 && cooldown.lockoutHours > 0) {
+      const exits = getPoolExitRecord(row.pool_address);
+      if (exits.consecutiveFailures >= cooldown.lockoutConsecutiveFailures) {
+        console.warn(
+          `[cooldown] ${row.pair_name} locked out for ${cooldown.lockoutHours}h — ` +
+            `${exits.consecutiveFailures} consecutive failed exits`,
+        );
+      }
+    }
+
     await sendPositionClosed({
       pairName: row.pair_name,
       status: exit.status,
@@ -471,6 +492,14 @@ export interface EntrySummary {
   candidates: number;
   /** Candidates remaining after the anti-rug screen. */
   safeCandidates: number;
+  /** Candidates dropped because the pool is still serving a cooldown or a lockout. */
+  cooldownRejected: Array<{
+    pairName: string;
+    poolAddress: string;
+    kind: CooldownBlockKind;
+    hoursRemaining: number;
+    reason: string;
+  }>;
   rugRejected: Array<{ pairName: string; verdict: string; reasons: string[] }>;
   /** Candidates dropped for having already pumped, or for an unknown 24h change. */
   volatilityRejected: Array<{
@@ -496,6 +525,7 @@ async function seekNewEntry(): Promise<EntrySummary> {
     scanned: 0,
     candidates: 0,
     safeCandidates: 0,
+    cooldownRejected: [],
     rugRejected: [],
     volatilityRejected: [],
     breakevenRejected: [],
@@ -515,11 +545,41 @@ async function seekNewEntry(): Promise<EntrySummary> {
   summary.scanned = screened.scanned;
 
   // Never stack a second simulated position on a pool already held.
-  const fresh = screened.candidates.filter((c) => !hasActivePositionForPool(c.address));
+  const held = screened.candidates.filter((c) => !hasActivePositionForPool(c.address));
+
+  /*
+   * Anti-churn gate. Live paper trading re-opened CYBERLEEK-SOL within minutes of
+   * closing it out of range, paying gas and forced-exit slippage on every lap: the
+   * screener ranks on live metrics alone and so keeps re-electing the pool that just
+   * failed. Two rules give it a memory — a 4h bench after any close, and a 24h
+   * lockout after two consecutive losing or out-of-range exits.
+   *
+   * Placed before the anti-rug, volatility and breakeven gates because it is the only
+   * one answered from local state: skipping a pool here saves several RPC and HTTP
+   * round trips per candidate.
+   */
+  const cooldownFilter = filterPoolsOnCooldown(held, getPoolExitHistory());
+
+  summary.cooldownRejected = cooldownFilter.blocked.map(({ pool, verdict }) => ({
+    pairName: pool.pairName,
+    poolAddress: pool.address,
+    kind: verdict.kind ?? "cooldown",
+    hoursRemaining: verdict.hoursRemaining,
+    reason: verdict.reason,
+  }));
+
+  for (const r of summary.cooldownRejected) {
+    console.warn(`[cooldown] skipped ${r.pairName} (${r.kind}): ${r.reason}`);
+  }
+
+  const fresh = cooldownFilter.allowed;
   summary.candidates = fresh.length;
 
   if (fresh.length === 0) {
-    summary.skipReason = "no pool passed the quantitative filters";
+    summary.skipReason =
+      summary.cooldownRejected.length > 0 && held.length === summary.cooldownRejected.length
+        ? `every candidate is on cooldown or locked out (${summary.cooldownRejected.length} pools)`
+        : "no pool passed the quantitative filters";
     return summary;
   }
 
@@ -843,6 +903,7 @@ export async function runDlmmTradingCycle(): Promise<CycleResult | null> {
     console.log(
       `[dlmm] cycle done — checked ${monitor.checked}, closed ${monitor.closed}, ` +
         `stale ${monitor.stale}, candidates ${entry.candidates}, ` +
+        `cooldown-rejected ${entry.cooldownRejected.length}, ` +
         `safe ${entry.safeCandidates}, rug-rejected ${entry.rugRejected.length}, ` +
         `vol-rejected ${entry.volatilityRejected.length}, ` +
         `cost-rejected ${entry.breakevenRejected.length}, ` +

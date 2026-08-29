@@ -139,6 +139,27 @@ would be look-ahead bias in the strategy itself.
 load. Keep every import in that file dynamic (or type-only) or the override silently stops working
 and the test writes into `./data/flowmetrix.db`.
 
+**The smoke test must exit by draining, not by `process.exit()`.** Node's global `fetch` leaves
+keep-alive sockets in undici's pool, including the Stage 4 calls against our own Fastify instance.
+Those sockets hold `server.close()` open, so the harness used to force the exit — and exiting on
+top of a half-closed TCP handle trips a libuv assertion on Windows
+(`!(handle->flags & UV_HANDLE_CLOSING)`, win/async.c). The run printed `RESULT: PASS` and still
+returned exit code 127, which makes the smoke test useless as a deploy gate. `closeHttpPool()`
+drains the pool, the loop empties, and `process.exitCode` carries the verdict. The 10s unref'd
+timer is a hang guard, not the normal path; if it ever fires, something new leaked a handle.
+
+**The anti-churn gate fails OPEN, unlike every safety gate.** `assessPoolCooldown` treats an
+unparseable timestamp as an expired bench, not an indefinite ban, and a pool with no history is
+never blocked. That is the opposite of `screenTokenSafety`, and deliberate: cooldown protects
+returns, the anti-rug screen protects capital, and a broken clock must not silently freeze the
+screener. Do not "make it consistent" with the fail-closed rule.
+
+**Stored timestamps are UTC without a zone marker.** SQLite `CURRENT_TIMESTAMP` writes
+`YYYY-MM-DD HH:MM:SS`, which `new Date()` reads as local time — 7 hours out on an Asia/Jakarta
+box, enough for a 4-hour cooldown to expire before it started. Parse stored timestamps through
+`parseDbTimestamp` in `meteora.ts`; the cooldown gate and the position monitor share it so they
+cannot drift apart on the interpretation.
+
 **Undefined metrics stay null.** `profitFactor` is null when there are no losing trades; returning
 `Infinity` or `0` would render on the dashboard as a real measurement. Max drawdown runs over the
 realised curve only — adding floating PnL would make it non-reproducible from history.

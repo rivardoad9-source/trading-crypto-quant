@@ -201,6 +201,27 @@ const EnvSchema = z
     /** "reject" (fail closed) or "allow" when the 24h change is unavailable. */
     VOLATILITY_ON_UNKNOWN: z.enum(["reject", "allow"]).default("reject"),
 
+    /* ---- Pool cooldown & failure lockout (anti-churn) ---- */
+    /*
+     * Live paper trading showed the engine re-entering the same pool minutes after
+     * closing it out of range, paying gas and forced-exit slippage on every lap. The
+     * screener has no memory of its own trades, so the same pool keeps ranking first
+     * and keeps failing the same way. These two gates give it that memory.
+     */
+    /**
+     * A pool is excluded from the candidate list for this many hours after ANY of its
+     * positions closes, regardless of outcome. Set to 0 to disable.
+     */
+    POOL_COOLDOWN_HOURS: numeric(4),
+    /**
+     * How many consecutive CLOSED_LOSS / CLOSED_OUT_OF_RANGE closes on one pool trip
+     * the circuit breaker. The run is counted newest-first and reset by any other
+     * outcome. Set to 0 to disable the lockout.
+     */
+    POOL_LOCKOUT_CONSECUTIVE_FAILURES: numeric(2),
+    /** How long a tripped pool stays locked out, measured from its last failure. */
+    POOL_LOCKOUT_HOURS: numeric(24),
+
     // ---- Post-trade reflection ----
     POST_MORTEM_ENABLED: booleanish(true),
 
@@ -250,6 +271,19 @@ const EnvSchema = z
         path: ["STOP_LOSS_PCT"],
         message: "STOP_LOSS_PCT must be negative (e.g. -8).",
       });
+    }
+    for (const key of [
+      "POOL_COOLDOWN_HOURS",
+      "POOL_LOCKOUT_HOURS",
+      "POOL_LOCKOUT_CONSECUTIVE_FAILURES",
+    ] as const) {
+      if (cfg[key] < 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [key],
+          message: `${key} must be zero or positive (zero disables the gate).`,
+        });
+      }
     }
   });
 

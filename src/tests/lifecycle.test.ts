@@ -228,3 +228,85 @@ describe("research log", () => {
     assert.equal(repos.getResearchHistory(10).length, 2, "same-date write must not duplicate");
   });
 });
+
+describe("pool exit history (cooldown & lockout source data)", () => {
+  /*
+   * The gate's arithmetic is tested in cooldown.test.ts against a fixed clock. What
+   * matters here is that the repository hands it the right rows: newest close first,
+   * per pool, with the consecutive-failure run counted from the front.
+   */
+  const closeAs = (
+    positionId: string,
+    poolAddress: string,
+    status: "CLOSED_PROFIT" | "CLOSED_LOSS" | "CLOSED_OUT_OF_RANGE" | "CLOSED_TIMEOUT",
+    closedHoursAgo: number,
+  ): void => {
+    repos.insertPosition(newPosition(positionId, poolAddress));
+    repos.closePosition({
+      positionId,
+      status,
+      exitPrice: 100,
+      realizedPnlUsd: status === "CLOSED_PROFIT" ? 1 : -1,
+      realizedPnlPct: status === "CLOSED_PROFIT" ? 1 : -1,
+      unclaimedFeeUsd: 0,
+      impermanentLossUsd: 0,
+      positionValueChangeUsd: 0,
+      closeReason: `test ${status}`,
+    });
+
+    // closePosition stamps CURRENT_TIMESTAMP; back-date it so ordering is explicit
+    // rather than dependent on how fast the test runs.
+    const stamp = new Date(Date.now() - closedHoursAgo * 3_600_000)
+      .toISOString()
+      .replace("T", " ")
+      .slice(0, 19);
+    dbModule.db
+      .prepare(`UPDATE simulated_positions SET closed_at = ? WHERE position_id = ?`)
+      .run(stamp, positionId);
+  };
+
+  it("counts a run of two failing exits on one pool", () => {
+    closeAs("exit-1", "poolChurn", "CLOSED_OUT_OF_RANGE", 5);
+    closeAs("exit-2", "poolChurn", "CLOSED_LOSS", 1);
+
+    const record = repos.getPoolExitRecord("poolChurn");
+    assert.equal(record.consecutiveFailures, 2);
+    assert.ok(record.lastFailureAt);
+    assert.equal(record.lastClosedAt, record.lastFailureAt, "newest close is the newest failure");
+  });
+
+  it("resets the run when a later trade closes in profit", () => {
+    closeAs("exit-3", "poolMixed", "CLOSED_OUT_OF_RANGE", 6);
+    closeAs("exit-4", "poolMixed", "CLOSED_OUT_OF_RANGE", 4);
+    closeAs("exit-5", "poolMixed", "CLOSED_PROFIT", 2);
+
+    const record = repos.getPoolExitRecord("poolMixed");
+    assert.equal(record.consecutiveFailures, 0);
+    assert.equal(record.lastFailureAt, null);
+    assert.ok(record.lastClosedAt, "the profitable close still starts a cooldown");
+  });
+
+  it("keys the history map by pool and excludes still-open positions", () => {
+    const history = repos.getPoolExitHistory();
+
+    assert.equal(history.get("poolChurn")?.consecutiveFailures, 2);
+    assert.equal(history.get("poolMixed")?.consecutiveFailures, 0);
+    assert.equal(
+      history.has("poolCCC"),
+      false,
+      "poolCCC's only position is still ACTIVE and must not gate anything",
+    );
+  });
+
+  it("reports an untraded pool as absent rather than as a blank record", () => {
+    assert.equal(repos.getPoolExitHistory().has("poolNeverTraded"), false);
+    assert.equal(repos.getPoolExitRecord("poolNeverTraded").lastClosedAt, null);
+  });
+
+  it("drops closes older than the lookback window", () => {
+    closeAs("exit-6", "poolAncient", "CLOSED_LOSS", 100);
+    assert.equal(repos.getPoolExitHistory(24).has("poolAncient"), false);
+    assert.equal(repos.getPoolExitHistory(24 * 30).has("poolAncient"), true);
+  });
+});
+

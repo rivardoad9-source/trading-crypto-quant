@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { env } from "../config/env.js";
-import { ENDPOINTS } from "../config/constants.js";
+import { ENDPOINTS, isFailureStatus } from "../config/constants.js";
 import { getJson } from "./http.js";
 
 /* ------------------------------------------------------------------ */
@@ -62,11 +62,61 @@ const PoolsResponseSchema = z.object({
 export type RawPool = z.infer<typeof RawPoolSchema>;
 
 /* ------------------------------------------------------------------ */
+/* Display names                                                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Abbreviates a mint for display: `ApZuxdpzMrb...` -> `ApZu..`.
+ *
+ * Used only when a token has no symbol in the Meteora metadata. Short enough to fit a
+ * pair label, long enough to tell two unnamed tokens apart at a glance.
+ */
+export function shortenMint(mint: string, lead = 4): string {
+  const trimmed = mint.trim();
+  if (trimmed.length <= lead) return trimmed;
+  return `${trimmed.slice(0, lead)}..`;
+}
+
+/**
+ * The symbol to show for a token, falling back to an abbreviated mint.
+ *
+ * Meteora serves an empty `symbol` for tokens whose metadata it has not indexed. An
+ * empty string renders as nothing at all, which is how a pair ends up displayed as
+ * `-SOL` with no way to tell which token it was.
+ */
+export function displaySymbol(symbol: string | null | undefined, mint: string): string {
+  const trimmed = (symbol ?? "").trim();
+  if (trimmed !== "") return trimmed;
+  const short = shortenMint(mint);
+  return short === "" ? "UNKNOWN" : short;
+}
+
+/**
+ * Builds the pair label from the two token legs.
+ *
+ * Derived from the symbols rather than taken from the upstream `name` field, because
+ * that field is itself unreliable: the CYBERLEEK/SOL pool reports `name: "-SOL"` even
+ * though `token_x.symbol` is populated. Deriving locally gives one consistent label
+ * for the database, the Telegram alerts and the dashboard.
+ */
+export function formatPairName(params: {
+  baseSymbol: string | null | undefined;
+  quoteSymbol: string | null | undefined;
+  baseMint: string;
+  quoteMint: string;
+}): string {
+  const base = displaySymbol(params.baseSymbol, params.baseMint);
+  const quote = displaySymbol(params.quoteSymbol, params.quoteMint);
+  return `${base}-${quote}`;
+}
+
+/* ------------------------------------------------------------------ */
 /* Normalised domain model                                             */
 /* ------------------------------------------------------------------ */
 
 export interface DlmmPool {
   address: string;
+  /** Derived locally from the token symbols - see formatPairName, never raw.name. */
   pairName: string;
   baseSymbol: string;
   quoteSymbol: string;
@@ -108,13 +158,23 @@ function toDomain(raw: RawPool): DlmmPool {
   const ageHours =
     createdAtMs > 0 ? Math.max(0, (Date.now() - createdAtMs) / (1000 * 60 * 60)) : Number.NaN;
 
+  const baseMint = raw.token_x.address;
+  const quoteMint = raw.token_y.address;
+
   return {
     address: raw.address,
-    pairName: raw.name,
-    baseSymbol: raw.token_x.symbol,
-    quoteSymbol: raw.token_y.symbol,
-    baseMint: raw.token_x.address,
-    quoteMint: raw.token_y.address,
+    // NOT raw.name — see formatPairName. Upstream serves a broken label for pools
+    // whose token metadata is incomplete.
+    pairName: formatPairName({
+      baseSymbol: raw.token_x.symbol,
+      quoteSymbol: raw.token_y.symbol,
+      baseMint,
+      quoteMint,
+    }),
+    baseSymbol: displaySymbol(raw.token_x.symbol, baseMint),
+    quoteSymbol: displaySymbol(raw.token_y.symbol, quoteMint),
+    baseMint,
+    quoteMint,
     binStep: raw.pool_config.bin_step,
     baseFeePct: raw.pool_config.base_fee_pct,
     tvlUsd: tvl,
@@ -302,6 +362,208 @@ export function screenPools(
   survivors.sort((a, b) => b.score - a.score);
 
   return { candidates: survivors, scanned: pools.length, rejected };
+}
+
+/* ------------------------------------------------------------------ */
+/* Pool cooldown & failure lockout                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Parses a timestamp as stored by SQLite.
+ *
+ * `CURRENT_TIMESTAMP` writes `YYYY-MM-DD HH:MM:SS` in UTC with no zone marker, which
+ * `new Date()` would read as local time — a 7-hour error on the default Asia/Jakarta
+ * box, enough to let a 4-hour cooldown expire before it ever began. ISO strings (what
+ * the tests and seeds write) pass through untouched.
+ */
+export function parseDbTimestamp(value: string | null | undefined): Date | null {
+  if (!value) return null;
+  const raw = value.trim();
+  if (raw === "") return null;
+
+  const hasZone = raw.includes("T") || /([zZ]|[+-]\d{2}:?\d{2})$/.test(raw);
+  const normalised = hasZone ? raw : `${raw.replace(" ", "T")}Z`;
+
+  const date = new Date(normalised);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+/** Hours between a stored timestamp and `to`. Negative and unparseable spans read 0. */
+export function hoursSince(fromIso: string | null | undefined, to: Date): number {
+  const from = parseDbTimestamp(fromIso);
+  if (!from) return 0;
+  const ms = to.getTime() - from.getTime();
+  return Number.isFinite(ms) && ms > 0 ? ms / (1000 * 60 * 60) : 0;
+}
+
+/**
+ * One pool's trading history, condensed to what the anti-churn gates need.
+ *
+ * Built by `getPoolExitHistory()` in the repository layer and kept as a plain value
+ * here so the decision below stays a pure function, testable without a database.
+ */
+export interface PoolExitRecord {
+  poolAddress: string;
+  /** closed_at of the most recent close, whatever its outcome. */
+  lastClosedAt: string | null;
+  /** closed_at of the most recent failing close, or null if the last close was fine. */
+  lastFailureAt: string | null;
+  /**
+   * Length of the unbroken run of failing closes ending at the most recent trade.
+   * Any non-failing close resets it to 0.
+   */
+  consecutiveFailures: number;
+}
+
+export interface CooldownThresholds {
+  /** Hours a pool is excluded after any close. 0 disables. */
+  cooldownHours: number;
+  /** Consecutive failures that trip the breaker. 0 disables the lockout. */
+  lockoutConsecutiveFailures: number;
+  /** Hours a tripped pool stays locked, measured from its last failure. */
+  lockoutHours: number;
+}
+
+export const defaultCooldownThresholds = (): CooldownThresholds => ({
+  cooldownHours: env.POOL_COOLDOWN_HOURS,
+  lockoutConsecutiveFailures: env.POOL_LOCKOUT_CONSECUTIVE_FAILURES,
+  lockoutHours: env.POOL_LOCKOUT_HOURS,
+});
+
+export type CooldownBlockKind = "cooldown" | "lockout";
+
+export interface CooldownVerdict {
+  blocked: boolean;
+  kind: CooldownBlockKind | null;
+  /** Hours left before the pool becomes eligible again. 0 when not blocked. */
+  hoursRemaining: number;
+  reason: string;
+}
+
+const NOT_BLOCKED: CooldownVerdict = {
+  blocked: false,
+  kind: null,
+  hoursRemaining: 0,
+  reason: "",
+};
+
+/**
+ * Decides whether a pool may be re-entered.
+ *
+ * Two independent rules, lockout checked first because it is the longer and the more
+ * serious of the two:
+ *
+ *  - LOCKOUT: N consecutive losing / out-of-range closes trip a circuit breaker for
+ *    `lockoutHours` from the last failure. Re-entering a pool that has just chewed
+ *    through two ranges in a row is exactly the churn loop this exists to break.
+ *  - COOLDOWN: any close at all, profitable included, benches the pool for
+ *    `cooldownHours`. A pool that just paid out is not automatically worth paying
+ *    entry gas on again minutes later.
+ *
+ * A pool with no closed history is never blocked, and a record whose timestamp cannot
+ * be parsed is treated as expired rather than as an indefinite ban — an unreadable
+ * clock must not silently freeze the screener.
+ */
+export function assessPoolCooldown(
+  record: PoolExitRecord | undefined,
+  now: Date = new Date(),
+  thresholds: CooldownThresholds = defaultCooldownThresholds(),
+): CooldownVerdict {
+  if (!record) return NOT_BLOCKED;
+
+  if (
+    thresholds.lockoutConsecutiveFailures > 0 &&
+    thresholds.lockoutHours > 0 &&
+    record.consecutiveFailures >= thresholds.lockoutConsecutiveFailures &&
+    parseDbTimestamp(record.lastFailureAt) !== null
+  ) {
+    const elapsed = hoursSince(record.lastFailureAt, now);
+
+    if (elapsed < thresholds.lockoutHours) {
+      const remaining = thresholds.lockoutHours - elapsed;
+      return {
+        blocked: true,
+        kind: "lockout",
+        hoursRemaining: remaining,
+        reason:
+          `${record.consecutiveFailures} consecutive failed exits ` +
+          `(limit ${thresholds.lockoutConsecutiveFailures}); ` +
+          `locked for another ${remaining.toFixed(1)}h of ${thresholds.lockoutHours}h`,
+      };
+    }
+  }
+
+  if (thresholds.cooldownHours > 0 && parseDbTimestamp(record.lastClosedAt) !== null) {
+    const elapsed = hoursSince(record.lastClosedAt, now);
+
+    if (elapsed < thresholds.cooldownHours) {
+      const remaining = thresholds.cooldownHours - elapsed;
+      return {
+        blocked: true,
+        kind: "cooldown",
+        hoursRemaining: remaining,
+        reason:
+          `closed ${elapsed.toFixed(1)}h ago; ` +
+          `cooling down for another ${remaining.toFixed(1)}h of ${thresholds.cooldownHours}h`,
+      };
+    }
+  }
+
+  return NOT_BLOCKED;
+}
+
+export interface CooldownFilterResult<T> {
+  allowed: T[];
+  blocked: Array<{ pool: T; verdict: CooldownVerdict }>;
+}
+
+/**
+ * Splits a candidate list into pools that may be entered and pools still serving a
+ * cooldown or lockout. Order within `allowed` is preserved, so the ranking the
+ * screener produced survives the gate.
+ */
+export function filterPoolsOnCooldown<T extends { address: string }>(
+  pools: T[],
+  history: ReadonlyMap<string, PoolExitRecord>,
+  now: Date = new Date(),
+  thresholds: CooldownThresholds = defaultCooldownThresholds(),
+): CooldownFilterResult<T> {
+  const result: CooldownFilterResult<T> = { allowed: [], blocked: [] };
+
+  for (const pool of pools) {
+    const verdict = assessPoolCooldown(history.get(pool.address), now, thresholds);
+    if (verdict.blocked) result.blocked.push({ pool, verdict });
+    else result.allowed.push(pool);
+  }
+
+  return result;
+}
+
+/**
+ * Folds one pool's closed trades into a `PoolExitRecord`.
+ *
+ * `rows` must be ordered NEWEST FIRST — the consecutive-failure run is counted from
+ * the front and stops at the first non-failing outcome, so any other order silently
+ * produces a different answer.
+ */
+export function summarisePoolExits(
+  poolAddress: string,
+  rows: ReadonlyArray<{ status: string; closed_at: string | null }>,
+): PoolExitRecord {
+  const record: PoolExitRecord = {
+    poolAddress,
+    lastClosedAt: rows[0]?.closed_at ?? null,
+    lastFailureAt: null,
+    consecutiveFailures: 0,
+  };
+
+  for (const row of rows) {
+    if (!isFailureStatus(row.status)) break;
+    record.consecutiveFailures++;
+    if (record.lastFailureAt === null) record.lastFailureAt = row.closed_at;
+  }
+
+  return record;
 }
 
 /* ------------------------------------------------------------------ */

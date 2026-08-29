@@ -46,6 +46,31 @@ interface Check {
 
 const checks: Check[] = [];
 
+/**
+ * Drains the connection pool behind Node's global `fetch`.
+ *
+ * Every fetch in this harness — including the Stage 4 calls against our own Fastify
+ * instance — leaves a keep-alive socket in undici's global pool. Those sockets hold
+ * `server.close()` open indefinitely, so the harness could only ever finish by calling
+ * `process.exit()`, and exiting on top of a half-closed TCP handle trips a libuv
+ * assertion on Windows (`!(handle->flags & UV_HANDLE_CLOSING)`, win/async.c). The run
+ * printed RESULT: PASS and still reported exit code 127, which made the smoke test
+ * useless as a deploy gate. Close the pool and the loop empties on its own.
+ *
+ * The dispatcher is reached through undici's well-known global symbol because Node
+ * does not re-export it. It is absent until the first fetch, hence the optional calls.
+ */
+async function closeHttpPool(): Promise<void> {
+  const dispatcher = (globalThis as Record<symbol, unknown>)[
+    Symbol.for("undici.globalDispatcher.1")
+  ] as { close?: () => Promise<void> } | undefined;
+  try {
+    await dispatcher?.close?.();
+  } catch {
+    /* A pool that refuses to close cleanly must not fail an otherwise green run. */
+  }
+}
+
 const ICONS: Record<Status, string> = { PASS: "✓", FAIL: "✗", SKIP: "–" };
 
 function record(stage: string, name: string, status: Status, detail = ""): void {
@@ -228,6 +253,33 @@ async function main(): Promise<void> {
       .map((c) => `${c.pairName} (${(c.feeTvlRatio24h * 100).toFixed(2)}%)`)
       .join(", ");
     return `${candidates.length} passed of ${result.scanned}; top 3: ${summary}`;
+  });
+
+  await check("2", "Pair labels resolved (no blank token symbols)", async () => {
+    if (candidates.length === 0) return skip("no candidates to inspect");
+
+    /*
+     * Meteora serves `name: "-SOL"` for pools whose token metadata it has not
+     * indexed, and an empty symbol renders as nothing at all. meteora.ts derives the
+     * label from the token legs and falls back to an abbreviated mint, so a label
+     * must never begin or end with the separator.
+     */
+    const broken = candidates.filter(
+      (c) => c.pairName.startsWith("-") || c.pairName.endsWith("-") || c.pairName.includes("--"),
+    );
+    if (broken.length > 0) {
+      throw new Error(`blank symbol leaked into ${broken.length} label(s): ${broken[0]!.pairName}`);
+    }
+
+    const fallbacks = candidates.filter(
+      (c) => c.baseSymbol.endsWith("..") || c.quoteSymbol.endsWith(".."),
+    );
+    return (
+      `${candidates.length} labels well-formed` +
+      (fallbacks.length > 0
+        ? `, ${fallbacks.length} using a mint fallback (e.g. ${fallbacks[0]!.pairName})`
+        : "")
+    );
   });
 
   /*
@@ -472,6 +524,31 @@ async function main(): Promise<void> {
     );
   });
 
+  await check("3", "Pool cooldown gate blocks immediate re-entry", async () => {
+    if (env.POOL_COOLDOWN_HOURS <= 0) return skip("POOL_COOLDOWN_HOURS is 0 (gate disabled)");
+
+    const best = candidates[0]!;
+    const history = repos.getPoolExitHistory();
+    const record = history.get(best.address);
+    if (!record) throw new Error("the just-closed pool is missing from the exit history");
+
+    const verdict = meteora.assessPoolCooldown(record, new Date());
+    if (!verdict.blocked) {
+      throw new Error("a pool closed seconds ago was not put on cooldown");
+    }
+
+    // The screener-facing filter must actually drop it from the candidate list.
+    const filtered = meteora.filterPoolsOnCooldown(candidates, history, new Date());
+    if (filtered.allowed.some((c) => c.address === best.address)) {
+      throw new Error(`${best.pairName} survived filterPoolsOnCooldown`);
+    }
+
+    return (
+      `${best.pairName} benched ${verdict.hoursRemaining.toFixed(2)}h of ` +
+      `${env.POOL_COOLDOWN_HOURS}h (${verdict.kind})`
+    );
+  });
+
   await check("3", "daily_pnl_snapshots updated", async () => {
     const today = localDateString();
     await runDailySnapshot(today);
@@ -499,6 +576,72 @@ async function main(): Promise<void> {
     const stored = repos.getPositionById(positionId)!.post_mortem;
     if (!stored) throw new Error("post-mortem was not persisted");
     return `"${text.slice(0, 60)}${text.length > 60 ? "…" : ""}"`;
+  });
+
+  await check("3", "Consecutive-loss lockout (circuit breaker)", async () => {
+    if (env.POOL_LOCKOUT_CONSECUTIVE_FAILURES <= 0 || env.POOL_LOCKOUT_HOURS <= 0) {
+      return skip("lockout disabled by configuration");
+    }
+
+    const lockoutPool = "SMOKE_LOCKOUT_POOL";
+    const needed = env.POOL_LOCKOUT_CONSECUTIVE_FAILURES;
+
+    for (let i = 0; i < needed; i++) {
+      const id = randomUUID();
+      repos.insertPosition({
+        positionId: id,
+        poolAddress: lockoutPool,
+        pairName: "[SMOKE] LOCK-SOL",
+        strategyType: "SPOT",
+        entryPrice: 1,
+        lowerBinPrice: 0.9,
+        upperBinPrice: 1.1,
+        virtualSolAmount: VIRTUAL_SOL,
+        entryTvl: 100_000,
+        entry24hVolume: 100_000,
+        confidenceScore: 0,
+        reasoningLog: "[SMOKE TEST] lockout fixture",
+        entrySolPriceUsd: 200,
+        safetyVerdict: "SKIPPED",
+      });
+      repos.closePosition({
+        positionId: id,
+        status: "CLOSED_OUT_OF_RANGE",
+        exitPrice: 1.2,
+        realizedPnlUsd: -1,
+        realizedPnlPct: -1,
+        unclaimedFeeUsd: 0,
+        impermanentLossUsd: 0,
+        positionValueChangeUsd: -1,
+        closeReason: "[SMOKE TEST] forced range exit",
+      });
+    }
+
+    const record = repos.getPoolExitRecord(lockoutPool);
+    if (record.consecutiveFailures !== needed) {
+      throw new Error(`expected ${needed} consecutive failures, counted ${record.consecutiveFailures}`);
+    }
+
+    /*
+     * Read the verdict from beyond the cooldown window so a "blocked" answer can only
+     * come from the lockout rule, not from the 4h bench that also applies.
+     */
+    const pastCooldown = new Date(Date.now() + (env.POOL_COOLDOWN_HOURS + 1) * 3_600_000);
+    const verdict = meteora.assessPoolCooldown(record, pastCooldown);
+    if (verdict.kind !== "lockout") {
+      throw new Error(`expected a lockout past the cooldown window, got ${verdict.kind ?? "none"}`);
+    }
+
+    // And it must expire rather than ban the pool forever.
+    const pastLockout = new Date(Date.now() + (env.POOL_LOCKOUT_HOURS + 1) * 3_600_000);
+    if (meteora.assessPoolCooldown(record, pastLockout).blocked) {
+      throw new Error("the lockout never expires");
+    }
+
+    return (
+      `${needed} consecutive range exits -> locked ` +
+      `${verdict.hoursRemaining.toFixed(1)}h of ${env.POOL_LOCKOUT_HOURS}h, expires cleanly`
+    );
   });
 
   /* ================================================================ */
@@ -597,6 +740,8 @@ async function main(): Promise<void> {
       return "400 with an error payload";
     });
 
+    /* Client sockets first: they are what keeps the server socket from closing. */
+    await closeHttpPool();
     await stopApiServer();
   }
 
@@ -650,11 +795,31 @@ async function main(): Promise<void> {
       : `\n  RESULT: FAIL — ${failed.length} check(s) need attention before deploying.\n`,
   );
 
+  /* Stages 1-3 hit live upstreams; their keep-alive sockets outlive the checks too. */
+  await closeHttpPool();
+
   closeDatabase();
   if (!keepDb) rmSync(tempDir, { recursive: true, force: true });
   else console.log(`  temp database kept at ${process.env.DATABASE_PATH}\n`);
 
-  process.exit(failed.length === 0 ? 0 : 1);
+  /*
+   * Deliberately NOT process.exit(). Every handle above has been closed, so the loop
+   * drains and Node reports this code on its own; forcing the exit is what produced a
+   * libuv teardown assertion (exit 127) on a run that had just printed PASS.
+   */
+  process.exitCode = failed.length === 0 ? 0 : 1;
+
+  /*
+   * Safety net: if some future check leaks a handle, a hung smoke test is worse than a
+   * noisy one. The timer is unref'd, so it never delays a clean run.
+   */
+  setTimeout(() => {
+    console.error(
+      "\n[smoke] event loop still busy 10s after the summary; forcing exit. " +
+        `Open handles: ${process.getActiveResourcesInfo().join(", ")}`,
+    );
+    process.exit(failed.length === 0 ? 0 : 1);
+  }, 10_000).unref();
 }
 
 main().catch((err) => {
