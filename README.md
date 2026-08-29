@@ -214,6 +214,47 @@ Set `ENGINE_V11_CUTOFF` to the moment you actually **restart** the engine on v1.
 commit time is a safe floor, not a deploy record, and anything opened between the commit
 and the restart is still v1.0's work.
 
+### Exit thresholds: what the sweep found (and why they were not changed)
+
+`npm run sweep:exits` grid-searches `TAKE_PROFIT_PCT` x `STOP_LOSS_PCT` over the 30-day
+window, fitting on the first half and scoring on the second. `npm run sweep:exits --
+--live-entry` repeats it with the entry gates from `.env` instead of the looser backtest
+defaults.
+
+The live dry run showed an inverted risk/reward: **avg win $8.76 against avg loss
+$10.88**, payoff 0.81, expectancy **-$1.06/trade**. The config is the direct cause —
+`TAKE_PROFIT_PCT=5` against `STOP_LOSS_PCT=-8` risks 8 to make 5, a structural payoff
+ceiling of **0.63**.
+
+64 combinations, backtest-default entry gates (78 trades in-sample at the current
+setting):
+
+| TP | SL | payoff | in-sample exp | **out-of-sample exp** | maxDD |
+|---|---|---|---|---|---|
+| **+5% / -8% (current)** | | 0.69 | -$0.68 | **-$2.43** | 71.6% |
+| +8% | -8% | 0.95 | -$0.70 | -$3.59 | 65.9% |
+| none | -6% | **1.10** | -$0.75 | -$3.43 | 70.3% |
+| none | -5% | **1.25** | -$0.86 | -$3.07 | 77.1% |
+
+Two findings, and they point the same way:
+
+1. **Payoff > 1 is reachable, but it costs more than it buys.** Only a tight stop
+   (-5%/-6%) with the take-profit disabled gets the average win above the average loss.
+   Every one of those settings is *worse* out-of-sample than the current config, and
+   none is profitable.
+2. **No combination is profitable at all.** Not one of the 64 has positive expectancy in
+   both halves. With `--live-entry` it is starker: 9-15 trades per half and an
+   out-of-sample profit factor of **0.00** — every out-of-sample trade lost.
+
+So the thresholds were left alone. Moving them to chase a ratio the data does not reward
+would be fitting to noise, the same reason the composite Pool Quality Score is not wired
+into the screener. **The exits are not where the edge is missing; the entry rule is.**
+
+One caveat in the strategy's favour: the fee model is a deliberate conservative lower
+bound (pool-level, no concentration multiplier, zero while out of range), so absolute
+profitability is understated. That does not rescue the comparison — every cell shares the
+same fee model, so the ranking between settings still holds.
+
 ### Backtest (survivorship-bias controlled)
 
 ```bash

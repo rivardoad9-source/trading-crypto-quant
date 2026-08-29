@@ -74,6 +74,17 @@ export interface BacktestConfig {
   /** Exit: accumulated fees as a percentage of position notional. */
   takeProfitFeePct: number;
   /**
+   * Exit: close when mark-to-market NET PnL reaches this percentage of notional.
+   *
+   * Distinct from takeProfitFeePct, and the one that mirrors the live engine:
+   * `evaluateExit` compares TAKE_PROFIT_PCT against net PnL (fees + LP value change),
+   * not against fees alone. Without this the harness could not answer what the live
+   * take-profit should be, because it was measuring a different quantity.
+   *
+   * Defaults to Infinity, i.e. disabled, so existing backtest output is unchanged.
+   */
+  takeProfitNetPct: number;
+  /**
    * Exit: close when net PnL falls to this percentage of notional (negative).
    *
    * The live engine has always had a stop-loss; the backtest did not, which both
@@ -116,6 +127,7 @@ export const defaultBacktestConfig = (): BacktestConfig => ({
   maxPriceChange24hPct: 150,
   minFeeCostCoverage: 1.0,
   takeProfitFeePct: 5,
+  takeProfitNetPct: Number.POSITIVE_INFINITY,
   stopLossPct: -15,
   maxDurationHours: 24,
   maxConcurrentPositions: 1,
@@ -128,6 +140,7 @@ export const defaultBacktestConfig = (): BacktestConfig => ({
 export type ExitReason =
   | "OUT_OF_RANGE"
   | "FEE_TAKE_PROFIT"
+  | "TAKE_PROFIT"
   | "TIMEOUT"
   | "END_OF_DATA"
   | "STOP_LOSS"
@@ -557,6 +570,7 @@ export function runSimulation(input: SimulationInput): BacktestResult {
       let reason: ExitReason | null = null;
       if (!inRange) reason = "OUT_OF_RANGE";
       else if (markNetPct <= config.stopLossPct) reason = "STOP_LOSS";
+      else if (markNetPct >= config.takeProfitNetPct) reason = "TAKE_PROFIT";
       else if (feePct >= config.takeProfitFeePct) reason = "FEE_TAKE_PROFIT";
       else if (durationHours >= config.maxDurationHours) reason = "TIMEOUT";
 
@@ -738,6 +752,7 @@ export function summarise(trades: BacktestTrade[], startingEquityUsd: number): B
   const exitReasonCounts: Record<ExitReason, number> = {
     OUT_OF_RANGE: 0,
     FEE_TAKE_PROFIT: 0,
+    TAKE_PROFIT: 0,
     TIMEOUT: 0,
     END_OF_DATA: 0,
     STOP_LOSS: 0,
