@@ -258,6 +258,20 @@ const EnvSchema = z
      */
     ENGINE_V11_CUTOFF: z.string().trim().min(1).default("2026-08-29T13:20:40Z"),
 
+    /**
+     * Longest gap, in hours, that a single monitor tick may accrue fees for.
+     *
+     * Fees are credited as `rate x (now - last_checked_at)`. After downtime that span is
+     * however long the engine was off — a 52h restart gap credited two days of fees in
+     * one tick, on the strength of a single instantaneous in-range check, for a period
+     * nothing was watching. Unobserved time is not evidence the position was earning:
+     * the same fail-closed rule the anti-rug and volatility gates use.
+     *
+     * Generous next to the 60s monitor and the 10m screener, so normal operation never
+     * reaches it; only a restart or a long stall does.
+     */
+    MAX_FEE_ACCRUAL_GAP_HOURS: numeric(1),
+
     /* ---- Fast position monitor ---- */
     /**
      * Runs the position monitor every 60s, decoupled from the 10-minute screener.

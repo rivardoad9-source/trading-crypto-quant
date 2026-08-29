@@ -487,7 +487,20 @@ function valuateAtPrice(
   divergenceVsHoldUsd: number;
 } {
   const notionalUsd = positionNotionalUsd(row);
-  const intervalHours = hoursBetween(row.last_checked_at ?? row.opened_at, now);
+  /*
+   * Capped on purpose. After downtime this gap is however long the engine was off, and
+   * crediting all of it would book fees for a period nothing observed, justified by one
+   * instantaneous in-range check. Unobserved time is not evidence of earning.
+   */
+  const observedGapHours = hoursBetween(row.last_checked_at ?? row.opened_at, now);
+  const intervalHours = Math.min(observedGapHours, env.MAX_FEE_ACCRUAL_GAP_HOURS);
+
+  if (observedGapHours > env.MAX_FEE_ACCRUAL_GAP_HOURS) {
+    console.warn(
+      `[dlmm] ${row.pair_name}: ${observedGapHours.toFixed(1)}h since the last check — ` +
+        `accruing fees for ${intervalHours}h only (engine was not watching the rest)`,
+    );
+  }
   const wasInRange = !isOutOfRange(currentPrice, row.lower_bin_price, row.upper_bin_price);
 
   // Accrue this interval's fees on top of the running total already stored.
