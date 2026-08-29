@@ -346,11 +346,30 @@ them untouched rather than marking against a stale price. DeepSeek is bounded by
 `DEEPSEEK_TIMEOUT_MS` (default 120s) with one retry, instead of the SDK default of 10
 minutes with two — which could stall the screener for half an hour.
 
-**Known single point of failure:** `fetchSolPriceUsd` reads CoinGecko only. If CoinGecko
-is down or rate-limits, the engine refuses to open positions ("refusing to fabricate a
-size") — correct and fail-closed, but it means no trading at all until it recovers. It
-also makes `npm run test:local` report 8 red checks from one 429, because Stage 3 needs a
-SOL price. Re-run after a minute before believing a Stage 3 failure.
+**SOL/USD has fallbacks.** It used to read CoinGecko only, so one rate-limited API stopped
+trading completely — the engine refuses to size a position without a price, which is
+correct but total. `fetchSolPriceUsd` now walks `SOL_PRICE_SOURCES` in order:
+
+| Order | Source | Why |
+|---|---|---|
+| 1 | CoinGecko | Also feeds BTC/ETH and the 24h changes the macro agent needs |
+| 2 | Jupiter (`lite-api.jup.ag/price/v3`) | Keyless, Solana-native USD oracle |
+| 3 | DexScreener SOL/USDC pool | Already a project dependency; same pool the backtest quotes SOL from |
+
+A fallback being used is logged, so a degraded price path is visible rather than silent.
+Every quote is re-validated **by the chain**, not just inside each source: a source that
+returned 0, NaN or 1e30 would otherwise feed it straight into position sizing, and
+notional is fixed at entry, so a bad price is baked into that trade's PnL permanently.
+The bounds are deliberately absurd ($0.01–$100,000) — they reject garbage without
+asserting a view on what SOL is worth, which would silently reject real prices in a
+violent move.
+
+When every source fails the function still returns null and the engine still opens
+nothing. Fallbacks reduce the chance of that; they do not license inventing a price.
+
+Note that a CoinGecko 429 can still make `npm run test:local` report red checks in Stage
+3 if it happens to hit `fetchSpotPrices` (BTC/ETH have no fallback — nothing sizes a
+position from them). Re-run after a minute before believing a Stage 3 failure.
 
 ### Local verification (pre-deploy smoke test)
 

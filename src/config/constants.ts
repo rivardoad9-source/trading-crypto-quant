@@ -102,4 +102,18 @@ export const ENDPOINTS = {
   COINGECKO_GLOBAL: "https://api.coingecko.com/api/v3/global",
   /** Appended to env.METEORA_API_URL. Supports ?page, ?page_size, ?sort_by=<field>:<asc|desc>. */
   METEORA_POOLS: "/pools",
+  /** Keyless Solana-native price oracle. Fallback when CoinGecko rate-limits. */
+  JUPITER_PRICE: "https://lite-api.jup.ag/price/v3",
+  /** One pair per path segment: .../pairs/solana/<poolAddress>. */
+  DEXSCREENER_PAIRS: "https://api.dexscreener.com/latest/dex/pairs/solana",
 } as const;
+
+export const WSOL_MINT = "So11111111111111111111111111111111111111112";
+
+/**
+ * A deep SOL/USDC pool, used only as a last-resort price quote.
+ *
+ * Same pool the backtest uses for its SOL/USD bars, so the live engine and the harness
+ * cannot end up quoting SOL from two different markets.
+ */
+export const SOL_USDC_POOL_ADDRESS = "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6";

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ENDPOINTS } from "../config/constants.js";
+import { ENDPOINTS, SOL_USDC_POOL_ADDRESS, WSOL_MINT } from "../config/constants.js";
 import { env } from "../config/env.js";
 import { getJson, getJsonSafe } from "./http.js";
 import { realizedVolatilityPctPerHour } from "./statistics.js";
@@ -115,9 +115,113 @@ export async function fetchSpotPrices(): Promise<SpotPrices | null> {
  * primary source; a failure returns null and callers must not silently substitute
  * a made-up price.
  */
+/*
+ * SOL/USD had exactly one source, CoinGecko. When it rate-limited, position sizing had
+ * no price and the engine refused to open anything at all — correct (it must never
+ * fabricate a size) but it meant one third-party API could stop trading completely.
+ * These are the fallbacks. All keyless, all verified reachable.
+ */
+
+/**
+ * Plausibility band for a SOL quote.
+ *
+ * Deliberately absurd bounds rather than a tight market range: this rejects garbage
+ * (0, negative, a parse artefact like 1e30) without asserting a view on what SOL is
+ * worth, which would silently reject real prices in a violent move. It matters because
+ * a bad quote here is permanent — position notional is fixed at entry, so a wrong SOL
+ * price is baked into that trade's PnL forever.
+ */
+const SOL_PRICE_MIN_USD = 0.01;
+const SOL_PRICE_MAX_USD = 100_000;
+
+function usableSolPrice(value: unknown): number | null {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n) || n < SOL_PRICE_MIN_USD || n > SOL_PRICE_MAX_USD) return null;
+  return n;
+}
+
+export interface SolPriceSource {
+  name: string;
+  fetch: () => Promise<number | null>;
+}
+
+/** CoinGecko stays first: it is the only one that also feeds BTC/ETH and 24h changes. */
+const coingeckoSol: SolPriceSource = {
+  name: "coingecko",
+  fetch: async () => {
+    const prices = await fetchSpotPrices();
+    return usableSolPrice(prices?.solUsd);
+  },
+};
+
+const jupiterSol: SolPriceSource = {
+  name: "jupiter",
+  fetch: async () => {
+    const raw = await getJsonSafe<Record<string, { usdPrice?: number }> | null>(
+      `${ENDPOINTS.JUPITER_PRICE}?ids=${WSOL_MINT}`,
+      null,
+    );
+    return usableSolPrice(raw?.[WSOL_MINT]?.usdPrice);
+  },
+};
+
+const dexscreenerSol: SolPriceSource = {
+  name: "dexscreener",
+  fetch: async () => {
+    const raw = await getJsonSafe<{ pairs?: Array<{ priceUsd?: string }> } | null>(
+      `${ENDPOINTS.DEXSCREENER_PAIRS}/${SOL_USDC_POOL_ADDRESS}`,
+      null,
+    );
+    return usableSolPrice(raw?.pairs?.[0]?.priceUsd);
+  },
+};
+
+export const SOL_PRICE_SOURCES: SolPriceSource[] = [coingeckoSol, jupiterSol, dexscreenerSol];
+
+/**
+ * First usable SOL/USD quote, in source order.
+ *
+ * Still returns null when every source fails — callers must keep refusing to size a
+ * position rather than inventing one. A fallback being used is logged, because trading
+ * on a degraded price path is something the operator should be able to see in the log.
+ */
+export async function fetchSolPriceUsdFrom(sources: SolPriceSource[]): Promise<number | null> {
+  for (const [index, source] of sources.entries()) {
+    let price: number | null = null;
+    try {
+      price = await source.fetch();
+    } catch (err) {
+      // getJsonSafe already swallows HTTP errors; this catches a malformed payload.
+      console.warn(`[marketData] SOL price via ${source.name} threw: ${(err as Error).message}`);
+    }
+
+    /*
+     * Re-validated here, not just inside each source. The chain must not trust what a
+     * source hands back: a future source that forgets usableSolPrice would otherwise
+     * feed 0 or NaN straight into position sizing, and notional is fixed at entry, so
+     * that price is baked into the trade's PnL permanently.
+     */
+    const usable = usableSolPrice(price);
+    if (usable !== null) {
+      if (index > 0) {
+        console.warn(`[marketData] SOL/USD served by fallback source "${source.name}"`);
+      }
+      return usable;
+    }
+
+    if (price !== null) {
+      console.warn(
+        `[marketData] rejected an implausible SOL quote from ${source.name}: ${String(price)}`,
+      );
+    }
+  }
+
+  console.error("[marketData] SOL/USD unavailable from every source — no position can be sized");
+  return null;
+}
+
 export async function fetchSolPriceUsd(): Promise<number | null> {
-  const prices = await fetchSpotPrices();
-  return prices && prices.solUsd > 0 ? prices.solUsd : null;
+  return fetchSolPriceUsdFrom(SOL_PRICE_SOURCES);
 }
 
 /* ------------------------------------------------------------------ */
