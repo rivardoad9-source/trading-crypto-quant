@@ -32,3 +32,9 @@ git add exports && git commit -m "chore: refresh exported trading data" && git p
 
 The SQLite DB itself stays gitignored (`data/`, `*.db`) — it is the source of truth,
 these exports are snapshots.
+
+## Auto refresh (nightly)
+
+A cron job (`~/.hermes/scripts/flowmetrix_export_cron.sh`, runs nightly 22:00 WIB,
+no_agent = 0 LLM tokens) re-exports and pushes the data every night, unconditionally.
+You get a short confirmation in Telegram each time it runs.
