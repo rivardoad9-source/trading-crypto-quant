@@ -363,6 +363,56 @@ describe("runSimulation exits", () => {
     assert.ok(r.trades[0]!.feesEarnedPct >= 5);
   });
 
+  it("closes on the net take-profit, which the fee take-profit cannot see", () => {
+    /*
+     * The live engine compares TAKE_PROFIT_PCT against NET PnL (fees + LP value
+     * change); the backtest only ever had a FEES-ONLY take-profit. Tuning one to
+     * choose the other would have been comparing different quantities.
+     */
+    const r = run(
+      [makePool({ bars: makeBars(200, 100, 20_000) })],
+      config({ maxDurationHours: 1e9, takeProfitFeePct: 1e9, takeProfitNetPct: 3 }),
+    );
+
+    assert.equal(r.trades[0]!.exitReason, "TAKE_PROFIT");
+    assert.ok(
+      r.trades[0]!.feesEarnedPct < 5,
+      "it must fire before the 5% fee threshold, or the test proves nothing",
+    );
+  });
+
+  it("leaves the net take-profit disabled by default", () => {
+    // Infinity by default, so adding it changed no existing backtest output.
+    const r = run(
+      [makePool({ bars: makeBars(200, 100, 20_000) })],
+      config({ maxDurationHours: 1e9 }),
+    );
+    assert.equal(r.trades[0]!.exitReason, "FEE_TAKE_PROFIT");
+  });
+
+  it("still exits on the loss side when a net take-profit is armed", () => {
+    /*
+     * Precedence between the two is not separately tested because the state cannot
+     * occur: both read the same net PnL, and no value is simultaneously >= a positive
+     * take-profit and <= a negative stop. What matters is that arming the take-profit
+     * does not let a collapsing position slip out as a win.
+     */
+    const bars = makeBars(60, 100, 20_000);
+    for (let i = 30; i < bars.length; i++) bars[i]!.c = 55;
+
+    const r = run(
+      [makePool({ bars })],
+      config({ takeProfitNetPct: 8, stopLossPct: -5, maxDurationHours: 1e9 }),
+    );
+
+    const exit = r.trades[0]!.exitReason;
+    assert.ok(
+      ["STOP_LOSS", "OUT_OF_RANGE", "RUGGED"].includes(exit),
+      `expected a loss-side exit, got ${exit}`,
+    );
+    assert.ok(r.trades[0]!.netPnlUsd < 0);
+  });
+
   it("closes out of range on a downside breach", () => {
     const bars = makeBars(60, 100, 20_000);
     for (let i = 30; i < bars.length; i++) bars[i]!.c = 50;

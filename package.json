@@ -27,7 +27,8 @@
     "audit:report": "node --import tsx scripts/generate-audit-report.ts",
     "sweep": "node --import tsx src/scripts/sweepGuardrails.ts",
     "research": "node --import tsx src/scripts/research.ts",
-    "report:final": "node --import tsx scripts/render-report.ts"
+    "report:final": "node --import tsx scripts/render-report.ts",
+    "sweep:exits": "node --import tsx src/scripts/sweepExits.ts"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.1",

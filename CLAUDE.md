@@ -17,7 +17,8 @@ node --import tsx --test --test-name-pattern "impermanent" src/tests/math.test.t
 
 npm run test:local       # 5-stage pre-deploy smoke test (temp DB, live upstreams)
 npm run research         # inefficiency research: failure clusters + score + out-of-sample
-npm run sweep            # grid-search the risk guardrails against the cached dataset
+npm run sweep            # grid-search the ENTRY guardrails against the cached dataset
+npm run sweep:exits      # grid-search TAKE_PROFIT_PCT / STOP_LOSS_PCT, split in/out-of-sample
 npm run audit:report     # backtest JSON -> reports/backtest-audit.html (print to PDF)
 npm run backtest         # 30-day replay of the live formula; --days --pools --refresh --tp etc.
 npm run dlmm:once        # one screen -> decide -> monitor cycle (monitor included)
@@ -206,6 +207,25 @@ commit (2026-08-29T13:20:40Z) rather than midnight that day, because 13 of the 2
 trades were opened that same morning up to 12:40Z. A date-only cutoff files pre-fix trades
 as clean. Committed-but-not-restarted code has produced no trades, so the operator must
 move the cutoff to the actual restart.
+
+**The backtest has TWO take-profits and they measure different things.**
+`takeProfitFeePct` fires on accumulated FEES as a percentage of notional;
+`takeProfitNetPct` fires on NET PnL (fees + LP value change) and is the one that mirrors
+`evaluateExit`'s `TAKE_PROFIT_PCT` in the live agent. `takeProfitNetPct` defaults to
+Infinity so it is off unless a caller asks for it, which is why adding it changed no
+existing backtest output. Tuning `takeProfitFeePct` and then copying the winner into
+`TAKE_PROFIT_PCT` would be setting a live threshold from a simulation of a different
+quantity — `npm run sweep:exits` disables the fee rule for exactly that reason.
+
+**TAKE_PROFIT_PCT / STOP_LOSS_PCT were measured and deliberately left alone.** The live
+config risks 8% to make 5% — a structural payoff ceiling of 0.63 — and the dry run showed
+avg win $8.76 against avg loss $10.88. `npm run sweep:exits` grid-searched all 64
+combinations with an in/out-of-sample split: payoff > 1 is reachable only by tightening
+the stop to -5%/-6% and disabling the take-profit, and every such setting is WORSE
+out-of-sample than the current one. No combination has positive expectancy in both
+halves; with `--live-entry` the out-of-sample profit factor is 0.00. Do not "fix the
+ratio" by moving these numbers — that is fitting to noise. Re-run the sweep before
+proposing a change, and read the entry rule as the suspect.
 
 **Undefined metrics stay null.** `profitFactor` is null when there are no losing trades; returning
 `Infinity` or `0` would render on the dashboard as a real measurement. Max drawdown runs over the

@@ -67,6 +67,7 @@ const profitFactorLabel = (s: BacktestSummary): string =>
 const EXIT_LABELS: Record<ExitReason, string> = {
   OUT_OF_RANGE: "Out of range",
   FEE_TAKE_PROFIT: "Fee take-profit",
+  TAKE_PROFIT: "Net take-profit",
   TIMEOUT: "Max duration",
   END_OF_DATA: "Open at window end",
   STOP_LOSS: "Stop-loss",
