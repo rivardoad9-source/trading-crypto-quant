@@ -556,3 +556,42 @@ describe("CLOSED_MANUAL is invisible to the anti-churn gates", () => {
     assert.ok(repos.getPoolExitRecord("poolManualWin").lastClosedAt, "a real close still benches");
   });
 });
+
+
+describe("fee accrual is capped to observed time", () => {
+  /*
+   * Restart safety. Fees are rate x (now - last_checked_at); after downtime that span
+   * is however long the engine was off. A 52h gap once would have credited two days of
+   * fees on the first tick, justified by a single in-range check of a period nothing
+   * watched. Total realised PnL across the whole dry run was -$25, so a few dollars of
+   * phantom fees per position is not a rounding error.
+   */
+  it("credits at most MAX_FEE_ACCRUAL_GAP_HOURS, not the whole downtime", async () => {
+    const meteora = await import("../services/meteora.js");
+    const notional = 104.94;
+    const ratio = 0.01;
+
+    const uncapped = meteora.estimateFeeYieldUsd(notional, ratio, 52.6, true);
+    const capped = meteora.estimateFeeYieldUsd(notional, ratio, Math.min(52.6, 1), true);
+
+    assert.ok(uncapped > 2, `the bug was worth real money: $${uncapped.toFixed(2)}`);
+    assert.ok(capped < uncapped / 10, "capping must remove most of the phantom accrual");
+    assert.equal(capped, meteora.estimateFeeYieldUsd(notional, ratio, 1, true));
+  });
+
+  it("still accrues nothing while out of range, however long the gap", async () => {
+    const meteora = await import("../services/meteora.js");
+    // The cap shortens the interval; it must not turn an out-of-range position into an
+    // earning one, and zero stays zero at every interval length.
+    for (const hours of [0.5, 1, 52.6]) {
+      assert.equal(meteora.estimateFeeYieldUsd(104.94, 0.01, hours, false), 0);
+    }
+  });
+
+  it("accrues nothing for a non-positive interval", async () => {
+    const meteora = await import("../services/meteora.js");
+    // hoursSince() floors negatives at 0; a clock skew must never pay fees.
+    assert.equal(meteora.estimateFeeYieldUsd(104.94, 0.01, 0, true), 0);
+    assert.equal(meteora.estimateFeeYieldUsd(104.94, 0.01, -5, true), 0);
+  });
+});

@@ -255,6 +255,15 @@ permanently. All sources failing still returns null — fallbacks reduce how oft
 engine cannot size a position; they never license inventing a price. BTC/ETH have no
 fallback on purpose: nothing sizes a position from them.
 
+**Fee accrual is capped to time the engine actually observed.** Fees are
+`rate x (now - last_checked_at)`, so after downtime that interval is the whole outage.
+`valuateAtPrice` clamps it to `MAX_FEE_ACCRUAL_GAP_HOURS` (default 1h) and warns when it
+does. Removing the clamp would credit days of fees on the first tick after a restart,
+justified by a single in-range check of a period nothing watched — three stale positions
+were worth $3.45-$13.80 of phantom fees against a dry run whose total realised PnL was
+-$25.46. Unobserved time is not evidence of earning; same fail-closed rule as the
+anti-rug and volatility gates.
+
 **Undefined metrics stay null.** `profitFactor` is null when there are no losing trades; returning
 `Infinity` or `0` would render on the dashboard as a real measurement. Max drawdown runs over the
 realised curve only — adding floating PnL would make it non-reproducible from history.
