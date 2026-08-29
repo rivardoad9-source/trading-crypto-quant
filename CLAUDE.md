@@ -20,7 +20,7 @@ npm run research         # inefficiency research: failure clusters + score + out
 npm run sweep            # grid-search the risk guardrails against the cached dataset
 npm run audit:report     # backtest JSON -> reports/backtest-audit.html (print to PDF)
 npm run backtest         # 30-day replay of the live formula; --days --pools --refresh --tp etc.
-npm run dlmm:once        # one screen -> decide -> monitor cycle
+npm run dlmm:once        # one screen -> decide -> monitor cycle (monitor included)
 npm run research:once    # one macro research run
 npm run smoke            # probe every external API, print screener output + rejection counts
 npm run seed:demo        # demo positions marked [DEMO]; npm run db:reset clears everything
@@ -53,8 +53,12 @@ read-only view and holds no trading logic.
   array, so they are testable without a database.
 - `src/services/http.ts` — `getJson` retries 429/5xx and fails fast on 4xx; `getJsonSafe` never
   throws, so one dead upstream can't abort a whole cycle.
-- `src/index.ts` — cron schedulers wrapped in `withLock`. Overlapping ticks would double-accrue fees
-  on the same interval; keep the lock.
+- `src/index.ts` — cron schedulers wrapped in `withLock`. Two position-facing clocks: the 60s fast
+  monitor (`CRON.FAST_MONITOR`) marks open positions and fires exits; the 10m screener
+  (`CRON.DLMM_LOOP`) does the 600-pool scan and the DeepSeek entry decision, and skips its own
+  monitor stage while the fast monitor is enabled. `withLock` only stops a job overlapping itself —
+  cross-job safety is `positionMutex` in `src/services/mutex.ts`. Overlapping ticks would
+  double-accrue fees on the same interval; keep both locks.
 
 ## Correctness constraints
 
@@ -159,6 +163,31 @@ screener. Do not "make it consistent" with the fail-closed rule.
 box, enough for a 4-hour cooldown to expire before it started. Parse stored timestamps through
 `parseDbTimestamp` in `meteora.ts`; the cooldown gate and the position monitor share it so they
 cannot drift apart on the interpretation.
+
+**Every write to `simulated_positions` happens under `positionMutex`.** Three clocks now
+mutate positions: the 60s fast monitor, the 10m screener, and Telegram `/close_all`. Fee
+accrual is `rate x (now - last_checked_at)`, so two overlapping passes measure from the
+same stored timestamp and book the same interval twice; both could also read a row as
+ACTIVE and close it independently. The `withLock` wrappers in `index.ts` only stop a cron
+job overlapping *itself* — they are not a substitute. The fast monitor uses `tryRun` and
+**skips** when contended (the holder is already valuing the same rows against fresher
+prices); `/close_all` and the entry write use `run` and queue, because those must happen.
+
+**The fast monitor must price from Meteora, not DexScreener.** `entry_price`,
+`lower_bin_price` and `upper_bin_price` are all persisted from `DlmmPool.currentPrice`.
+Marking a position against a differently-derived price — DexScreener's `priceUsd`, or a
+`priceNative` computed off another reserve pair — compares two different quantities and
+can fire a stop-loss or an out-of-range exit on a unit mismatch instead of a real move.
+`fetchPoolsByAddresses` exists to make the same-source read cheap, not to add a source.
+
+**The loss-history block is evidence, not decoration.** `summariseLossHistory`
+reconstructs each past range from the stored bin prices, which is the range the position
+actually ran after `computeBinRange` applied its floors — quoting what the model
+originally asked for would teach it from a range that never existed. Failures without a
+written post-mortem are excluded rather than padded, and an empty history is stated as
+`RECENT LOSSES: UNAVAILABLE`. Same contract as the macro metrics: absent data is named,
+never invented. The adaptive widening the prompt permits is bounded by
+`MIN_DOWNSIDE_COVER_PCT` / `MIN_UPSIDE_COVER_PCT`, which `computeBinRange` still clamps.
 
 **Undefined metrics stay null.** `profitFactor` is null when there are no losing trades; returning
 `Infinity` or `0` would render on the dashboard as a real measurement. Max drawdown runs over the

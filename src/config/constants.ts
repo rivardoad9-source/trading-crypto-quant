@@ -2,8 +2,17 @@
 export const CRON = {
   /** Daily macro research report at 07:00 WIB. */
   DAILY_MACRO: "0 7 * * *",
-  /** DLMM screener + position monitor every 10 minutes. */
+  /** DLMM screener every 10 minutes: 600-pool scan, GeckoTerminal volume, DeepSeek. */
   DLMM_LOOP: "*/10 * * * *",
+  /**
+   * Position monitor every 60 seconds.
+   *
+   * Deliberately 10x the screener's rate. Exit thresholds are only as tight as the
+   * interval that tests them: at 10 minutes the dry run overshot a -8% stop-loss to
+   * -13.84%. This loop touches only open positions, so it carries none of the
+   * screener's rate-limited upstreams.
+   */
+  FAST_MONITOR: "* * * * *",
   /** Roll up closed trades into daily_pnl_snapshots just before midnight. */
   DAILY_SNAPSHOT: "55 23 * * *",
 } as const;

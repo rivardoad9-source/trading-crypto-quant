@@ -9,9 +9,11 @@ import {
   estimateFeeYieldUsd,
   fetchLivePools,
   fetchPoolByAddress,
+  fetchPoolsByAddresses,
   filterPoolsOnCooldown,
   hoursSince,
   isOutOfRange,
+  parseDbTimestamp,
   riskMintOf,
   screenPools,
   valuePosition,
@@ -26,6 +28,7 @@ import {
   fetchSolPriceUsd,
 } from "../services/marketData.js";
 import { isDeepSeekAvailable, structuredCompletion } from "../services/deepseek.js";
+import { positionMutex } from "../services/mutex.js";
 import {
   getPriorityFeeEstimateSafe,
   screenTokenSafety,
@@ -41,6 +44,7 @@ import {
   getActivePositions,
   getPoolExitHistory,
   getPoolExitRecord,
+  getRecentFailurePostMortems,
   getPositionById,
   hasActivePositionForPool,
   insertPosition,
@@ -83,6 +87,25 @@ Decision rules:
   earns more per unit of liquidity but goes inactive sooner. Typical values are 2-15.
 - strategy: SPOT for balanced two-sided liquidity, BID_ASK for volatile pairs where
   you want depth at the edges, CURVE for tight mean-reverting pairs.
+
+Adaptive range sizing — bounded improvisation:
+- The user message may contain a RECENT LOSSES block: your own last losing positions,
+  each with the range you chose, how it closed, and the post-mortem written afterwards.
+  Treat it as evidence about this market regime, not as a rule.
+- If those losses are dominated by price leaving the range — out-of-range closes, wicks,
+  false breakouts, or post-mortems describing choppy or whipsawing conditions — then
+  WIDEN binRangeDownsideCoverPct and binRangeUpsideCoverPct beyond your first instinct.
+  A range that survives the noise keeps earning; a range that gets wicked out pays gas
+  and exit slippage for nothing and the pool is then benched by a cooldown.
+- If instead the losses came from sustained one-directional moves, a wider range would
+  only have lost more slowly. Prefer SKIP over widening in that case.
+- Widening is not free: the same liquidity spread over a wider range earns less per unit
+  of price movement. Say in your thesis why the width you chose is worth it.
+- NEVER propose a value below the floors quoted in the user message. The engine clamps
+  anything lower, so a smaller number is not a tighter range — it is just your reasoning
+  being overridden.
+- With no RECENT LOSSES block there is no evidence of a regime. Size the range on the
+  candidate's own metrics and do not invent a loss history to justify a width.
 - confidenceScore reflects conviction, 0-100.
 - thesis: at most 200 characters, factual, referencing the metrics you were given.
 
@@ -99,10 +122,46 @@ Respond with ONLY a JSON object. Every key below is REQUIRED, including on a SKI
   "thesis":       string  // HARD LIMIT 200 characters, one or two sentences
 }`;
 
-function buildCandidatePrompt(
+/**
+ * Condenses recent losing closes into prompt lines.
+ *
+ * The realised range is reconstructed from the stored prices rather than from the
+ * model's original request, so the block reports the range the position ACTUALLY had
+ * after `computeBinRange` applied its floors — showing the asked-for width would teach
+ * the model from a range that never existed.
+ *
+ * A pure function over rows so it is testable without a database.
+ */
+export function summariseLossHistory(rows: SimulatedPositionRow[]): string[] {
+  const lines: string[] = [];
+
+  for (const row of rows) {
+    const entry = row.entry_price;
+    const range =
+      entry > 0 && row.lower_bin_price > 0 && row.upper_bin_price > 0
+        ? `-${(((entry - row.lower_bin_price) / entry) * 100).toFixed(1)}%/` +
+          `+${(((row.upper_bin_price - entry) / entry) * 100).toFixed(1)}%`
+        : "unknown";
+
+    const pnl = typeof row.realized_pnl_pct === "number" ? `${row.realized_pnl_pct.toFixed(2)}%` : "unknown";
+    const held = hoursBetween(row.opened_at, parseDbTimestamp(row.closed_at) ?? new Date());
+
+    lines.push(
+      `- ${row.pair_name}: closed ${row.status} at ${pnl} after ${held.toFixed(1)}h ` +
+        `with range ${range}.`,
+      `  reason: ${row.close_reason ?? "unknown"}`,
+      `  lesson: ${(row.post_mortem ?? "").trim()}`,
+    );
+  }
+
+  return lines;
+}
+
+export function buildCandidatePrompt(
   candidates: ScreenedPool[],
   solPriceUsd: number,
   priorityFee: PriorityFeeEstimate | null,
+  lossHistory: SimulatedPositionRow[] = [],
 ): string {
   const lines: string[] = [
     `SOL/USD: $${solPriceUsd.toFixed(2)}`,
@@ -121,6 +180,31 @@ function buildCandidatePrompt(
     );
   } else {
     lines.push(`Estimated Solana transaction cost: UNAVAILABLE (do not assume it is zero).`);
+  }
+
+  /*
+   * Range floors are quoted so the model can reason inside the constraint instead of
+   * proposing a width the engine will silently widen anyway.
+   */
+  lines.push(
+    "",
+    `Bin range floors enforced by the engine: downside >= ${env.MIN_DOWNSIDE_COVER_PCT}%, ` +
+      `upside >= ${env.MIN_UPSIDE_COVER_PCT}%. Anything smaller is clamped up to these.`,
+  );
+
+  const lossLines = summariseLossHistory(lossHistory);
+  if (lossLines.length > 0) {
+    lines.push(
+      "",
+      `RECENT LOSSES (your last ${lossHistory.length} losing closes, newest first):`,
+      ...lossLines,
+    );
+  } else {
+    lines.push(
+      "",
+      "RECENT LOSSES: UNAVAILABLE — no losing close carries a post-mortem yet. Do not " +
+        "assume a market regime you have no evidence for.",
+    );
   }
 
   lines.push("", "All candidates below already passed an anti-rug screen.", "", "CANDIDATE POOLS:");
@@ -414,15 +498,29 @@ function valuateAtPrice(
   };
 }
 
+/**
+ * One valuation pass over every open position.
+ *
+ * Prices are fetched for the whole set up front rather than per position inside the
+ * loop: at MAX_CONCURRENT_POSITIONS = 3 that turns three serial round trips into one,
+ * which is what makes a 60-second cadence affordable. It also means every position in
+ * a pass is marked against prices read at the same instant, so two positions on the
+ * same pool cannot disagree about the price within one tick.
+ *
+ * Callers must hold `positionMutex`.
+ */
 async function monitorOpenPositions(): Promise<MonitorSummary> {
   const positions = getActivePositions();
   const summary: MonitorSummary = { checked: 0, closed: 0, stale: 0, reflected: 0 };
+  if (positions.length === 0) return summary;
+
+  const pools = await fetchPoolsByAddresses(positions.map((p) => p.pool_address));
   const now = new Date();
 
   for (const row of positions) {
     summary.checked++;
 
-    const pool = await fetchPoolByAddress(row.pool_address);
+    const pool = pools.get(row.pool_address);
     if (!pool || !(pool.currentPrice > 0)) {
       // Leave the position untouched rather than marking it against a stale price.
       summary.stale++;
@@ -508,6 +606,56 @@ async function monitorOpenPositions(): Promise<MonitorSummary> {
   return summary;
 }
 
+export interface FastMonitorResult extends MonitorSummary {
+  /** False when the tick gave up because a screener or /close_all held the lock. */
+  ran: boolean;
+}
+
+/**
+ * The 1-minute position monitor.
+ *
+ * Exists because exit thresholds were being blown straight through. On a 10-minute
+ * cadence the 27-trade dry run fired its stop-loss at a median -9.79% and a worst
+ * -13.84% against a -8% threshold: price crossed the level and kept going while the
+ * engine was between ticks. Nothing was wrong with `evaluateExit`; it simply was not
+ * asked often enough. Checking every 60 seconds bounds that overshoot to whatever the
+ * pool moves in a minute.
+ *
+ * It carries no screening, no LLM call and no macro data — only the positions already
+ * open, so it stays cheap enough to run 10x more often than the screener while the
+ * heavy 600-pool scan and its rate-limited upstreams stay on the 10-minute clock.
+ *
+ * A tick that cannot take the lock returns `ran: false` and does nothing. That is not
+ * a missed check: the holder is the screener's own monitor pass or /close_all, both of
+ * which value the same positions against fresher prices than this tick would have.
+ */
+export async function runFastPositionMonitor(): Promise<FastMonitorResult> {
+  const idle: FastMonitorResult = { ran: false, checked: 0, closed: 0, stale: 0, reflected: 0 };
+
+  // Cheap pre-check: no open positions means no reason to take the lock at all.
+  if (countActivePositions() === 0) return idle;
+
+  const outcome = await positionMutex.tryRun(async () => {
+    try {
+      return await monitorOpenPositions();
+    } catch (err) {
+      // A fast tick must never take the process down; the next one is 60s away.
+      console.error("[fast-monitor] pass failed:", err);
+      return null;
+    }
+  });
+
+  if (!outcome.ran || outcome.value === null) return idle;
+
+  const summary = outcome.value;
+  if (summary.closed > 0 || summary.stale > 0) {
+    console.log(
+      `[fast-monitor] checked ${summary.checked}, closed ${summary.closed}, stale ${summary.stale}`,
+    );
+  }
+  return { ran: true, ...summary };
+}
+
 /* ------------------------------------------------------------------ */
 /* Stage: emergency manual close (Telegram /close_all)                 */
 /* ------------------------------------------------------------------ */
@@ -545,6 +693,20 @@ export async function forceCloseAllPositions(options: {
   fetchPool?: ManualClosePoolSource;
   reflect?: (row: SimulatedPositionRow) => Promise<string | null>;
 } = {}): Promise<ManualCloseResult> {
+  /*
+   * Queued on the position lock rather than skipped: an operator asking for a flat book
+   * must not lose the race to a monitor tick that happened to start first. Waiting also
+   * guarantees the active list read below is not one a concurrent pass is mid-way
+   * through closing.
+   */
+  return positionMutex.run(() => closeAllPositionsLocked(options));
+}
+
+async function closeAllPositionsLocked(options: {
+  reason?: string;
+  fetchPool?: ManualClosePoolSource;
+  reflect?: (row: SimulatedPositionRow) => Promise<string | null>;
+}): Promise<ManualCloseResult> {
   const reason = options.reason ?? "Emergency manual close via Telegram /close_all";
   const fetchPool = options.fetchPool ?? fetchPoolByAddress;
   const reflect = options.reflect ?? reflectOnPosition;
@@ -956,6 +1118,12 @@ async function seekNewEntry(): Promise<EntrySummary> {
       top.map((t) => t.pool),
       solPriceUsd,
       priorityFee,
+      /*
+       * In-context learning: the last few losing closes, so the model sizes this range
+       * against how its recent ranges actually behaved instead of judging every
+       * candidate from a blank slate.
+       */
+      getRecentFailurePostMortems(env.LOSS_CONTEXT_TRADES),
     ),
     schema: DLMMPoolDecisionSchema,
     reasoning: true,
@@ -1000,31 +1168,51 @@ async function seekNewEntry(): Promise<EntrySummary> {
   const roundTripGasUsd =
     priorityFee && priorityFee.totalUsd !== null ? priorityFee.totalUsd * 2 : null;
 
-  insertPosition({
-    positionId,
-    poolAddress: chosen.address,
-    pairName: chosen.pairName,
-    strategyType: decision.strategy,
-    entryPrice: chosen.currentPrice,
-    lowerBinPrice: lower,
-    upperBinPrice: upper,
-    virtualSolAmount: env.VIRTUAL_SOL_PER_POSITION,
-    entryTvl: chosen.tvlUsd,
-    entry24hVolume: chosen.volume24hUsd,
-    confidenceScore: decision.confidenceScore,
-    reasoningLog: decision.thesis,
-    entrySolPriceUsd: solPriceUsd,
-    top10HolderPct: chosenEntry?.safety?.top10Pct ?? null,
-    mintAuthorityRevoked: chosenEntry?.safety?.mintAuthorityRevoked ?? null,
-    freezeAuthorityRevoked: chosenEntry?.safety?.freezeAuthorityRevoked ?? null,
-    safetyVerdict: chosenEntry?.safety?.verdict ?? "SKIPPED",
-    // A round trip is two transactions: open the position, then close it. Stays null
-    // when the estimate is unavailable — recording 0 would assert the trip was free.
-    estGasCostUsd: roundTripGasUsd,
-    estPriorityMicroLamports: priorityFee?.microLamportsPerCu ?? null,
-    breakevenCoverageRatio: chosenEntry?.breakeven?.coverageRatio ?? null,
-    expectedFee24hUsd: chosenEntry?.breakeven?.expectedFee24hUsd ?? null,
+  /*
+   * The one write this function makes, taken under the shared lock so the invariant
+   * stays simple and auditable: every mutation of simulated_positions happens with
+   * positionMutex held. The capacity re-check inside is not redundant — minutes of LLM
+   * and RPC latency separate the check at the top of this function from this write.
+   */
+  const openedUnderLock = await positionMutex.run(async () => {
+    const live = countActivePositions();
+    if (live >= env.MAX_CONCURRENT_POSITIONS) {
+      return false;
+    }
+
+    insertPosition({
+      positionId,
+      poolAddress: chosen.address,
+      pairName: chosen.pairName,
+      strategyType: decision.strategy,
+      entryPrice: chosen.currentPrice,
+      lowerBinPrice: lower,
+      upperBinPrice: upper,
+      virtualSolAmount: env.VIRTUAL_SOL_PER_POSITION,
+      entryTvl: chosen.tvlUsd,
+      entry24hVolume: chosen.volume24hUsd,
+      confidenceScore: decision.confidenceScore,
+      reasoningLog: decision.thesis,
+      entrySolPriceUsd: solPriceUsd,
+      top10HolderPct: chosenEntry?.safety?.top10Pct ?? null,
+      mintAuthorityRevoked: chosenEntry?.safety?.mintAuthorityRevoked ?? null,
+      freezeAuthorityRevoked: chosenEntry?.safety?.freezeAuthorityRevoked ?? null,
+      safetyVerdict: chosenEntry?.safety?.verdict ?? "SKIPPED",
+      // A round trip is two transactions: open the position, then close it. Stays null
+      // when the estimate is unavailable — recording 0 would assert the trip was free.
+      estGasCostUsd: roundTripGasUsd,
+      estPriorityMicroLamports: priorityFee?.microLamportsPerCu ?? null,
+      breakevenCoverageRatio: chosenEntry?.breakeven?.coverageRatio ?? null,
+      expectedFee24hUsd: chosenEntry?.breakeven?.expectedFee24hUsd ?? null,
+    });
+    return true;
   });
+
+  if (!openedUnderLock) {
+    summary.skipReason = `filled to capacity (${env.MAX_CONCURRENT_POSITIONS}) while deciding`;
+    console.warn(`[dlmm] ${summary.skipReason}`);
+    return summary;
+  }
 
   summary.opened = true;
 
@@ -1060,11 +1248,25 @@ export interface CycleResult {
   postMortemsBackfilled: number;
 }
 
+export interface CycleOptions {
+  /**
+   * Skip the monitor stage and only look for a new entry.
+   *
+   * Set by the 10-minute scheduler, because the 1-minute fast monitor owns position
+   * marking there and a second pass 10 minutes apart adds nothing. Left false for
+   * `npm run dlmm:once`, the smoke test and any manual trigger, where "one cycle" is
+   * expected to mean screen AND monitor.
+   */
+  skipMonitor?: boolean;
+}
+
 /**
  * One full paper-trading cycle: mark open positions, then look for a new entry.
  * Runs every 10 minutes via cron; also exported for manual triggering.
  */
-export async function runDlmmTradingCycle(): Promise<CycleResult | null> {
+export async function runDlmmTradingCycle(
+  options: CycleOptions = {},
+): Promise<CycleResult | null> {
   // Belt-and-braces: env.ts already refuses to boot unless DRY_RUN is true.
   if (!env.DRY_RUN) {
     throw new Error("[dlmm] refusing to run: DRY_RUN is false and live execution is unimplemented.");
@@ -1073,7 +1275,13 @@ export async function runDlmmTradingCycle(): Promise<CycleResult | null> {
   console.log("[dlmm] cycle start");
 
   try {
-    const monitor = await monitorOpenPositions();
+    /*
+     * Under the shared lock, and queued rather than skipped: unlike a fast tick, this
+     * pass is the only monitoring a manual `dlmm:once` run will ever get.
+     */
+    const monitor = options.skipMonitor
+      ? { checked: 0, closed: 0, stale: 0, reflected: 0 }
+      : await positionMutex.run(monitorOpenPositions);
 
     // /pause stops scanning for new entries but keeps monitoring open positions,
     // so existing ones still accrue, exit and reflect normally.

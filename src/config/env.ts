@@ -215,6 +215,25 @@ const EnvSchema = z
     /** "reject" (fail closed) or "allow" when the 24h change is unavailable. */
     VOLATILITY_ON_UNKNOWN: z.enum(["reject", "allow"]).default("reject"),
 
+    /**
+     * How many recent losing closes are quoted back to the model when it picks a pool.
+     *
+     * Only closes that already carry a post-mortem count. Kept small on purpose: the
+     * block is evidence about the current regime, and a long tail of old trades from a
+     * different market would dilute rather than inform. 0 disables the block.
+     */
+    LOSS_CONTEXT_TRADES: numeric(5),
+
+    /* ---- Fast position monitor ---- */
+    /**
+     * Runs the position monitor every 60s, decoupled from the 10-minute screener.
+     *
+     * On for good reason: the 10-minute cadence let a -8% stop-loss close at -13.84%
+     * because price crossed the threshold between ticks. Turn it off only to fall back
+     * to monitoring at screener cadence, and expect that overshoot back.
+     */
+    FAST_MONITOR_ENABLED: booleanish(true),
+
     /* ---- Pool cooldown & failure lockout (anti-churn) ---- */
     /*
      * Live paper trading showed the engine re-entering the same pool minutes after
