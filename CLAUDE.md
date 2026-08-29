@@ -176,3 +176,35 @@ Exits are dominated by out-of-range and timeout.
 during the build — the Meteora endpoint (`dlmm-api.meteora.ag/pair/all_by_groups` is 404; use
 `dlmm.datapi.meteora.ag/pools`) and Farside as an ETF source. `README.md` documents the derivations
 of every reported number.
+
+## Telegram control commands
+
+The orchestrator starts a long-polling command bot (`startTelegramCommands` in
+`src/services/telegramCommands.ts`) alongside the schedulers. Only the owner's
+user IDs (comma-separated `TELEGRAM_ALLOWED_USER_IDS`, empty = deny all) may run
+them:
+
+- `/status` — the same KPI payload as `GET /api/overview` (shared via
+  `src/services/overview.ts`), plus engine pause state and open positions.
+- `/close_all` — emergency close of every active position (`CLOSED_MANUAL`
+  status). Values at the live pool price; falls back to the last stored price
+  (flagged stale) when the pool is unreachable; positions with neither are
+  reported failed and stay open.
+- `/pause` / `/resume` — in-memory engine control (`src/services/engineControl.ts`).
+  Paused engines skip `seekNewEntry` but keep monitoring/accruing/closing open
+  positions. The flag resets to running on restart.
+
+Pitfalls that cost real debugging time:
+
+- **Never call `getUpdates` manually on this bot while it runs.** The engine's
+  long-poll and a manual call 409 each other; the engine's poll gets terminated
+  and `launch()`'s error is easy to misread as "bot broken". Confirm polling
+  with `getMe`/outgoing sends, or a one-shot `getUpdates` only when the engine
+  is down.
+- **`Telegraf.launch()` never resolves** — it awaits the infinite update loop,
+  so readiness is logged immediately after calling it, not in `.then()`.
+- **Command replies must be MarkdownV2-escaped in one pass.** Use
+  `markdownV2()` (escapes everything except `**bold**` spans); per-value
+  sanitization leaks static `(`/`)` and makes Telegram reject the message with
+  "can't parse entities". `replyMarkdown` falls back to plain text if escaping
+  still fails.

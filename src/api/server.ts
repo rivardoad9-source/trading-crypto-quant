@@ -7,23 +7,12 @@ import {
   getActivePositions,
   getClosedPositions,
   getLatestResearch,
-  getLifetimeStats,
   getPositionById,
-  getRealisedPnlSeries,
   getResearchHistory,
-  getStatsForDate,
-  getTotalFloatingPnlUsd,
-  getTotalUnclaimedFeesUsd,
 } from "../database/repositories.js";
-import { computeMaxDrawdown, computeProfitFactor } from "../services/metrics.js";
+import { computeOverview } from "../services/overview.js";
 import { localDateString } from "../agents/researcherAgent.js";
 import type { SimulatedPositionRow } from "../database/types.js";
-
-/**
- * The dashboard's notional starting balance. The engine deploys zero capital, so
- * "balance" is a simulation baseline plus realised PnL, not a custodial figure.
- */
-const STARTING_BALANCE_USD = 1000;
 
 const serverStartedAt = Date.now();
 
@@ -99,58 +88,7 @@ export function buildServer(): FastifyInstance {
     isDryRun: env.DRY_RUN,
   }));
 
-  app.get("/api/overview", async () => {
-    const lifetime = getLifetimeStats();
-    const today = getStatsForDate(localDateString());
-    const floating = getTotalFloatingPnlUsd();
-    const unclaimedFees = getTotalUnclaimedFeesUsd();
-    const active = getActivePositions();
-
-    const currentBalanceUSD = STARTING_BALANCE_USD + lifetime.realizedPnlUsd;
-    const currentEquityUSD = currentBalanceUSD + floating;
-
-    const activeNotional = active.reduce(
-      (sum, r) => sum + (r.entry_sol_price_usd ?? 0) * r.virtual_sol_amount,
-      0,
-    );
-
-    // Both metrics run over the realised equity curve, oldest close first. Floating
-    // PnL is excluded so the figures are reproducible from stored history.
-    const pnlSeries = getRealisedPnlSeries();
-    const drawdown = computeMaxDrawdown(pnlSeries, STARTING_BALANCE_USD);
-    const profit = computeProfitFactor(pnlSeries);
-
-    return {
-      currentBalanceUSD,
-      currentEquityUSD,
-      liveFloatingPnLUSD: floating,
-      liveFloatingPnLPct: activeNotional > 0 ? (floating / activeNotional) * 100 : 0,
-      todayRealizedPnLUSD: today.realizedPnlUsd,
-      todayClosedTrades: today.totalClosed,
-      totalSimulatedTrades: lifetime.totalClosed,
-      winRatePct: lifetime.totalClosed > 0 ? (lifetime.wins / lifetime.totalClosed) * 100 : 0,
-      totalWins: lifetime.wins,
-      totalLosses: lifetime.losses,
-      unclaimedFeesUSD: unclaimedFees,
-      activePositionsCount: active.length,
-      startingBalanceUSD: STARTING_BALANCE_USD,
-
-      // Risk metrics over closed trades.
-      maxDrawdownPct: drawdown.maxDrawdownPct,
-      maxDrawdownUSD: drawdown.maxDrawdownUsd,
-      currentDrawdownPct: drawdown.currentDrawdownPct,
-      drawdownPeakUSD: drawdown.peakEquityUsd,
-      drawdownTroughUSD: drawdown.troughEquityUsd,
-      /** null when undefined, i.e. no closed trades or no losing trades yet. */
-      profitFactor: profit.profitFactor,
-      grossProfitUSD: profit.grossProfitUsd,
-      grossLossUSD: profit.grossLossUsd,
-      serverStatus: "ONLINE" as const,
-      isDryRun: env.DRY_RUN,
-      serverTime: new Date().toISOString(),
-      timezone: env.TZ,
-    };
-  });
+  app.get("/api/overview", async () => computeOverview());
 
   app.get("/api/positions/active", async () => ({
     positions: getActivePositions().map(toPositionDto),

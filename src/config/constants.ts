@@ -22,6 +22,8 @@ export const POSITION_STATUS = {
   CLOSED_LOSS: "CLOSED_LOSS",
   CLOSED_OUT_OF_RANGE: "CLOSED_OUT_OF_RANGE",
   CLOSED_TIMEOUT: "CLOSED_TIMEOUT",
+  /** Emergency manual close via the Telegram /close_all command. */
+  CLOSED_MANUAL: "CLOSED_MANUAL",
 } as const;
 
 export type PositionStatus = (typeof POSITION_STATUS)[keyof typeof POSITION_STATUS];
@@ -31,15 +33,17 @@ export const CLOSED_STATUSES: PositionStatus[] = [
   POSITION_STATUS.CLOSED_LOSS,
   POSITION_STATUS.CLOSED_OUT_OF_RANGE,
   POSITION_STATUS.CLOSED_TIMEOUT,
+  POSITION_STATUS.CLOSED_MANUAL,
 ];
 
 /**
  * Closes that count towards the per-pool circuit breaker.
  *
  * Deliberately narrower than CLOSED_STATUSES: a timeout is a neutral outcome (the
- * position simply aged out while still in range) and a profit obviously is not a
- * failure. Only a stop-loss or a range exit says the pool moved against the range we
- * chose, which is the pattern the lockout is meant to interrupt.
+ * position simply aged out while still in range), a manual close is the operator's
+ * decision rather than the pool's, and a profit obviously is not a failure. Only a
+ * stop-loss or a range exit says the pool moved against the range we chose, which is
+ * the pattern the lockout is meant to interrupt.
  *
  * Note that with the default STOP_LOSS_PCT the stop is nearly unreachable, so in
  * practice the run is built almost entirely out of CLOSED_OUT_OF_RANGE.
@@ -52,6 +56,13 @@ export const FAILURE_STATUSES: PositionStatus[] = [
 export function isFailureStatus(status: string): boolean {
   return (FAILURE_STATUSES as string[]).includes(status);
 }
+
+/**
+ * The dashboard's (and Telegram /status) notional starting balance. The engine
+ * deploys zero capital, so "balance" is a simulation baseline plus realised PnL,
+ * not a custodial figure.
+ */
+export const STARTING_BALANCE_USD = 1000;
 
 export const STRATEGY_TYPES = ["SPOT", "BID_ASK", "CURVE"] as const;
 export type StrategyType = (typeof STRATEGY_TYPES)[number];

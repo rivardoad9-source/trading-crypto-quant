@@ -9,12 +9,19 @@ const bot = hasTelegram ? new Telegraf(env.TELEGRAM_BOT_TOKEN as string) : null;
 const chatId = env.TELEGRAM_CHAT_ID;
 
 /** Escapes the characters Telegram's legacy Markdown parser treats as syntax. */
-function sanitize(text: string): string {
-  return text.replace(/[_*[\]()~`>#+=|{}.!-]/g, (m) => `\\${m}`);
+export function sanitize(text: string): string {
+  // Backslash built via fromCharCode so this file never needs a literal \\ escape.
+  const esc = String.fromCharCode(92);
+  const specials = "_*[]()~`>#+=|{}.!-" + esc;
+  let out = "";
+  for (const ch of text) {
+    out += specials.includes(ch) ? esc + ch : ch;
+  }
+  return out;
 }
 
 /** Telegram rejects messages over 4096 characters. */
-function chunk(text: string, size = 3800): string[] {
+export function chunk(text: string, size = 3800): string[] {
   if (text.length <= size) return [text];
 
   const parts: string[] = [];
@@ -27,6 +34,11 @@ function chunk(text: string, size = 3800): string[] {
   }
   if (rest.trim()) parts.push(rest);
   return parts;
+}
+
+/** The shared Telegraf instance, or null when Telegram is not configured. */
+export function getTelegramBot(): Telegraf | null {
+  return bot;
 }
 
 export function isTelegramEnabled(): boolean {

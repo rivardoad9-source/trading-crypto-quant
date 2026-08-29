@@ -6,6 +6,7 @@ import { runMacroResearcher } from "./agents/researcherAgent.js";
 import { runDlmmTradingCycle } from "./agents/dlmmTraderAgent.js";
 import { runDailySnapshot } from "./agents/snapshotJob.js";
 import { startApiServer, stopApiServer } from "./api/server.js";
+import { startTelegramCommands, stopTelegramCommands } from "./services/telegramCommands.js";
 
 /**
  * Serialises cron jobs. A 10-minute DLMM cycle that overruns must not overlap the
@@ -50,6 +51,7 @@ async function main(): Promise<void> {
   initDatabase();
 
   await startApiServer();
+  startTelegramCommands();
 
   const tasks = [
     cron.schedule(CRON.DAILY_MACRO, withLock("macro", runMacroResearcher), { timezone: env.TZ }),
@@ -69,6 +71,7 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string): Promise<void> => {
     console.log(`\n[main] ${signal} received, shutting down…`);
     for (const t of tasks) t.stop();
+    stopTelegramCommands();
     await stopApiServer();
     closeDatabase();
     process.exit(0);
