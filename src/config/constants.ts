@@ -67,6 +67,23 @@ export function isFailureStatus(status: string): boolean {
 }
 
 /**
+ * Closes the anti-churn gates are allowed to see.
+ *
+ * CLOSED_MANUAL is excluded outright — it is the operator flattening the book with
+ * Telegram /close_all, which says nothing about the pool. Two concrete reasons:
+ *
+ *  - Cooldown: benching every pool for POOL_COOLDOWN_HOURS after a /close_all would
+ *    silently disable trading for hours immediately after an operator intervention,
+ *    which is exactly when they are most likely to want it running again.
+ *  - Lockout: the breaker is meant to measure what the POOL did to us. Letting a manual
+ *    close either trip it or clear it would let the operator move the breaker by
+ *    accident in whichever direction they happened to act.
+ */
+export const COOLDOWN_STATUSES: PositionStatus[] = CLOSED_STATUSES.filter(
+  (s) => s !== POSITION_STATUS.CLOSED_MANUAL,
+);
+
+/**
  * The dashboard's (and Telegram /status) notional starting balance. The engine
  * deploys zero capital, so "balance" is a simulation baseline plus realised PnL,
  * not a custodial figure.

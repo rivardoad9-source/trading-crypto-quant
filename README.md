@@ -100,6 +100,12 @@ and forced-exit slippage on every lap. Two rules in `assessPoolCooldown` supply 
 Lockout is evaluated first, being the longer and the more serious of the two. The failure run
 is counted newest-first and **reset by any non-failing close** — a win or a timeout clears it.
 A timeout is deliberately not a failure: the position simply aged out while still in range.
+
+A `CLOSED_MANUAL` close — Telegram `/close_all` — is **invisible to both gates**: it starts no
+cooldown, trips no lockout, and clears no failure run. Benching every pool the operator just
+flattened would silently stop trading for hours right after an intervention, and letting a
+manual close reset the run would un-arm a breaker that two genuine failures had earned. The
+gates measure the pool, not the operator.
 Setting any of the three values to `0` disables that gate; all three are validated as
 non-negative at boot.
 
@@ -297,6 +303,54 @@ price rather than an exit price nobody would have filled. Those trades are repor
 Forward bars are consulted only to decide whether an exit was *executable* — whether there was
 anyone left to sell to. They never inform an entry or exit decision, which would be look-ahead bias
 in the strategy itself.
+
+### Running 24/7 on a VPS
+
+The engine is a single long-lived Node process. These are the things that were wrong for
+that, found in the v1.1 pre-flight audit, and what they are now.
+
+**Crash containment.** `index.ts` registers `unhandledRejection` and `uncaughtException`.
+Since Node 15 an unhandled rejection *terminates the process* — every cron job is wrapped
+in `withLock`, which catches, but one stray floating promise anywhere would have killed
+the engine with no explanation beyond the process being gone. Rejections are logged and
+swallowed (paper trading, no capital at risk, so staying up beats exiting silently);
+uncaught exceptions close the database and exit 1 for the process manager to restart,
+because at that point state may genuinely be corrupt.
+
+**No network calls hold the position lock.** `sendPositionClosed` (Telegram) and
+`reflectOnPosition` (DeepSeek, timeout in minutes) used to be awaited inside
+`monitorOpenPositions`, i.e. while holding `positionMutex`. That silently voided the
+60-second exit guarantee for up to two minutes after *every* close. They are now queued
+as `DeferredCloseWork` and settled after the lock is released. `/close_all` still does
+both under the lock, which is accepted: once it finishes there are no open positions, so
+the fast monitor has nothing it could have been doing.
+
+**Bounded logging.** At 1440 ticks a day, one unreachable pool used to write two lines
+per tick — the same fact from `fetchPoolByAddress` and from the monitor — about 2,880
+lines a day per position. Staleness is now reported on the first tick, then hourly, then
+once on recovery, and the fast monitor logs only when it actually closes something. A
+two-hour outage produces **3 lines instead of 360**.
+
+**Bounded memory.** The only mutable module state is `staleStreaks`, pruned to the live
+position set on every pass, so it is bounded by `MAX_CONCURRENT_POSITIONS` rather than by
+uptime. Cron tasks are created once at boot; no timer is created per tick.
+
+**API failures are visible and graceful.** Fastify runs with `logger: false`, so a route
+that threw was answered 500 and logged **nowhere** — a broken dashboard with no trace on
+the VPS. There is now an error handler that logs 5xx to the console and returns a generic
+body (never the internal message), plus a JSON 404 handler.
+
+**Upstream failure is fail-closed, not fatal.** With every upstream refused, a full cycle
+returns null and the process stays up; the fast monitor marks positions stale and leaves
+them untouched rather than marking against a stale price. DeepSeek is bounded by
+`DEEPSEEK_TIMEOUT_MS` (default 120s) with one retry, instead of the SDK default of 10
+minutes with two — which could stall the screener for half an hour.
+
+**Known single point of failure:** `fetchSolPriceUsd` reads CoinGecko only. If CoinGecko
+is down or rate-limits, the engine refuses to open positions ("refusing to fabricate a
+size") — correct and fail-closed, but it means no trading at all until it recovers. It
+also makes `npm run test:local` report 8 red checks from one 429, because Stage 3 needs a
+SOL price. Re-run after a minute before believing a Stage 3 failure.
 
 ### Local verification (pre-deploy smoke test)
 

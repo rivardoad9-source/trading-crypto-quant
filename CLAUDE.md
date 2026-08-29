@@ -94,6 +94,14 @@ The public Solana RPC blocks `getTokenLargestAccounts` (HTTP 429), so on the def
 candidate is rejected and nothing ever opens. That is correct behaviour; do not "fix" it by
 defaulting `UNKNOWN` to pass. A definitive `FAIL` must stay unoverridable by the error policy.
 
+**CLOSED_MANUAL is invisible to the anti-churn gates.** `COOLDOWN_STATUSES` excludes it,
+so a Telegram `/close_all` neither starts a cooldown, nor trips the lockout, nor clears a
+failure run. Benching every pool after an operator flattens the book would silently stop
+trading for hours at the moment they most likely want it back; and letting a manual close
+reset the run would let the operator un-arm a breaker two genuine failures had earned. The
+breaker measures the pool, not the operator. `CLOSED_STATUSES` still includes it — that
+list answers "is this position finished", which is a different question.
+
 **Three-state booleans.** `mint_authority_revoked` / `freeze_authority_revoked` are stored as
 1 / 0 / **null**, where null means the check never ran. Collapsing null to false would claim an
 authority is live when it was simply never checked. The same rule governs `est_gas_cost_usd`: null
@@ -226,6 +234,17 @@ out-of-sample than the current one. No combination has positive expectancy in bo
 halves; with `--live-entry` the out-of-sample profit factor is 0.00. Do not "fix the
 ratio" by moving these numbers — that is fitting to noise. Re-run the sweep before
 proposing a change, and read the entry rule as the suspect.
+
+**Nothing that does I/O may hold `positionMutex`.** `sendPositionClosed` and
+`reflectOnPosition` are queued as `DeferredCloseWork` and settled by
+`settleClosedPositions` AFTER the lock is released. Awaiting them inside the pass — as the
+code originally did — blocks the 60-second monitor for as long as a DeepSeek call takes,
+silently voiding the exit-timing guarantee the fast monitor exists to provide. Keep new
+work out of the locked section unless it is a local DB write.
+
+**Query-string numbers go through `intParam`.** `Number("1e999")` is Infinity and
+`Number("1.5")` is a float; better-sqlite3 rejects both and the throw surfaced as a bare
+HTTP 500. `Math.max(Number(x) || d, 0)` only guards NaN — it is not enough.
 
 **Undefined metrics stay null.** `profitFactor` is null when there are no losing trades; returning
 `Infinity` or `0` would render on the dashboard as a real measurement. Max drawdown runs over the

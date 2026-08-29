@@ -815,6 +815,39 @@ async function main(): Promise<void> {
       return "400 with an error payload";
     });
 
+    await check("4", "Unknown route answers a clean 404, not an HTML error page", async () => {
+      // With logger:false a thrown route error used to be answered by Fastify's default
+      // handler and logged NOWHERE. The dashboard would break with no trace on the VPS.
+      const res = await fetch(`${base}/does-not-exist`, { signal: AbortSignal.timeout(15_000) });
+      if (res.status !== 404) throw new Error(`expected 404, got ${res.status}`);
+
+      const body = (await res.json()) as { error?: string; statusCode?: number };
+      if (typeof body.error !== "string" || body.statusCode !== 404) {
+        throw new Error(`unexpected 404 body: ${JSON.stringify(body)}`);
+      }
+      return "404 with a JSON error payload";
+    });
+
+    await check("4", "Malformed query params do not crash the API", async () => {
+      // Garbage in every numeric parameter at once; the server must stay up and answer.
+      const urls = [
+        `${base}/positions/history?limit=NaN&offset=-999`,
+        `${base}/positions/history?limit=%00%01&offset=1e999`,
+        `${base}/research/history?limit=abc`,
+        `${base}/positions/${encodeURIComponent("../../etc/passwd")}`,
+      ];
+
+      for (const url of urls) {
+        const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+        if (res.status >= 500) throw new Error(`${url} -> HTTP ${res.status}`);
+      }
+
+      // Still healthy after all of it.
+      const health = await fetch(`${base}/health`, { signal: AbortSignal.timeout(15_000) });
+      if (!health.ok) throw new Error("server unhealthy after malformed input");
+      return `${urls.length} malformed requests handled, server still healthy`;
+    });
+
     await check("4", "Invalid month rejected with 400", async () => {
       const res = await fetch(`${base}/pnl-calendar?month=oops`, {
         signal: AbortSignal.timeout(15_000),

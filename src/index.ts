@@ -105,6 +105,35 @@ async function main(): Promise<void> {
 
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
+
+  /*
+   * Since Node 15 an unhandled rejection TERMINATES the process. Every cron job is
+   * wrapped in withLock, which catches — but one stray floating promise anywhere in a
+   * dependency or a future handler would kill a 24/7 engine outright, and the only
+   * evidence would be the process being gone.
+   *
+   * Logged and swallowed rather than rethrown: this engine is paper-trading with no
+   * capital at risk, so staying up with a loud log beats exiting silently. The next
+   * cron tick re-runs the work from a clean state.
+   */
+  process.on("unhandledRejection", (reason) => {
+    console.error("[main] UNHANDLED REJECTION — engine kept alive:", reason);
+  });
+
+  /*
+   * uncaughtException is different: state may be genuinely corrupt, so this exits
+   * rather than limping on. It closes the database first so the WAL is checkpointed
+   * instead of left for recovery, and a process manager (systemd/pm2) restarts it.
+   */
+  process.on("uncaughtException", (err) => {
+    console.error("[main] UNCAUGHT EXCEPTION — shutting down:", err);
+    try {
+      closeDatabase();
+    } catch {
+      /* already closing, or never opened */
+    }
+    process.exit(1);
+  });
 }
 
 main().catch((err) => {

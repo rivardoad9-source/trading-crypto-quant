@@ -1,5 +1,10 @@
 import { db } from "./db.js";
-import { CLOSED_STATUSES, FAILURE_STATUSES, POSITION_STATUS } from "../config/constants.js";
+import {
+  CLOSED_STATUSES,
+  COOLDOWN_STATUSES,
+  FAILURE_STATUSES,
+  POSITION_STATUS,
+} from "../config/constants.js";
 import { summarisePoolExits, type PoolExitRecord } from "../services/meteora.js";
 import type {
   ClosePositionInput,
@@ -12,6 +17,8 @@ import type {
 
 const CLOSED_LIST = CLOSED_STATUSES.map((s) => `'${s}'`).join(", ");
 const FAILURE_LIST = FAILURE_STATUSES.map((s) => `'${s}'`).join(", ");
+/** Excludes CLOSED_MANUAL — see COOLDOWN_STATUSES for why the operator is invisible here. */
+const COOLDOWN_LIST = COOLDOWN_STATUSES.map((s) => `'${s}'`).join(", ");
 
 /* ------------------------------------------------------------------ */
 /* Engine version cohorts                                              */
@@ -184,7 +191,7 @@ export function getPoolExitHistory(lookbackHours = 24 * 30): Map<string, PoolExi
     .prepare(
       `SELECT pool_address, status, closed_at
          FROM simulated_positions
-        WHERE status IN (${CLOSED_LIST})
+        WHERE status IN (${COOLDOWN_LIST})
           AND closed_at IS NOT NULL
           AND closed_at >= datetime('now', ?)
         ORDER BY closed_at DESC, id DESC`,
@@ -216,7 +223,7 @@ export function getPoolExitRecord(poolAddress: string, limit = 20): PoolExitReco
       `SELECT status, closed_at
          FROM simulated_positions
         WHERE pool_address = ?
-          AND status IN (${CLOSED_LIST})
+          AND status IN (${COOLDOWN_LIST})
           AND closed_at IS NOT NULL
         ORDER BY closed_at DESC, id DESC
         LIMIT ?`,
