@@ -204,3 +204,62 @@ describe("force close all", () => {
     assert.equal(repos.countActivePositions(), 1, "unclosable position stays active");
   });
 });
+
+describe("new read-only commands", () => {
+  it("builds a trades report from closed positions", () => {
+    repos.insertPosition(newPosition("tg-pos-7", "poolG", "GGG-SOL"));
+    repos.closePosition({
+      positionId: "tg-pos-7",
+      status: "CLOSED_PROFIT",
+      exitPrice: 110,
+      realizedPnlUsd: 8.0,
+      realizedPnlPct: 4.0,
+      unclaimedFeeUsd: 1.0,
+      impermanentLossUsd: -1.0,
+      positionValueChangeUsd: 7.0,
+      closeReason: "Take-profit hit.",
+    });
+
+    const text = commands.buildTradesText();
+    assert.match(text, /FlowMetrix Trades/);
+    assert.match(text, /GGG/, "pair appears (MarkdownV2-escaped)");
+    assert.ok(text.includes("GGG\\-SOL"), "pair name hyphen escaped");
+    assert.ok(text.includes("CLOSED\\_PROFIT"), "status appears (MarkdownV2-escaped)");
+    assert.ok(text.includes("\\+$8\\.00"), "realized PnL present and escaped");
+    assert.equal(/[^\\]\(/.test(text), false, "no unescaped '(' reaches Telegram");
+  });
+
+  it("builds a per-day PnL report", () => {
+    const text = commands.buildPnlText();
+    assert.match(text, /FlowMetrix PnL/);
+    assert.match(text, /net/, "per-day net line present");
+    assert.equal(/[^\\]\(/.test(text), false);
+  });
+
+  it("builds a position detail report for an existing id", () => {
+    repos.insertPosition(newPosition("tg-pos-8", "poolH", "HHH-SOL", 50));
+    const text = commands.buildPositionDetailText("tg-pos-8");
+    assert.match(text, /HHH/);
+    assert.match(text, /ACTIVE/);
+    assert.match(text, /in range/);
+    assert.equal(/[^\\]\(/.test(text), false);
+  });
+
+  it("reports a missing position id", () => {
+    const text = commands.buildPositionDetailText("does-not-exist");
+    assert.match(text, /Position not found/);
+  });
+
+  it("builds a research report placeholder when none exists", () => {
+    const text = commands.buildResearchText();
+    assert.match(text, /No research report yet/);
+  });
+
+  it("builds a help list covering every command", () => {
+    const text = commands.buildHelpText();
+    for (const cmd of ["status", "trades", "pnl", "position", "research", "pause", "resume", "help"]) {
+      assert.match(text, new RegExp(`/${cmd}`));
+    }
+    assert.match(text, /\/close\\_all/, "close_all escaped for MarkdownV2");
+  });
+});

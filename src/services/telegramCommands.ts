@@ -4,7 +4,15 @@ import { getTelegramBot, sanitize, chunk } from "./telegram.js";
 import { computeOverview } from "./overview.js";
 import { isEnginePaused, setEnginePaused } from "./engineControl.js";
 import { forceCloseAllPositions } from "../agents/dlmmTraderAgent.js";
-import { countActivePositions, getActivePositions } from "../database/repositories.js";
+import {
+  aggregateClosedTradesByDate,
+  countActivePositions,
+  getActivePositions,
+  getClosedPositions,
+  getLifetimeStats,
+  getLatestResearch,
+  getPositionById,
+} from "../database/repositories.js";
 
 /**
  * Interactive Telegram control commands for the FlowMetrix engine.
@@ -15,9 +23,14 @@ import { countActivePositions, getActivePositions } from "../database/repositori
  *
  * Commands:
  *   /status    — balance, PnL, risk metrics, engine state, active positions
+ *   /trades    — recent closed trades + lifetime summary
+ *   /pnl       — net PnL per day (last 14 days)
+ *   /position  — full detail for one position (usage: /position <id>)
+ *   /research  — latest macro research report
  *   /close_all — emergency force-close of every active position (paper trading)
  *   /pause     — stop scanning for new positions (monitoring keeps running)
  *   /resume    — re-enable scanning
+ *   /help      — command list
  */
 
 const UNAUTHORIZED_REPLY = "⛔ Unauthorized. This bot's control commands are restricted to its owner.";
@@ -103,6 +116,142 @@ export function buildStatusText(): string {
 export function isCommandAuthorized(userId: number | undefined): boolean {
   if (!userId) return false;
   return env.TELEGRAM_ALLOWED_USER_IDS.includes(userId);
+}
+
+function pct(n: number | null | undefined): string {
+  if (n === null || n === undefined || !Number.isFinite(n)) return "n/a";
+  return `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
+}
+
+/** Pure /trades report: recent closed trades + lifetime summary. */
+export function buildTradesText(limit = 10): string {
+  const closed = getClosedPositions(limit);
+  const stats = getLifetimeStats();
+
+  const lines: string[] = [
+    `🧾 **FlowMetrix Trades** (last ${closed.length})`,
+    ``,
+    `🏆 Lifetime: ${stats.totalClosed} trades · ${stats.wins}W/${stats.losses}L · net ${fmtUsd(
+      stats.realizedPnlUsd,
+    )}`,
+    ``,
+  ];
+
+  if (closed.length === 0) {
+    lines.push("No closed trades yet.");
+  } else {
+    for (const row of closed) {
+      const dur = row.opened_at
+        ? `${hoursSince(row.opened_at).toFixed(1)}h ago`
+        : "n/a";
+      const reason = row.close_reason ? ` (${row.close_reason})` : "";
+      lines.push(
+        `• ${row.pair_name} · ${row.status} · PnL ${fmtUsd(row.realized_pnl_usd)} (${pct(
+          row.realized_pnl_pct,
+        )}) · ${dur}${reason}`,
+      );
+    }
+  }
+
+  return markdownV2(lines.join("\n"));
+}
+
+/** Pure /pnl report: net PnL per day for the last N days. */
+export function buildPnlText(days = 14): string {
+  const end = new Date();
+  const start = new Date();
+  start.setDate(start.getDate() - (days - 1));
+  const fmt = (d: Date) => d.toISOString().slice(0, 10);
+  const rows = aggregateClosedTradesByDate(fmt(start), fmt(end));
+
+  const lines: string[] = [`📅 **FlowMetrix PnL** (last ${days} days)`, ``];
+
+  if (rows.length === 0) {
+    lines.push("No closed trades in this window.");
+  } else {
+    for (const r of rows) {
+      lines.push(
+        `• ${r.date} · ${r.trades} trade${r.trades === 1 ? "" : "s"} · ${r.wins}W/${r.losses}L · net ${fmtUsd(
+          r.netPnlUsd,
+        )}`,
+      );
+    }
+  }
+
+  return markdownV2(lines.join("\n"));
+}
+
+/** Pure /position report: full detail for one position by id. */
+export function buildPositionDetailText(positionId: string): string {
+  const row = getPositionById(positionId);
+  if (!row) {
+    return markdownV2(`**Position not found:** ${positionId}`);
+  }
+
+  const inRange =
+    row.current_price !== null &&
+    row.current_price >= row.lower_bin_price &&
+    row.current_price <= row.upper_bin_price;
+
+  const lines: string[] = [
+    `📍 **Position ${row.pair_name}**`,
+    ``,
+    `Status: ${row.status} · ${row.strategy_type}`,
+    `Entry: ${fmtNum(row.entry_price)} · Now: ${fmtNum(row.current_price)} · Exit: ${fmtNum(
+      row.exit_price,
+    )}`,
+    `Range: ${fmtNum(row.lower_bin_price)} – ${fmtNum(row.upper_bin_price)} · ${
+      inRange ? "in range" : "OUT of range"
+    }`,
+    `Size: ${row.virtual_sol_amount} SOL (notional ${fmtUsd(
+      row.virtual_sol_amount * (row.entry_sol_price_usd ?? 0),
+    )})`,
+    `Floating PnL: ${fmtUsd(row.floating_pnl_usd)} · Realized: ${fmtUsd(row.realized_pnl_usd)} (${pct(
+      row.realized_pnl_pct,
+    )})`,
+    `Unclaimed fees: ${fmtUsd(row.unclaimed_fee_usd)}`,
+    `Confidence: ${row.confidence_score ?? "n/a"} · Safety: ${row.safety_verdict ?? "n/a"}`,
+    `Opened: ${row.opened_at ?? "n/a"} · Closed: ${row.closed_at ?? "—"}`,
+  ];
+
+  if (row.reasoning_log) lines.push(``, `Thesis: ${row.reasoning_log}`);
+
+  return markdownV2(lines.join("\n"));
+}
+
+/** Pure /research report: latest macro research from the researcher agent. */
+export function buildResearchText(): string {
+  const r = getLatestResearch();
+  if (!r) {
+    return markdownV2("**No research report yet.**");
+  }
+
+  const bias = r.sentiment_bias ? ` · bias ${r.sentiment_bias}` : "";
+  const body = (r.markdown_output ?? "").slice(0, 3000);
+  const lines = [
+    `🔬 **FlowMetrix Research** — ${r.report_date}${bias}`,
+    ``,
+    body || "*(report body empty)*",
+  ];
+  return markdownV2(lines.join("\n"));
+}
+
+/** Pure /help: command list. */
+export function buildHelpText(): string {
+  const lines = [
+    `🤖 **FlowMetrix Commands**`,
+    ``,
+    `/status — balance, PnL, risk, active positions`,
+    `/trades — recent closed trades + lifetime summary`,
+    `/pnl — net PnL per day (last 14 days)`,
+    `/position <id> — full detail for one position`,
+    `/research — latest macro research report`,
+    `/close_all — force-close all active positions`,
+    `/pause — stop scanning for new positions`,
+    `/resume — resume scanning`,
+    `/help — this list`,
+  ];
+  return markdownV2(lines.join("\n"));
 }
 
 async function deny(ctx: Context, command: string): Promise<void> {
@@ -209,6 +358,56 @@ export function startTelegramCommands(): void {
     setEnginePaused(false);
     console.log("[telegram] engine RESUMED via /resume");
     await replyMarkdown(ctx, "▶️ **Engine resumed.**\nScanning for new positions is active again.");
+  });
+
+  bot.command("trades", async (ctx) => {
+    if (!isCommandAuthorized(ctx.from?.id)) return deny(ctx, "trades");
+    try {
+      await replyMarkdown(ctx, buildTradesText());
+    } catch (err) {
+      console.error("[telegram] /trades failed:", err);
+      await ctx.reply("❌ /trades failed — see engine logs.").catch(() => undefined);
+    }
+  });
+
+  bot.command("pnl", async (ctx) => {
+    if (!isCommandAuthorized(ctx.from?.id)) return deny(ctx, "pnl");
+    try {
+      await replyMarkdown(ctx, buildPnlText());
+    } catch (err) {
+      console.error("[telegram] /pnl failed:", err);
+      await ctx.reply("❌ /pnl failed — see engine logs.").catch(() => undefined);
+    }
+  });
+
+  bot.command("position", async (ctx) => {
+    if (!isCommandAuthorized(ctx.from?.id)) return deny(ctx, "position");
+    const arg = ((ctx as any).match ?? "").trim();
+    if (!arg) {
+      await replyMarkdown(ctx, "Usage: /position <position_id>\nGet the id from /status or /trades.");
+      return;
+    }
+    try {
+      await replyMarkdown(ctx, buildPositionDetailText(arg));
+    } catch (err) {
+      console.error("[telegram] /position failed:", err);
+      await ctx.reply("❌ /position failed — see engine logs.").catch(() => undefined);
+    }
+  });
+
+  bot.command("research", async (ctx) => {
+    if (!isCommandAuthorized(ctx.from?.id)) return deny(ctx, "research");
+    try {
+      await replyMarkdown(ctx, buildResearchText());
+    } catch (err) {
+      console.error("[telegram] /research failed:", err);
+      await ctx.reply("❌ /research failed — see engine logs.").catch(() => undefined);
+    }
+  });
+
+  bot.command("help", async (ctx) => {
+    if (!isCommandAuthorized(ctx.from?.id)) return deny(ctx, "help");
+    await replyMarkdown(ctx, buildHelpText());
   });
 
   // launch() resolves only when polling STOPS — it awaits the infinite update
