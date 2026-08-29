@@ -380,3 +380,113 @@ describe("getRecentFailurePostMortems — loss context for the entry prompt", ()
     assert.equal(repos.getRecentFailurePostMortems(0).length, 0);
   });
 });
+
+describe("cohort filtering — v1.0 legacy vs v1.1 clean engine", () => {
+  const CUTOFF = "2026-08-29T00:00:00Z";
+  const V11 = { openedAtFrom: CUTOFF };
+
+  /** Opens and closes a position with both timestamps forced, so the split is exact. */
+  const tradeAt = (
+    positionId: string,
+    openedAt: string,
+    closedAt: string,
+    pnlUsd: number,
+  ): void => {
+    repos.insertPosition(newPosition(positionId, `cohort-${positionId}`));
+    repos.closePosition({
+      positionId,
+      status: pnlUsd > 0 ? "CLOSED_PROFIT" : "CLOSED_LOSS",
+      exitPrice: 100,
+      realizedPnlUsd: pnlUsd,
+      realizedPnlPct: pnlUsd,
+      unclaimedFeeUsd: 0,
+      impermanentLossUsd: 0,
+      positionValueChangeUsd: 0,
+      closeReason: "cohort fixture",
+    });
+
+    dbModule.db
+      .prepare(
+        `UPDATE simulated_positions
+            SET opened_at = datetime(?), closed_at = datetime(?)
+          WHERE position_id = ?`,
+      )
+      .run(openedAt, closedAt, positionId);
+  };
+
+  before(() => {
+    // Legacy: opened and closed before the cutoff.
+    tradeAt("v10-a", "2026-08-27T10:00:00Z", "2026-08-27T14:00:00Z", -10);
+    tradeAt("v10-b", "2026-08-28T10:00:00Z", "2026-08-28T14:00:00Z", -5);
+    // Straddler: chosen by the OLD engine, closed after the cutoff.
+    tradeAt("v10-straddle", "2026-08-28T23:00:00Z", "2026-08-29T02:00:00Z", -20);
+    // Clean run.
+    tradeAt("v11-a", "2026-08-29T09:00:00Z", "2026-08-29T11:00:00Z", 8);
+  });
+
+  it("splits on opened_at, not closed_at", () => {
+    const ids = repos.getClosedPositions(50, 0, V11).map((r) => r.position_id);
+
+    assert.ok(ids.includes("v11-a"));
+    assert.equal(
+      ids.includes("v10-straddle"),
+      false,
+      "a position the old screener opened stays v1.0 however late it closed",
+    );
+  });
+
+  it("excludes every pre-cutoff trade from the clean cohort", () => {
+    const ids = repos.getClosedPositions(50, 0, V11).map((r) => r.position_id);
+    assert.equal(ids.includes("v10-a"), false);
+    assert.equal(ids.includes("v10-b"), false);
+  });
+
+  it("recomputes lifetime stats over the filtered set", () => {
+    const all = repos.getLifetimeStats();
+    const clean = repos.getLifetimeStats(V11);
+
+    assert.ok(all.totalClosed > clean.totalClosed, "the archive must be the larger set");
+    // The clean cohort's fixtures are one winner; the legacy ones are all losers.
+    assert.equal(clean.wins >= 1, true);
+    assert.ok(
+      all.realizedPnlUsd < clean.realizedPnlUsd,
+      "dropping the legacy losses must raise the cohort's realised PnL",
+    );
+  });
+
+  it("filters the PnL series the drawdown and profit factor run over", () => {
+    const all = repos.getRealisedPnlSeries();
+    const clean = repos.getRealisedPnlSeries(V11);
+
+    assert.ok(clean.length < all.length);
+    assert.equal(
+      clean.includes(-20),
+      false,
+      "the straddling legacy loss must not appear in the clean curve",
+    );
+  });
+
+  it("compares an ISO cutoff against SQLite's zone-less timestamps", () => {
+    /*
+     * opened_at is 'YYYY-MM-DD HH:MM:SS'; the cutoff carries 'T' and 'Z'. A raw string
+     * comparison would silently match nothing, so the clause goes through datetime().
+     */
+    const viaIso = repos.getClosedPositions(50, 0, { openedAtFrom: CUTOFF });
+    const viaSqliteShape = repos.getClosedPositions(50, 0, {
+      openedAtFrom: "2026-08-29 00:00:00",
+    });
+
+    assert.ok(viaIso.length > 0, "the ISO cutoff matched nothing — datetime() is not applied");
+    assert.deepEqual(
+      viaIso.map((r) => r.position_id),
+      viaSqliteShape.map((r) => r.position_id),
+    );
+  });
+
+  it("treats a null cutoff as the unfiltered archive", () => {
+    assert.equal(
+      repos.getLifetimeStats({ openedAtFrom: null }).totalClosed,
+      repos.getLifetimeStats().totalClosed,
+    );
+  });
+});

@@ -14,6 +14,32 @@ const CLOSED_LIST = CLOSED_STATUSES.map((s) => `'${s}'`).join(", ");
 const FAILURE_LIST = FAILURE_STATUSES.map((s) => `'${s}'`).join(", ");
 
 /* ------------------------------------------------------------------ */
+/* Engine version cohorts                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Restricts a query to one engine cohort.
+ *
+ * `openedAtFrom` is compared through SQLite's `datetime()` rather than as a raw string:
+ * timestamps are stored as 'YYYY-MM-DD HH:MM:SS' with no zone marker, so an ISO cutoff
+ * carrying 'T' and 'Z' would never compare correctly lexicographically. `datetime()`
+ * normalises both sides to the stored shape.
+ *
+ * Filtering on opened_at is deliberate — see services/cohort.ts. Ordering still runs on
+ * closed_at where the caller needs chronological closes.
+ */
+export interface CohortFilter {
+  openedAtFrom: string | null;
+}
+
+export const ALL_TIME: CohortFilter = { openedAtFrom: null };
+
+/** SQL fragment plus its bound parameters, in the order they must be appended. */
+function cohortSql(cohort: CohortFilter): { clause: string; params: string[] } {
+  if (!cohort.openedAtFrom) return { clause: "", params: [] };
+  return { clause: " AND opened_at >= datetime(?)", params: [cohort.openedAtFrom] };
+}
+/* ------------------------------------------------------------------ */
 /* Positions                                                           */
 /* ------------------------------------------------------------------ */
 
@@ -111,14 +137,15 @@ export function getRecentFailurePostMortems(limit = 5): SimulatedPositionRow[] {
     .all(limit) as SimulatedPositionRow[];
 }
 
-export function getActivePositions(): SimulatedPositionRow[] {
+export function getActivePositions(cohort: CohortFilter = ALL_TIME): SimulatedPositionRow[] {
+  const { clause, params } = cohortSql(cohort);
   return db
     .prepare(
       `SELECT * FROM simulated_positions
-        WHERE status = '${POSITION_STATUS.ACTIVE}'
+        WHERE status = '${POSITION_STATUS.ACTIVE}'${clause}
         ORDER BY opened_at DESC`,
     )
-    .all() as SimulatedPositionRow[];
+    .all(...params) as SimulatedPositionRow[];
 }
 
 export function countActivePositions(): number {
@@ -231,15 +258,20 @@ export function closePosition(input: ClosePositionInput): void {
   ).run(input);
 }
 
-export function getClosedPositions(limit = 100, offset = 0): SimulatedPositionRow[] {
+export function getClosedPositions(
+  limit = 100,
+  offset = 0,
+  cohort: CohortFilter = ALL_TIME,
+): SimulatedPositionRow[] {
+  const { clause, params } = cohortSql(cohort);
   return db
     .prepare(
       `SELECT * FROM simulated_positions
-        WHERE status IN (${CLOSED_LIST})
+        WHERE status IN (${CLOSED_LIST})${clause}
         ORDER BY closed_at DESC
         LIMIT ? OFFSET ?`,
     )
-    .all(limit, offset) as SimulatedPositionRow[];
+    .all(...params, limit, offset) as SimulatedPositionRow[];
 }
 
 export function getPositionById(positionId: string): SimulatedPositionRow | undefined {
@@ -259,7 +291,8 @@ export interface TradeStats {
   realizedPnlUsd: number;
 }
 
-export function getLifetimeStats(): TradeStats {
+export function getLifetimeStats(cohort: CohortFilter = ALL_TIME): TradeStats {
+  const { clause, params } = cohortSql(cohort);
   return db
     .prepare(
       `SELECT
@@ -268,13 +301,14 @@ export function getLifetimeStats(): TradeStats {
          COALESCE(SUM(CASE WHEN realized_pnl_usd <= 0 THEN 1 ELSE 0 END), 0) AS losses,
          COALESCE(SUM(realized_pnl_usd), 0) AS realizedPnlUsd
        FROM simulated_positions
-       WHERE status IN (${CLOSED_LIST})`,
+       WHERE status IN (${CLOSED_LIST})${clause}`,
     )
-    .get() as TradeStats;
+    .get(...params) as TradeStats;
 }
 
 /** `date` must be YYYY-MM-DD in local time. */
-export function getStatsForDate(date: string): TradeStats {
+export function getStatsForDate(date: string, cohort: CohortFilter = ALL_TIME): TradeStats {
+  const { clause, params } = cohortSql(cohort);
   return db
     .prepare(
       `SELECT
@@ -283,20 +317,21 @@ export function getStatsForDate(date: string): TradeStats {
          COALESCE(SUM(CASE WHEN realized_pnl_usd <= 0 THEN 1 ELSE 0 END), 0) AS losses,
          COALESCE(SUM(realized_pnl_usd), 0) AS realizedPnlUsd
        FROM simulated_positions
-       WHERE status IN (${CLOSED_LIST})
+       WHERE status IN (${CLOSED_LIST})${clause}
          AND date(closed_at, 'localtime') = ?`,
     )
-    .get(date) as TradeStats;
+    .get(...params, date) as TradeStats;
 }
 
-export function getTotalFloatingPnlUsd(): number {
+export function getTotalFloatingPnlUsd(cohort: CohortFilter = ALL_TIME): number {
+  const { clause, params } = cohortSql(cohort);
   const row = db
     .prepare(
       `SELECT COALESCE(SUM(floating_pnl_usd), 0) AS v
          FROM simulated_positions
-        WHERE status = '${POSITION_STATUS.ACTIVE}'`,
+        WHERE status = '${POSITION_STATUS.ACTIVE}'${clause}`,
     )
-    .get() as { v: number };
+    .get(...params) as { v: number };
   return row.v;
 }
 
@@ -304,27 +339,29 @@ export function getTotalFloatingPnlUsd(): number {
  * Realised PnL of every closed trade, oldest close first. This ordering is what makes
  * the drawdown curve reproducible — sorting any other way changes the answer.
  */
-export function getRealisedPnlSeries(): number[] {
+export function getRealisedPnlSeries(cohort: CohortFilter = ALL_TIME): number[] {
+  const { clause, params } = cohortSql(cohort);
   const rows = db
     .prepare(
       `SELECT realized_pnl_usd AS pnl
          FROM simulated_positions
-        WHERE status IN (${CLOSED_LIST})
+        WHERE status IN (${CLOSED_LIST})${clause}
         ORDER BY closed_at ASC, id ASC`,
     )
-    .all() as Array<{ pnl: number | null }>;
+    .all(...params) as Array<{ pnl: number | null }>;
 
   return rows.map((r) => r.pnl ?? 0);
 }
 
-export function getTotalUnclaimedFeesUsd(): number {
+export function getTotalUnclaimedFeesUsd(cohort: CohortFilter = ALL_TIME): number {
+  const { clause, params } = cohortSql(cohort);
   const row = db
     .prepare(
       `SELECT COALESCE(SUM(unclaimed_fee_usd), 0) AS v
          FROM simulated_positions
-        WHERE status = '${POSITION_STATUS.ACTIVE}'`,
+        WHERE status = '${POSITION_STATUS.ACTIVE}'${clause}`,
     )
-    .get() as { v: number };
+    .get(...params) as { v: number };
   return row.v;
 }
 
@@ -381,7 +418,9 @@ export interface DailyAggregateRow {
 export function aggregateClosedTradesByDate(
   startDate: string,
   endDate: string,
+  cohort: CohortFilter = ALL_TIME,
 ): DailyAggregateRow[] {
+  const { clause, params } = cohortSql(cohort);
   return db
     .prepare(
       `SELECT
@@ -391,12 +430,12 @@ export function aggregateClosedTradesByDate(
          COALESCE(SUM(CASE WHEN realized_pnl_usd <= 0 THEN 1 ELSE 0 END), 0) AS losses,
          COALESCE(SUM(realized_pnl_usd), 0) AS netPnlUsd
        FROM simulated_positions
-       WHERE status IN (${CLOSED_LIST})
+       WHERE status IN (${CLOSED_LIST})${clause}
          AND date(closed_at, 'localtime') BETWEEN ? AND ?
        GROUP BY date(closed_at, 'localtime')
        ORDER BY date ASC`,
     )
-    .all(startDate, endDate) as DailyAggregateRow[];
+    .all(...params, startDate, endDate) as DailyAggregateRow[];
 }
 
 /* ------------------------------------------------------------------ */

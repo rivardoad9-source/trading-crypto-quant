@@ -224,6 +224,31 @@ const EnvSchema = z
      */
     LOSS_CONTEXT_TRADES: numeric(5),
 
+    /* ---- Engine version cohorts ---- */
+    /**
+     * The instant the v1.1 "clean engine" took over: anti-churn cooldown/lockout plus
+     * the 60s exit monitor. Positions OPENED at or after this are cohort v1.1;
+     * everything earlier is v1.0 legacy.
+     *
+     * Opened, not closed, on purpose — the cohort names the engine that made the entry
+     * decision. A position the old screener chose is v1.0's trade no matter when it
+     * happened to close.
+     *
+     * The default is the commit that introduced v1.1 (2026-08-29T13:20:40Z). NOT
+     * midnight that day: 13 of the 27 legacy trades were opened later the same morning,
+     * the last at 12:40Z, so a date-only cutoff would file pre-fix trades under "Clean
+     * Engine" — the exact mislabelling this filter exists to prevent.
+     *
+     * **Set this to the moment you actually restart the engine on v1.1.** The commit
+     * time is a safe floor, not a deploy record: code that is committed but not yet
+     * running has produced no trades, so anything opened between the commit and the
+     * restart is still v1.0's work and would be misfiled as clean.
+     *
+     * Any format SQLite's datetime() accepts. Bare 'YYYY-MM-DD' is read as UTC midnight,
+     * matching how opened_at / closed_at are stored.
+     */
+    ENGINE_V11_CUTOFF: z.string().trim().min(1).default("2026-08-29T13:20:40Z"),
+
     /* ---- Fast position monitor ---- */
     /**
      * Runs the position monitor every 60s, decoupled from the 10-minute screener.

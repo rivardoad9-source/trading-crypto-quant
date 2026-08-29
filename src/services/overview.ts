@@ -7,6 +7,7 @@ import {
   getTotalUnclaimedFeesUsd,
 } from "../database/repositories.js";
 import { computeMaxDrawdown, computeProfitFactor } from "./metrics.js";
+import { defaultCohort, type Cohort } from "./cohort.js";
 import { localDateString } from "../agents/researcherAgent.js";
 import { STARTING_BALANCE_USD } from "../config/constants.js";
 import { env } from "../config/env.js";
@@ -20,6 +21,25 @@ import { env } from "../config/env.js";
  * reproducible from stored history.
  */
 export interface Overview {
+  /**
+   * Which slice of history every figure below was computed over.
+   *
+   * When `filtered` is true the balance and equity are REBASED on
+   * startingBalanceUSD — they answer "what would this engine version have done
+   * starting fresh", not "what is in the account". The UI must say so; a rebased
+   * number presented as the live balance would be a fabricated figure.
+   */
+  cohort: {
+    id: Cohort["id"];
+    label: string;
+    description: string;
+    cutoff: string | null;
+    filtered: boolean;
+  };
+  /** Closed trades excluded by the cohort filter. 0 when unfiltered. */
+  excludedTrades: number;
+  /** Realised PnL of those excluded trades, so the omission is quantified. */
+  excludedRealizedPnLUSD: number;
   currentBalanceUSD: number;
   currentEquityUSD: number;
   liveFloatingPnLUSD: number;
@@ -48,12 +68,23 @@ export interface Overview {
   timezone: string;
 }
 
-export function computeOverview(): Overview {
-  const lifetime = getLifetimeStats();
-  const today = getStatsForDate(localDateString());
-  const floating = getTotalFloatingPnlUsd();
-  const unclaimedFees = getTotalUnclaimedFeesUsd();
-  const active = getActivePositions();
+export function computeOverview(cohort: Cohort = defaultCohort()): Overview {
+  const filter = { openedAtFrom: cohort.openedAtFrom };
+
+  const lifetime = getLifetimeStats(filter);
+  const today = getStatsForDate(localDateString(), filter);
+  const floating = getTotalFloatingPnlUsd(filter);
+  const unclaimedFees = getTotalUnclaimedFeesUsd(filter);
+  const active = getActivePositions(filter);
+
+  /*
+   * What the filter removed, reported rather than hidden. A reader comparing a clean
+   * cohort against the archive needs to see the size of the gap without switching
+   * modes and doing the subtraction by hand.
+   */
+  const allTime = cohort.filtered ? getLifetimeStats() : lifetime;
+  const excludedTrades = allTime.totalClosed - lifetime.totalClosed;
+  const excludedRealizedPnLUSD = allTime.realizedPnlUsd - lifetime.realizedPnlUsd;
 
   const currentBalanceUSD = STARTING_BALANCE_USD + lifetime.realizedPnlUsd;
   const currentEquityUSD = currentBalanceUSD + floating;
@@ -65,11 +96,24 @@ export function computeOverview(): Overview {
 
   // Both metrics run over the realised equity curve, oldest close first. Floating
   // PnL is excluded so the figures are reproducible from stored history.
-  const pnlSeries = getRealisedPnlSeries();
+  //
+  // In a filtered cohort the curve starts again at STARTING_BALANCE_USD, so the
+  // drawdown is the drawdown THIS engine version produced from a standing start —
+  // not the account's real peak-to-trough, which the archive cohort still reports.
+  const pnlSeries = getRealisedPnlSeries(filter);
   const drawdown = computeMaxDrawdown(pnlSeries, STARTING_BALANCE_USD);
   const profit = computeProfitFactor(pnlSeries);
 
   return {
+    cohort: {
+      id: cohort.id,
+      label: cohort.label,
+      description: cohort.description,
+      cutoff: cohort.openedAtFrom,
+      filtered: cohort.filtered,
+    },
+    excludedTrades,
+    excludedRealizedPnLUSD,
     currentBalanceUSD,
     currentEquityUSD,
     liveFloatingPnLUSD: floating,

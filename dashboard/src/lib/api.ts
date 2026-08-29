@@ -2,7 +2,34 @@
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000/api";
 
+/**
+ * Which slice of trading history a payload was computed over.
+ *
+ * 'current' is the v1.1 engine — the anti-churn gates plus the 60s exit monitor.
+ * 'all' is every simulated trade ever, both engine versions.
+ */
+export type CohortId = "current" | "all";
+
+export interface CohortMeta {
+  id: CohortId;
+  label: string;
+  description: string;
+  /** ISO cutoff, or null for the unfiltered archive. */
+  cutoff: string | null;
+  /**
+   * True when the figures cover a subset. Balance and equity are then REBASED on
+   * startingBalanceUSD: they answer "what would this engine have done starting
+   * fresh", not "what is in the account". The UI must label that.
+   */
+  filtered: boolean;
+}
+
 export interface Overview {
+  cohort: CohortMeta;
+  /** Closed trades the cohort filter removed. 0 when unfiltered. */
+  excludedTrades: number;
+  /** Realised PnL of those excluded trades. */
+  excludedRealizedPnLUSD: number;
   currentBalanceUSD: number;
   currentEquityUSD: number;
   liveFloatingPnLUSD: number;
@@ -116,18 +143,30 @@ async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
   return (await res.json()) as T;
 }
 
-export const fetchOverview = (signal?: AbortSignal) => get<Overview>("/overview", signal);
+/*
+ * Every trade-facing fetch takes the cohort explicitly. The API defaults to the
+ * all-time archive when the parameter is absent, so passing it is what keeps the
+ * dashboard's default ("Current Run") from silently becoming the archive.
+ */
+export const fetchOverview = (cohort: CohortId, signal?: AbortSignal) =>
+  get<Overview>(`/overview?cohort=${cohort}`, signal);
 
-export const fetchActivePositions = (signal?: AbortSignal) =>
-  get<{ positions: Position[] }>("/positions/active", signal).then((r) => r.positions);
-
-export const fetchPositionHistory = (limit = 100, signal?: AbortSignal) =>
-  get<{ positions: Position[] }>(`/positions/history?limit=${limit}`, signal).then(
+export const fetchActivePositions = (cohort: CohortId, signal?: AbortSignal) =>
+  get<{ positions: Position[] }>(`/positions/active?cohort=${cohort}`, signal).then(
     (r) => r.positions,
   );
 
-export const fetchPnlCalendar = (month?: string, signal?: AbortSignal) =>
-  get<PnlCalendar>(`/pnl-calendar${month ? `?month=${month}` : ""}`, signal);
+export const fetchPositionHistory = (cohort: CohortId, limit = 100, signal?: AbortSignal) =>
+  get<{ positions: Position[] }>(
+    `/positions/history?limit=${limit}&cohort=${cohort}`,
+    signal,
+  ).then((r) => r.positions);
+
+export const fetchPnlCalendar = (cohort: CohortId, month?: string, signal?: AbortSignal) =>
+  get<PnlCalendar>(
+    `/pnl-calendar?cohort=${cohort}${month ? `&month=${month}` : ""}`,
+    signal,
+  );
 
 export const fetchLatestResearch = (signal?: AbortSignal) =>
   get<{ report: ResearchReport | null }>("/research/latest", signal).then((r) => r.report);
