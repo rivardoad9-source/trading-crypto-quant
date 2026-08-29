@@ -8,10 +8,24 @@ money was ever deployed.**
 
 | File | Contents |
 |---|---|
-| `trades.csv` | Every simulated position: entry/exit prices, bin range, fees, IL, realized PnL, close reason, safety verdict, post-mortem notes. 37 columns. |
+| `trades.csv` | Every simulated position: entry/exit prices, bin range, fees, IL, realized PnL, close reason, safety verdict, post-mortem notes, **`engine_version`** (v1.0 / v1.1 / …). 38 columns. |
 | `daily_pnl.csv` | Daily PnL snapshots. |
 | `research_logs.json` | Daily macro research reports (full markdown + sentiment bias RISK-ON/OFF/SIDEWAYS + raw snapshot). |
-| `summary.json` | Quick glance: totals, win/loss counts, net PnL, exported timestamp. |
+| `summary.json` | Quick glance: totals, win/loss counts, net PnL, **`perVersion` breakdown**, exported timestamp. |
+
+## Engine version labels
+
+Every trade is tagged `engine_version` by the same rule the engine's cohort filter
+uses (`src/services/cohort.ts`): membership is decided by **`opened_at` vs the
+`ENGINE_V*_CUTOFF` env vars** — never `closed_at`. The cohort names the engine that
+made the ENTRY decision; a position the old screener picked stays v1.0's trade
+however long it took to close.
+
+- v1.1 cutoff: `ENGINE_V11_CUTOFF` (default `2026-08-29T13:20:40Z`, when the
+  anti-churn gates + 60s exit monitor went live)
+- Future versions: add `ENGINE_V12_CUTOFF=...` etc. to `.env` — the exporter picks
+  them up automatically (no script edit needed).
+- `summary.json → perVersion` gives one-glance results per version.
 
 ## Key columns in trades.csv
 
