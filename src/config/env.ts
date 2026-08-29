@@ -122,6 +122,20 @@ const EnvSchema = z
     // Telegram
     TELEGRAM_BOT_TOKEN: optionalString,
     TELEGRAM_CHAT_ID: optionalString,
+    /**
+     * Comma-separated Telegram user IDs allowed to run control commands
+     * (/status, /close_all, /pause, /resume). Empty = nobody is authorized —
+     * control commands are denied to everyone (fail closed).
+     */
+    TELEGRAM_ALLOWED_USER_IDS: z
+      .string()
+      .optional()
+      .transform((v) =>
+        (v ?? "")
+          .split(",")
+          .map((s) => Number(s.trim()))
+          .filter((n) => Number.isInteger(n) && n > 0),
+      ),
 
     // Paper trading engine
     VIRTUAL_SOL_PER_POSITION: numeric(1.0),
