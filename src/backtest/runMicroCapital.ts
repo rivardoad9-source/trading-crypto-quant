@@ -19,6 +19,7 @@
  */
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { env } from "../config/env.js";
 import {
@@ -127,6 +128,7 @@ export const withoutAntiChurn = (config: BacktestConfig): BacktestConfig => ({
 
 const EXIT_ORDER: ExitReason[] = [
   "STOP_LOSS",
+  "RATCHET_STOP",
   "OUT_OF_RANGE",
   "TAKE_PROFIT",
   "TIMEOUT",
@@ -632,7 +634,14 @@ async function main(): Promise<void> {
   console.log(`\n[micro] full results written to ${OUTPUT_PATH}`);
 }
 
-main().catch((err) => {
-  console.error("[micro] failed:", err);
-  process.exit(1);
-});
+/*
+ * Run only when invoked directly. `sweepRiskReward.ts` imports `liveV11Config` from
+ * here so that "the live V1.1 configuration" has exactly one definition; without this
+ * guard that import would silently execute the whole micro-capital backtest.
+ */
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    console.error("[micro] failed:", err);
+    process.exit(1);
+  });
+}

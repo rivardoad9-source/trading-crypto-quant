@@ -121,6 +121,16 @@ describe("isFailureExit", () => {
     assert.equal(isFailureExit("TIMEOUT"), false);
     assert.equal(isFailureExit("END_OF_DATA"), false);
   });
+
+  it("treats the ratchet stop as a non-failure", () => {
+    /*
+     * The ratchet only fires on a position that already reached its arming threshold,
+     * at a floor set at or above breakeven, so live would book it as CLOSED_PROFIT.
+     * Counting it as a failure would let a run of SUCCESSFUL ratchets arm the
+     * circuit breaker and bench a pool that was working.
+     */
+    assert.equal(isFailureExit("RATCHET_STOP"), false);
+  });
 });
 
 describe("assessCooldownAt", () => {

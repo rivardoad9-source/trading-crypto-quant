@@ -71,6 +71,7 @@ const EXIT_LABELS: Record<ExitReason, string> = {
   TIMEOUT: "Max duration",
   END_OF_DATA: "Open at window end",
   STOP_LOSS: "Stop-loss",
+  RATCHET_STOP: "Ratchet stop (locked-in profit)",
   RUGGED: "RUGGED (no exit liquidity)",
 };
 

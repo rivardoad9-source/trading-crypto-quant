@@ -114,6 +114,24 @@ export interface BacktestConfig {
    * negative number (e.g. -100) to disable.
    */
   stopLossPct: number;
+  /**
+   * Exit: arm a profit ratchet once mark-to-market NET PnL first reaches this
+   * percentage of notional. Once armed the stop moves UP to `ratchetStopNetPct` and
+   * never moves back down, so a position that ran into profit cannot return a loss
+   * bigger than that floor.
+   *
+   * Defaults to Infinity, i.e. never arms, so every pre-existing run and sweep is
+   * bit-for-bit unchanged — the same inert-default rule `takeProfitNetPct`,
+   * `maxTvlUsd` and the anti-churn gates already follow. The live engine has no
+   * equivalent: this is a proposal being measured, not a mirror of production.
+   */
+  ratchetArmNetPct: number;
+  /**
+   * Where the stop sits once the ratchet has armed, as a percentage of notional.
+   * Positive locks in a gain; 0 is a pure breakeven stop. Only read when
+   * `ratchetArmNetPct` is finite.
+   */
+  ratchetStopNetPct: number;
   /** Exit: maximum holding period in hours. */
   maxDurationHours: number;
   /** How many positions may be open at once across all pools. */
@@ -169,6 +187,8 @@ export const defaultBacktestConfig = (): BacktestConfig => ({
   takeProfitFeePct: 5,
   takeProfitNetPct: Number.POSITIVE_INFINITY,
   stopLossPct: -15,
+  ratchetArmNetPct: Number.POSITIVE_INFINITY,
+  ratchetStopNetPct: 0,
   maxDurationHours: 24,
   maxConcurrentPositions: 1,
   poolCooldownHours: 0,
@@ -187,6 +207,7 @@ export type ExitReason =
   | "TIMEOUT"
   | "END_OF_DATA"
   | "STOP_LOSS"
+  | "RATCHET_STOP"
   | "RUGGED";
 
 export interface BacktestTrade {
@@ -393,6 +414,16 @@ export function isFailureExit(reason: ExitReason): boolean {
   return reason === "STOP_LOSS" || reason === "OUT_OF_RANGE" || reason === "RUGGED";
 }
 
+/*
+ * RATCHET_STOP is deliberately absent from the list above. The ratchet only fires on a
+ * position that already reached `ratchetArmNetPct`, and it fires at a floor set at or
+ * above breakeven, so it is a profit-taking exit that live would book as CLOSED_PROFIT
+ * — not a CLOSED_LOSS. This engine maps failures from the exit REASON rather than the
+ * PnL sign (a range exit counts even when it closes green), so classifying the ratchet
+ * by reason is the consistent choice; a run of successful ratchets must not arm the
+ * circuit breaker.
+ */
+
 /**
  * Backtest mirror of `assessPoolCooldown`, on unix seconds.
  *
@@ -524,6 +555,8 @@ interface OpenPosition {
   feesUsd: number;
   barsHeld: number;
   barsOutOfRange: number;
+  /** True once mark-to-market net PnL has touched `ratchetArmNetPct`. Never unset. */
+  ratchetArmed: boolean;
 }
 
 export interface SimulationInput {
@@ -584,7 +617,16 @@ export function runSimulation(input: SimulationInput): BacktestResult {
     });
 
     // Slippage applies whenever the exit was forced by the market rather than chosen.
-    const forced = reason === "OUT_OF_RANGE" || reason === "STOP_LOSS" || liquidation.rugged;
+    /*
+     * The ratchet is a market-triggered exit like the stop: the position moved against
+     * a level and the engine had to hit the book, so it pays the same concession. Only
+     * TAKE_PROFIT / FEE_TAKE_PROFIT / TIMEOUT are chosen exits.
+     */
+    const forced =
+      reason === "OUT_OF_RANGE" ||
+      reason === "STOP_LOSS" ||
+      reason === "RATCHET_STOP" ||
+      liquidation.rugged;
     const slippageFactor = forced ? 1 - config.forcedExitSlippagePct / 100 : 1;
     const realisedRatio = Math.max(0, liquidation.realisableRatio * slippageFactor);
 
@@ -705,8 +747,23 @@ export function runSimulation(input: SimulationInput): BacktestResult {
             100
           : 0;
 
+      /*
+       * Arm the ratchet BEFORE the exit ladder is evaluated, so the bar that reaches
+       * the trigger is already protected. It is a one-way latch: `ratchetArmed` is
+       * never cleared, which is what makes the floor a ratchet rather than a level the
+       * position can slip back under unnoticed.
+       */
+      if (markNetPct >= config.ratchetArmNetPct) pos.ratchetArmed = true;
+
       let reason: ExitReason | null = null;
       if (!inRange) reason = "OUT_OF_RANGE";
+      /*
+       * The armed floor sits above `stopLossPct` by construction, so it is tested
+       * first; a gap straight through both still books the ratchet, which is the
+       * level that was actually live at the time.
+       */
+      else if (pos.ratchetArmed && markNetPct <= config.ratchetStopNetPct)
+        reason = "RATCHET_STOP";
       else if (markNetPct <= config.stopLossPct) reason = "STOP_LOSS";
       else if (markNetPct >= config.takeProfitNetPct) reason = "TAKE_PROFIT";
       else if (feePct >= config.takeProfitFeePct) reason = "FEE_TAKE_PROFIT";
@@ -899,6 +956,7 @@ export function runSimulation(input: SimulationInput): BacktestResult {
       feesUsd: 0,
       barsHeld: 0,
       barsOutOfRange: 0,
+      ratchetArmed: false,
     });
   }
 
@@ -959,6 +1017,7 @@ export function summarise(trades: BacktestTrade[], startingEquityUsd: number): B
     TIMEOUT: 0,
     END_OF_DATA: 0,
     STOP_LOSS: 0,
+    RATCHET_STOP: 0,
     RUGGED: 0,
   };
   for (const t of trades) exitReasonCounts[t.exitReason]++;
