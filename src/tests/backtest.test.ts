@@ -600,3 +600,91 @@ describe("renderTable", () => {
     assert.equal(new Set(lines.map((l) => l.length)).size, 1);
   });
 });
+
+describe("profit ratchet", () => {
+  /**
+   * 24 flat bars so the volume and 24h-change windows exist, entry on bar 24, a spike
+   * to 121 that puts mark-to-market net PnL past the arming threshold, then a retrace
+   * to 98 that is still comfortably inside the bin range and nowhere near the -15%
+   * stop. Only the ratchet can close this position.
+   *
+   * Numbers: notional $1000, modelled TVL $25k, so fees accrue $2/bar (0.2% of
+   * notional). At 121 the LP value term is sqrt(1.21)-1 = +10%; at 98 it is -1.005%,
+   * which fees pull back to roughly +0.4% net.
+   */
+  const ratchetBars = (): Bar[] => {
+    const bars = makeBars(60, 100, 5_000);
+    for (let i = 25; i <= 30; i++) bars[i]!.c = 121;
+    for (let i = 31; i < bars.length; i++) bars[i]!.c = 98;
+    return bars;
+  };
+
+  const ratchetConfig = (over: Partial<BacktestConfig> = {}): BacktestConfig =>
+    config({
+      maxDurationHours: 1e9,
+      takeProfitFeePct: 1e9,
+      takeProfitNetPct: 20,
+      // The spike would otherwise exit out-of-range before the ratchet could arm.
+      upsideCoverPct: 100,
+      ...over,
+    });
+
+  it("closes on the ratchet once armed and the mark falls back to the floor", () => {
+    const r = run(
+      [makePool({ bars: ratchetBars() })],
+      ratchetConfig({ ratchetArmNetPct: 7, ratchetStopNetPct: 1 }),
+    );
+
+    assert.equal(r.trades[0]!.exitReason, "RATCHET_STOP");
+    assert.ok(
+      r.trades[0]!.netPnlUsd > 0,
+      "a ratchet that closes red has not locked in anything",
+    );
+  });
+
+  it("leaves the ratchet disabled by default", () => {
+    // Infinity by default, so adding it changed no existing backtest or sweep output.
+    assert.equal(defaultBacktestConfig().ratchetArmNetPct, Number.POSITIVE_INFINITY);
+
+    const r = run([makePool({ bars: ratchetBars() })], ratchetConfig());
+    assert.notEqual(r.trades[0]!.exitReason, "RATCHET_STOP");
+  });
+
+  it("does not fire on a position that never reached the arming threshold", () => {
+    /*
+     * Same retrace, no spike: the mark sits just under the floor from the first bar.
+     * A ratchet that fired here would be an ordinary stop wearing the wrong label,
+     * and would exit every position that opened slightly under water.
+     */
+    const bars = makeBars(60, 100, 5_000);
+    for (let i = 25; i < bars.length; i++) bars[i]!.c = 98;
+
+    const r = run(
+      [makePool({ bars })],
+      ratchetConfig({ ratchetArmNetPct: 7, ratchetStopNetPct: 1 }),
+    );
+
+    assert.ok(
+      r.trades.every((t) => t.exitReason !== "RATCHET_STOP"),
+      "the floor must not be live until the arming threshold has been touched",
+    );
+  });
+
+  it("pays forced-exit slippage, because the market triggered the exit", () => {
+    const r = run(
+      [makePool({ bars: ratchetBars() })],
+      ratchetConfig({
+        ratchetArmNetPct: 7,
+        ratchetStopNetPct: 1,
+        forcedExitSlippagePct: 2,
+      }),
+    );
+
+    assert.equal(r.trades[0]!.exitReason, "RATCHET_STOP");
+    assert.ok(
+      r.trades[0]!.slippageCostUsd > 0,
+      "the ratchet hits the book like the stop does; treating it as a chosen exit " +
+        "would understate the cost of the whole strategy",
+    );
+  });
+});
