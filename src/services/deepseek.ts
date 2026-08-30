@@ -102,12 +102,11 @@ export async function structuredCompletion<T>(opts: StructuredOptions<T>): Promi
   // max_tokens covers chain-of-thought AND the answer. deepseek-reasoner writes the
   // thinking first, so a chat-sized budget is spent before `content` begins and the
   // call returns "" with finish_reason "length". Reasoning calls need real headroom.
-  // 30 Agu: initial 4000 -> 8000 (observed: every reasoning call burned all 4000 tokens
-  // on CoT, so attempt 1 always failed and a second call was always needed — doubling
-  // the per-cycle cost; 8000 headroom lets most cycles finish in one call) and the
-  // retry cap 8000 -> 16000 (occasional long CoT still hit the 8000 cap and aborted
-  // the whole cycle with an empty completion).
-  let tokenBudget = opts.maxTokens ?? (opts.reasoning ? 8000 : 1200);
+  // 30 Agu (observed live): reasoning consistently exceeds 8000 tokens for the entry
+  // decision — with a 4000/8000 budget every cycle needed a wasted attempt-1 call and
+  // long CoT occasionally hit the 8000 cap, aborting the whole cycle with an empty
+  // completion. 16000 initial lets cycles finish in one call; 32000 covers the tail.
+  let tokenBudget = opts.maxTokens ?? (opts.reasoning ? 16000 : 1200);
 
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
     { role: "system", content: opts.system },
@@ -165,7 +164,7 @@ export async function structuredCompletion<T>(opts: StructuredOptions<T>): Promi
           // Nothing was returned to correct, and repeating the call with the same
           // budget reproduces the truncation exactly. Give the next attempt room
           // instead of asking the model to repair an answer it never produced.
-          tokenBudget = Math.min(tokenBudget * 2, 16000);
+          tokenBudget = Math.min(tokenBudget * 2, 32000);
           console.warn(`[deepseek] retrying with max_tokens=${tokenBudget}`);
         } else {
           messages.push({ role: "assistant", content: raw });
