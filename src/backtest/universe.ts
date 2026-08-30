@@ -123,6 +123,22 @@ export interface UniverseOptions {
    * genuinely active" rather than a pool that never traded at all.
    */
   minLifetimeVolumeUsd?: number;
+  /**
+   * Restricts the SURVIVOR cohort to pools whose CURRENT TVL sits inside the band the
+   * strategy actually targets.
+   *
+   * Without it the survivor cohort is simply "today's volume leaders", which on
+   * Solana means the biggest pools in existence — SOL-USDC and friends, modelling to
+   * $0.4M-$9M of TVL. Every one of them is then rejected by MAX_TVL_USD, the survivor
+   * arm of the comparison makes zero trades, and the survivorship control becomes
+   * degenerate: it cannot show a gap because one side never trades.
+   *
+   * Applying a TVL band to the survivors is safe in a way that applying one to the
+   * dead cohort is NOT. Survivors are alive today by definition, so today's snapshot
+   * is a real measurement of them. A rugged pool reads ~$0 today, which is why the
+   * dead cohort is still selected on lifetime volume and modelled TVL instead.
+   */
+  survivorTvlBand?: { minUsd: number; maxUsd: number };
 }
 
 export interface UniverseResult {
@@ -161,6 +177,7 @@ export async function buildPointInTimeUniverse(options: UniverseOptions): Promis
   let totalUniverseSize = 0;
 
   /* ---- Cohort 1: today's volume leaders (the survivor set) ---- */
+  const band = options.survivorTvlBand;
   for (let page = 1; page <= survivorPages; page++) {
     const res = await fetchPage(page, pageSize, "volume_24h:desc");
     totalUniverseSize = res.total;
@@ -169,6 +186,9 @@ export async function buildPointInTimeUniverse(options: UniverseOptions): Promis
     for (const raw of res.data) {
       const pool = toUniversePool(raw, "survivor");
       if (pool.createdAtMs > Date.now()) continue;
+      // Keep the survivor cohort inside the strategy's target TVL band when asked,
+      // so the comparison is against pools the strategy would actually consider.
+      if (band && (pool.tvlTodayUsd < band.minUsd || pool.tvlTodayUsd > band.maxUsd)) continue;
       byAddress.set(pool.address, pool);
     }
     if (res.data.length < pageSize) break;

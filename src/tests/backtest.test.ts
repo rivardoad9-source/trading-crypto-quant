@@ -45,6 +45,8 @@ function makePool(over: Partial<PoolHistory> = {}): PoolHistory {
     baseMint: "mintA",
     quoteMint: "mintUsdc",
     tvlTodayUsd: 100_000,
+    // Well before the fixture window, so the pool-age gate passes unless a test opts in.
+    createdAtMs: 1_600_000_000_000,
     feeRate: 0.01,
     binStep: 20,
     quoteIsUsd: true,

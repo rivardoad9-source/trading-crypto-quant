@@ -137,6 +137,39 @@ far down a volume sort). Two things silently reinstate the bias if "simplified":
     snapshot.
   - Ingesting only the survivor cohort. If the dead cohort ends up empty the runner warns that the
     comparison proves nothing; do not suppress that warning.
+  - Sampling the survivor cohort straight off the volume leaderboard. Solana's volume leaders are
+    SOL-USDC-scale pools modelling to $0.4M-$9M of TVL, every one of which `MAX_TVL_USD` rejects,
+    so the survivor arm made ZERO trades and 100% of the unbiased run's trades landed on dying
+    pools — a selection artefact that reads exactly like a strategy result. `buildPointInTimeUniverse`
+    takes `survivorTvlBand` and `runMicroCapital.ts` passes the live `MIN_TVL_USD`/`MAX_TVL_USD`, so
+    survivors are pools the strategy would actually consider. Applying a *current* TVL band is safe
+    for survivors specifically — they are alive today by definition — and remains forbidden for the
+    dead cohort, which still selects on lifetime volume and modelled TVL.
+
+**A run whose trades all come from one cohort is an artefact, not a result.** `runMicroCapital.ts`
+prints the cohort composition of its trades and warns when they concentrate in a single cohort.
+That warning is how the survivor-sampling bug above was caught; do not suppress it.
+
+**The backtest's V1.1 guardrails default to OFF, and that is deliberate.** `maxTvlUsd`,
+`minPoolAgeHours`, `maxPriceSurge1hPct`, `poolCooldownHours`, `lockoutConsecutiveFailures` and
+`lockoutHours` default to Infinity/0 in `defaultBacktestConfig()` so that `npm run backtest`,
+`npm run sweep`, `sweep:entry` and `sweep:exits` produce byte-identical output to before they
+existed — the same pattern `takeProfitNetPct` already used. `npm run backtest:micro` switches them
+on by reading `src/config/env.ts` directly, so the harness cannot drift from the engine it claims
+to measure. Adding a gate to the engine without an inert default silently rewrites every historical
+sweep result.
+
+**The pool-age gate is evaluated at the simulated bar, not against the pool's age today.** A pool
+that is 200 days old now was three hours old in June. Using today's age would wave through exactly
+the launches `MIN_POOL_AGE_HOURS` exists to refuse. `PoolHistory.createdAtMs` carries the on-chain
+creation time for that reason, and an unknown creation time is REJECTED, mirroring the live
+screener's `ageUnknown` bucket.
+
+**Concurrent positions must be sized against free capital, not equity.** `equityUsd` only steps on
+a close, so sizing three concurrent positions at `equity x positionSizePct` would deploy the same
+dollars three times over — invisible leverage that flatters every result. The engine subtracts open
+notional before sizing. With `maxConcurrentPositions = 1` nothing is open at that point, so
+single-position runs are unaffected.
 
 **Modelled TVL is the load-bearing assumption of the whole harness.** No free provider serves
 historical TVL. `tvlModel.ts` fits `k = TVL/volume24h` on the live cross-section and applies
