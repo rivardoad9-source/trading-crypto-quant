@@ -1,0 +1,1394 @@
+{
+  "generatedAt": "2026-08-30T10:58:30.859Z",
+  "dataFetchedAt": "2026-08-30T10:37:30.698Z",
+  "window": {
+    "days": 91,
+    "solBars": 2184
+  },
+  "universe": {
+    "survivors": 10,
+    "dead": 12
+  },
+  "tvlModel": {
+    "medianK": 0.1794640378883267,
+    "p25K": 0.09226097943851033,
+    "p75K": 0.4467139280227759
+  },
+  "options": {
+    "capitalUsd": 100,
+    "positionSizePct": 27.5,
+    "maxConcurrentPositions": 3,
+    "gasSolPerTransaction": 0.0005
+  },
+  "splitAt": "2026-07-15T22:30:00.000Z",
+  "variants": [
+    {
+      "metrics": {
+        "key": "baseline",
+        "label": "Baseline V1.1",
+        "rr": "1:0.63",
+        "stopLossPct": -8,
+        "takeProfitNetPct": 5,
+        "ratchetArmNetPct": null,
+        "ratchetStopNetPct": 0,
+        "trades": 20,
+        "winRatePct": 80,
+        "profitFactor": 3.1009388407098006,
+        "netPnlUsd": 27.34502532994449,
+        "returnPct": 27.345025329944487,
+        "maxDrawdownPct": 6.40165104640836,
+        "maxDrawdownUsd": 6.401651046408361,
+        "returnToDrawdown": 4.271558248287586,
+        "avgHoldHours": 5.25,
+        "medianHoldHours": 3,
+        "totalHoursInMarket": 105,
+        "exits": {
+          "OUT_OF_RANGE": 5,
+          "FEE_TAKE_PROFIT": 0,
+          "TAKE_PROFIT": 11,
+          "TIMEOUT": 0,
+          "END_OF_DATA": 0,
+          "STOP_LOSS": 4,
+          "RATCHET_STOP": 0,
+          "RUGGED": 0
+        },
+        "avgWinUsd": 2.522540444263069,
+        "avgLossUsd": -3.253905444566153,
+        "payoff": 0.7752347101774502,
+        "expectancyUsd": 1.3672512664972245,
+        "totalFeesUsd": 18.625872747988588,
+        "totalPositionValueChangeUsd": 12.95320964261401,
+        "gasUsd": 1.516701909206138,
+        "slippageUsd": 2.7173551514519674,
+        "frictionUsd": 4.234057060658105,
+        "frictionPerTradeUsd": 0.21170285303290526,
+        "frictionVsFees": 0.22732127068329414
+      },
+      "inSample": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWinUsd": 0,
+        "avgLossUsd": 0,
+        "payoff": null,
+        "expectancyUsd": 0
+      },
+      "outSample": {
+        "trades": 20,
+        "winRatePct": 80,
+        "netPnlUsd": 27.34502532994449,
+        "profitFactor": 3.1009388407098006,
+        "maxDrawdownPct": 6.40165104640836,
+        "avgWinUsd": 2.522540444263069,
+        "avgLossUsd": -3.253905444566153,
+        "payoff": 0.7752347101774502,
+        "expectancyUsd": 1.3672512664972245
+      },
+      "survived": false,
+      "cohorts": {
+        "dead-or-dormant": {
+          "trades": 20,
+          "pnl": 27.34502532994449
+        }
+      }
+    },
+    {
+      "metrics": {
+        "key": "sl-6-tp5",
+        "label": "SL-6 TP+5",
+        "rr": "1:0.83",
+        "stopLossPct": -6,
+        "takeProfitNetPct": 5,
+        "ratchetArmNetPct": null,
+        "ratchetStopNetPct": 1,
+        "trades": 22,
+        "winRatePct": 81.81818181818183,
+        "profitFactor": 4.238600319293772,
+        "netPnlUsd": 35.4632970692264,
+        "returnPct": 35.4632970692264,
+        "maxDrawdownPct": 5.728949989211628,
+        "maxDrawdownUsd": 5.728949989211628,
+        "returnToDrawdown": 6.190191420069731,
+        "avgHoldHours": 3.3181818181818183,
+        "medianHoldHours": 3,
+        "totalHoursInMarket": 73,
+        "exits": {
+          "OUT_OF_RANGE": 6,
+          "FEE_TAKE_PROFIT": 0,
+          "TAKE_PROFIT": 12,
+          "TIMEOUT": 0,
+          "END_OF_DATA": 0,
+          "STOP_LOSS": 4,
+          "RATCHET_STOP": 0,
+          "RUGGED": 0
+        },
+        "avgWinUsd": 2.57852720073308,
+        "avgLossUsd": -2.7375481359922595,
+        "payoff": 0.9419111820652826,
+        "expectancyUsd": 1.6119680486012,
+        "totalFeesUsd": 15.73200202113602,
+        "totalPositionValueChangeUsd": 24.589602449350842,
+        "gasUsd": 1.6694008409815175,
+        "slippageUsd": 3.188906560278939,
+        "frictionUsd": 4.858307401260457,
+        "frictionPerTradeUsd": 0.22083215460274805,
+        "frictionVsFees": 0.30881685590513513
+      },
+      "inSample": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWinUsd": 0,
+        "avgLossUsd": 0,
+        "payoff": null,
+        "expectancyUsd": 0
+      },
+      "outSample": {
+        "trades": 22,
+        "winRatePct": 81.81818181818183,
+        "netPnlUsd": 35.4632970692264,
+        "profitFactor": 4.238600319293772,
+        "maxDrawdownPct": 5.728949989211628,
+        "avgWinUsd": 2.57852720073308,
+        "avgLossUsd": -2.7375481359922595,
+        "payoff": 0.9419111820652826,
+        "expectancyUsd": 1.6119680486012
+      },
+      "survived": false,
+      "cohorts": {
+        "dead-or-dormant": {
+          "trades": 22,
+          "pnl": 35.4632970692264
+        }
+      }
+    },
+    {
+      "metrics": {
+        "key": "sl-6-tp8",
+        "label": "SL-6 TP+8",
+        "rr": "1:1.33",
+        "stopLossPct": -6,
+        "takeProfitNetPct": 8,
+        "ratchetArmNetPct": null,
+        "ratchetStopNetPct": 1,
+        "trades": 13,
+        "winRatePct": 69.23076923076923,
+        "profitFactor": 2.785381971717557,
+        "netPnlUsd": 19.06131076123079,
+        "returnPct": 19.06131076123079,
+        "maxDrawdownPct": 5.728949989211628,
+        "maxDrawdownUsd": 5.728949989211628,
+        "returnToDrawdown": 3.327190985630135,
+        "avgHoldHours": 5.846153846153846,
+        "medianHoldHours": 4,
+        "totalHoursInMarket": 76,
+        "exits": {
+          "OUT_OF_RANGE": 6,
+          "FEE_TAKE_PROFIT": 0,
+          "TAKE_PROFIT": 3,
+          "TIMEOUT": 0,
+          "END_OF_DATA": 0,
+          "STOP_LOSS": 4,
+          "RATCHET_STOP": 0,
+          "RUGGED": 0
+        },
+        "avgWinUsd": 3.304181289599585,
+        "avgLossUsd": -2.6690802112913685,
+        "payoff": 1.237947542985581,
+        "expectancyUsd": 1.46625467394083,
+        "totalFeesUsd": 14.486073347074752,
+        "totalPositionValueChangeUsd": 8.54788487605987,
+        "gasUsd": 0.9861920320736021,
+        "slippageUsd": 2.986455429830232,
+        "frictionUsd": 3.972647461903834,
+        "frictionPerTradeUsd": 0.30558826630029495,
+        "frictionVsFees": 0.27423908237397204
+      },
+      "inSample": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWinUsd": 0,
+        "avgLossUsd": 0,
+        "payoff": null,
+        "expectancyUsd": 0
+      },
+      "outSample": {
+        "trades": 13,
+        "winRatePct": 69.23076923076923,
+        "netPnlUsd": 19.06131076123079,
+        "profitFactor": 2.785381971717557,
+        "maxDrawdownPct": 5.728949989211628,
+        "avgWinUsd": 3.304181289599585,
+        "avgLossUsd": -2.6690802112913685,
+        "payoff": 1.237947542985581,
+        "expectancyUsd": 1.46625467394083
+      },
+      "survived": false,
+      "cohorts": {
+        "dead-or-dormant": {
+          "trades": 13,
+          "pnl": 19.06131076123079
+        }
+      }
+    },
+    {
+      "metrics": {
+        "key": "sl-6-tp10",
+        "label": "SL-6 TP+10",
+        "rr": "1:1.67",
+        "stopLossPct": -6,
+        "takeProfitNetPct": 10,
+        "ratchetArmNetPct": null,
+        "ratchetStopNetPct": 1,
+        "trades": 10,
+        "winRatePct": 60,
+        "profitFactor": 2.10631981024891,
+        "netPnlUsd": 13.375485738574568,
+        "returnPct": 13.37548573857457,
+        "maxDrawdownPct": 5.728949989211628,
+        "maxDrawdownUsd": 5.728949989211628,
+        "returnToDrawdown": 2.334718537212295,
+        "avgHoldHours": 4.8,
+        "medianHoldHours": 4,
+        "totalHoursInMarket": 48,
+        "exits": {
+          "OUT_OF_RANGE": 6,
+          "FEE_TAKE_PROFIT": 0,
+          "TAKE_PROFIT": 0,
+          "TIMEOUT": 0,
+          "END_OF_DATA": 0,
+          "STOP_LOSS": 4,
+          "RATCHET_STOP": 0,
+          "RUGGED": 0
+        },
+        "avgWinUsd": 4.244259559467221,
+        "avgLossUsd": -3.0225179045571897,
+        "payoff": 1.4042132068326065,
+        "expectancyUsd": 1.3375485738574568,
+        "totalFeesUsd": 6.073695455195668,
+        "totalPositionValueChangeUsd": 11.041511784853162,
+        "gasUsd": 0.7570690455218705,
+        "slippageUsd": 2.982652455952392,
+        "frictionUsd": 3.7397215014742624,
+        "frictionPerTradeUsd": 0.37397215014742624,
+        "frictionVsFees": 0.6157242372557821
+      },
+      "inSample": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWinUsd": 0,
+        "avgLossUsd": 0,
+        "payoff": null,
+        "expectancyUsd": 0
+      },
+      "outSample": {
+        "trades": 10,
+        "winRatePct": 60,
+        "netPnlUsd": 13.375485738574568,
+        "profitFactor": 2.10631981024891,
+        "maxDrawdownPct": 5.728949989211628,
+        "avgWinUsd": 4.244259559467221,
+        "avgLossUsd": -3.0225179045571897,
+        "payoff": 1.4042132068326065,
+        "expectancyUsd": 1.3375485738574568
+      },
+      "survived": false,
+      "cohorts": {
+        "dead-or-dormant": {
+          "trades": 10,
+          "pnl": 13.375485738574568
+        }
+      }
+    },
+    {
+      "metrics": {
+        "key": "sl-6-tp12",
+        "label": "SL-6 TP+12",
+        "rr": "1:2.00",
+        "stopLossPct": -6,
+        "takeProfitNetPct": 12,
+        "ratchetArmNetPct": null,
+        "ratchetStopNetPct": 1,
+        "trades": 10,
+        "winRatePct": 60,
+        "profitFactor": 2.10631981024891,
+        "netPnlUsd": 13.375485738574568,
+        "returnPct": 13.37548573857457,
+        "maxDrawdownPct": 5.728949989211628,
+        "maxDrawdownUsd": 5.728949989211628,
+        "returnToDrawdown": 2.334718537212295,
+        "avgHoldHours": 4.8,
+        "medianHoldHours": 4,
+        "totalHoursInMarket": 48,
+        "exits": {
+          "OUT_OF_RANGE": 6,
+          "FEE_TAKE_PROFIT": 0,
+          "TAKE_PROFIT": 0,
+          "TIMEOUT": 0,
+          "END_OF_DATA": 0,
+          "STOP_LOSS": 4,
+          "RATCHET_STOP": 0,
+          "RUGGED": 0
+        },
+        "avgWinUsd": 4.244259559467221,
+        "avgLossUsd": -3.0225179045571897,
+        "payoff": 1.4042132068326065,
+        "expectancyUsd": 1.3375485738574568,
+        "totalFeesUsd": 6.073695455195668,
+        "totalPositionValueChangeUsd": 11.041511784853162,
+        "gasUsd": 0.7570690455218705,
+        "slippageUsd": 2.982652455952392,
+        "frictionUsd": 3.7397215014742624,
+        "frictionPerTradeUsd": 0.37397215014742624,
+        "frictionVsFees": 0.6157242372557821
+      },
+      "inSample": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWinUsd": 0,
+        "avgLossUsd": 0,
+        "payoff": null,
+        "expectancyUsd": 0
+      },
+      "outSample": {
+        "trades": 10,
+        "winRatePct": 60,
+        "netPnlUsd": 13.375485738574568,
+        "profitFactor": 2.10631981024891,
+        "maxDrawdownPct": 5.728949989211628,
+        "avgWinUsd": 4.244259559467221,
+        "avgLossUsd": -3.0225179045571897,
+        "payoff": 1.4042132068326065,
+        "expectancyUsd": 1.3375485738574568
+      },
+      "survived": false,
+      "cohorts": {
+        "dead-or-dormant": {
+          "trades": 10,
+          "pnl": 13.375485738574568
+        }
+      }
+    },
+    {
+      "metrics": {
+        "key": "sl-6-tp15",
+        "label": "SL-6 TP+15",
+        "rr": "1:2.50",
+        "stopLossPct": -6,
+        "takeProfitNetPct": 15,
+        "ratchetArmNetPct": null,
+        "ratchetStopNetPct": 1,
+        "trades": 10,
+        "winRatePct": 60,
+        "profitFactor": 2.10631981024891,
+        "netPnlUsd": 13.375485738574568,
+        "returnPct": 13.37548573857457,
+        "maxDrawdownPct": 5.728949989211628,
+        "maxDrawdownUsd": 5.728949989211628,
+        "returnToDrawdown": 2.334718537212295,
+        "avgHoldHours": 4.8,
+        "medianHoldHours": 4,
+        "totalHoursInMarket": 48,
+        "exits": {
+          "OUT_OF_RANGE": 6,
+          "FEE_TAKE_PROFIT": 0,
+          "TAKE_PROFIT": 0,
+          "TIMEOUT": 0,
+          "END_OF_DATA": 0,
+          "STOP_LOSS": 4,
+          "RATCHET_STOP": 0,
+          "RUGGED": 0
+        },
+        "avgWinUsd": 4.244259559467221,
+        "avgLossUsd": -3.0225179045571897,
+        "payoff": 1.4042132068326065,
+        "expectancyUsd": 1.3375485738574568,
+        "totalFeesUsd": 6.073695455195668,
+        "totalPositionValueChangeUsd": 11.041511784853162,
+        "gasUsd": 0.7570690455218705,
+        "slippageUsd": 2.982652455952392,
+        "frictionUsd": 3.7397215014742624,
+        "frictionPerTradeUsd": 0.37397215014742624,
+        "frictionVsFees": 0.6157242372557821
+      },
+      "inSample": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWinUsd": 0,
+        "avgLossUsd": 0,
+        "payoff": null,
+        "expectancyUsd": 0
+      },
+      "outSample": {
+        "trades": 10,
+        "winRatePct": 60,
+        "netPnlUsd": 13.375485738574568,
+        "profitFactor": 2.10631981024891,
+        "maxDrawdownPct": 5.728949989211628,
+        "avgWinUsd": 4.244259559467221,
+        "avgLossUsd": -3.0225179045571897,
+        "payoff": 1.4042132068326065,
+        "expectancyUsd": 1.3375485738574568
+      },
+      "survived": false,
+      "cohorts": {
+        "dead-or-dormant": {
+          "trades": 10,
+          "pnl": 13.375485738574568
+        }
+      }
+    },
+    {
+      "metrics": {
+        "key": "sl-6-tp18",
+        "label": "SL-6 TP+18",
+        "rr": "1:3.00",
+        "stopLossPct": -6,
+        "takeProfitNetPct": 18,
+        "ratchetArmNetPct": null,
+        "ratchetStopNetPct": 1,
+        "trades": 10,
+        "winRatePct": 60,
+        "profitFactor": 2.10631981024891,
+        "netPnlUsd": 13.375485738574568,
+        "returnPct": 13.37548573857457,
+        "maxDrawdownPct": 5.728949989211628,
+        "maxDrawdownUsd": 5.728949989211628,
+        "returnToDrawdown": 2.334718537212295,
+        "avgHoldHours": 4.8,
+        "medianHoldHours": 4,
+        "totalHoursInMarket": 48,
+        "exits": {
+          "OUT_OF_RANGE": 6,
+          "FEE_TAKE_PROFIT": 0,
+          "TAKE_PROFIT": 0,
+          "TIMEOUT": 0,
+          "END_OF_DATA": 0,
+          "STOP_LOSS": 4,
+          "RATCHET_STOP": 0,
+          "RUGGED": 0
+        },
+        "avgWinUsd": 4.244259559467221,
+        "avgLossUsd": -3.0225179045571897,
+        "payoff": 1.4042132068326065,
+        "expectancyUsd": 1.3375485738574568,
+        "totalFeesUsd": 6.073695455195668,
+        "totalPositionValueChangeUsd": 11.041511784853162,
+        "gasUsd": 0.7570690455218705,
+        "slippageUsd": 2.982652455952392,
+        "frictionUsd": 3.7397215014742624,
+        "frictionPerTradeUsd": 0.37397215014742624,
+        "frictionVsFees": 0.6157242372557821
+      },
+      "inSample": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWinUsd": 0,
+        "avgLossUsd": 0,
+        "payoff": null,
+        "expectancyUsd": 0
+      },
+      "outSample": {
+        "trades": 10,
+        "winRatePct": 60,
+        "netPnlUsd": 13.375485738574568,
+        "profitFactor": 2.10631981024891,
+        "maxDrawdownPct": 5.728949989211628,
+        "avgWinUsd": 4.244259559467221,
+        "avgLossUsd": -3.0225179045571897,
+        "payoff": 1.4042132068326065,
+        "expectancyUsd": 1.3375485738574568
+      },
+      "survived": false,
+      "cohorts": {
+        "dead-or-dormant": {
+          "trades": 10,
+          "pnl": 13.375485738574568
+        }
+      }
+    },
+    {
+      "metrics": {
+        "key": "sl-6-tp20",
+        "label": "SL-6 TP+20",
+        "rr": "1:3.33",
+        "stopLossPct": -6,
+        "takeProfitNetPct": 20,
+        "ratchetArmNetPct": null,
+        "ratchetStopNetPct": 1,
+        "trades": 10,
+        "winRatePct": 60,
+        "profitFactor": 2.10631981024891,
+        "netPnlUsd": 13.375485738574568,
+        "returnPct": 13.37548573857457,
+        "maxDrawdownPct": 5.728949989211628,
+        "maxDrawdownUsd": 5.728949989211628,
+        "returnToDrawdown": 2.334718537212295,
+        "avgHoldHours": 4.8,
+        "medianHoldHours": 4,
+        "totalHoursInMarket": 48,
+        "exits": {
+          "OUT_OF_RANGE": 6,
+          "FEE_TAKE_PROFIT": 0,
+          "TAKE_PROFIT": 0,
+          "TIMEOUT": 0,
+          "END_OF_DATA": 0,
+          "STOP_LOSS": 4,
+          "RATCHET_STOP": 0,
+          "RUGGED": 0
+        },
+        "avgWinUsd": 4.244259559467221,
+        "avgLossUsd": -3.0225179045571897,
+        "payoff": 1.4042132068326065,
+        "expectancyUsd": 1.3375485738574568,
+        "totalFeesUsd": 6.073695455195668,
+        "totalPositionValueChangeUsd": 11.041511784853162,
+        "gasUsd": 0.7570690455218705,
+        "slippageUsd": 2.982652455952392,
+        "frictionUsd": 3.7397215014742624,
+        "frictionPerTradeUsd": 0.37397215014742624,
+        "frictionVsFees": 0.6157242372557821
+      },
+      "inSample": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWinUsd": 0,
+        "avgLossUsd": 0,
+        "payoff": null,
+        "expectancyUsd": 0
+      },
+      "outSample": {
+        "trades": 10,
+        "winRatePct": 60,
+        "netPnlUsd": 13.375485738574568,
+        "profitFactor": 2.10631981024891,
+        "maxDrawdownPct": 5.728949989211628,
+        "avgWinUsd": 4.244259559467221,
+        "avgLossUsd": -3.0225179045571897,
+        "payoff": 1.4042132068326065,
+        "expectancyUsd": 1.3375485738574568
+      },
+      "survived": false,
+      "cohorts": {
+        "dead-or-dormant": {
+          "trades": 10,
+          "pnl": 13.375485738574568
+        }
+      }
+    },
+    {
+      "metrics": {
+        "key": "sl-6-tp22",
+        "label": "SL-6 TP+22",
+        "rr": "1:3.67",
+        "stopLossPct": -6,
+        "takeProfitNetPct": 22,
+        "ratchetArmNetPct": null,
+        "ratchetStopNetPct": 1,
+        "trades": 10,
+        "winRatePct": 60,
+        "profitFactor": 2.10631981024891,
+        "netPnlUsd": 13.375485738574568,
+        "returnPct": 13.37548573857457,
+        "maxDrawdownPct": 5.728949989211628,
+        "maxDrawdownUsd": 5.728949989211628,
+        "returnToDrawdown": 2.334718537212295,
+        "avgHoldHours": 4.8,
+        "medianHoldHours": 4,
+        "totalHoursInMarket": 48,
+        "exits": {
+          "OUT_OF_RANGE": 6,
+          "FEE_TAKE_PROFIT": 0,
+          "TAKE_PROFIT": 0,
+          "TIMEOUT": 0,
+          "END_OF_DATA": 0,
+          "STOP_LOSS": 4,
+          "RATCHET_STOP": 0,
+          "RUGGED": 0
+        },
+        "avgWinUsd": 4.244259559467221,
+        "avgLossUsd": -3.0225179045571897,
+        "payoff": 1.4042132068326065,
+        "expectancyUsd": 1.3375485738574568,
+        "totalFeesUsd": 6.073695455195668,
+        "totalPositionValueChangeUsd": 11.041511784853162,
+        "gasUsd": 0.7570690455218705,
+        "slippageUsd": 2.982652455952392,
+        "frictionUsd": 3.7397215014742624,
+        "frictionPerTradeUsd": 0.37397215014742624,
+        "frictionVsFees": 0.6157242372557821
+      },
+      "inSample": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWinUsd": 0,
+        "avgLossUsd": 0,
+        "payoff": null,
+        "expectancyUsd": 0
+      },
+      "outSample": {
+        "trades": 10,
+        "winRatePct": 60,
+        "netPnlUsd": 13.375485738574568,
+        "profitFactor": 2.10631981024891,
+        "maxDrawdownPct": 5.728949989211628,
+        "avgWinUsd": 4.244259559467221,
+        "avgLossUsd": -3.0225179045571897,
+        "payoff": 1.4042132068326065,
+        "expectancyUsd": 1.3375485738574568
+      },
+      "survived": false,
+      "cohorts": {
+        "dead-or-dormant": {
+          "trades": 10,
+          "pnl": 13.375485738574568
+        }
+      }
+    },
+    {
+      "metrics": {
+        "key": "sl-6-tp25",
+        "label": "SL-6 TP+25",
+        "rr": "1:4.17",
+        "stopLossPct": -6,
+        "takeProfitNetPct": 25,
+        "ratchetArmNetPct": null,
+        "ratchetStopNetPct": 1,
+        "trades": 10,
+        "winRatePct": 60,
+        "profitFactor": 2.10631981024891,
+        "netPnlUsd": 13.375485738574568,
+        "returnPct": 13.37548573857457,
+        "maxDrawdownPct": 5.728949989211628,
+        "maxDrawdownUsd": 5.728949989211628,
+        "returnToDrawdown": 2.334718537212295,
+        "avgHoldHours": 4.8,
+        "medianHoldHours": 4,
+        "totalHoursInMarket": 48,
+        "exits": {
+          "OUT_OF_RANGE": 6,
+          "FEE_TAKE_PROFIT": 0,
+          "TAKE_PROFIT": 0,
+          "TIMEOUT": 0,
+          "END_OF_DATA": 0,
+          "STOP_LOSS": 4,
+          "RATCHET_STOP": 0,
+          "RUGGED": 0
+        },
+        "avgWinUsd": 4.244259559467221,
+        "avgLossUsd": -3.0225179045571897,
+        "payoff": 1.4042132068326065,
+        "expectancyUsd": 1.3375485738574568,
+        "totalFeesUsd": 6.073695455195668,
+        "totalPositionValueChangeUsd": 11.041511784853162,
+        "gasUsd": 0.7570690455218705,
+        "slippageUsd": 2.982652455952392,
+        "frictionUsd": 3.7397215014742624,
+        "frictionPerTradeUsd": 0.37397215014742624,
+        "frictionVsFees": 0.6157242372557821
+      },
+      "inSample": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWinUsd": 0,
+        "avgLossUsd": 0,
+        "payoff": null,
+        "expectancyUsd": 0
+      },
+      "outSample": {
+        "trades": 10,
+        "winRatePct": 60,
+        "netPnlUsd": 13.375485738574568,
+        "profitFactor": 2.10631981024891,
+        "maxDrawdownPct": 5.728949989211628,
+        "avgWinUsd": 4.244259559467221,
+        "avgLossUsd": -3.0225179045571897,
+        "payoff": 1.4042132068326065,
+        "expectancyUsd": 1.3375485738574568
+      },
+      "survived": false,
+      "cohorts": {
+        "dead-or-dormant": {
+          "trades": 10,
+          "pnl": 13.375485738574568
+        }
+      }
+    },
+    {
+      "metrics": {
+        "key": "sl-8-tp5",
+        "label": "SL-8 TP+5",
+        "rr": "1:0.63",
+        "stopLossPct": -8,
+        "takeProfitNetPct": 5,
+        "ratchetArmNetPct": null,
+        "ratchetStopNetPct": 1,
+        "trades": 20,
+        "winRatePct": 80,
+        "profitFactor": 3.1009388407098006,
+        "netPnlUsd": 27.34502532994449,
+        "returnPct": 27.345025329944487,
+        "maxDrawdownPct": 6.40165104640836,
+        "maxDrawdownUsd": 6.401651046408361,
+        "returnToDrawdown": 4.271558248287586,
+        "avgHoldHours": 5.25,
+        "medianHoldHours": 3,
+        "totalHoursInMarket": 105,
+        "exits": {
+          "OUT_OF_RANGE": 5,
+          "FEE_TAKE_PROFIT": 0,
+          "TAKE_PROFIT": 11,
+          "TIMEOUT": 0,
+          "END_OF_DATA": 0,
+          "STOP_LOSS": 4,
+          "RATCHET_STOP": 0,
+          "RUGGED": 0
+        },
+        "avgWinUsd": 2.522540444263069,
+        "avgLossUsd": -3.253905444566153,
+        "payoff": 0.7752347101774502,
+        "expectancyUsd": 1.3672512664972245,
+        "totalFeesUsd": 18.625872747988588,
+        "totalPositionValueChangeUsd": 12.95320964261401,
+        "gasUsd": 1.516701909206138,
+        "slippageUsd": 2.7173551514519674,
+        "frictionUsd": 4.234057060658105,
+        "frictionPerTradeUsd": 0.21170285303290526,
+        "frictionVsFees": 0.22732127068329414
+      },
+      "inSample": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWinUsd": 0,
+        "avgLossUsd": 0,
+        "payoff": null,
+        "expectancyUsd": 0
+      },
+      "outSample": {
+        "trades": 20,
+        "winRatePct": 80,
+        "netPnlUsd": 27.34502532994449,
+        "profitFactor": 3.1009388407098006,
+        "maxDrawdownPct": 6.40165104640836,
+        "avgWinUsd": 2.522540444263069,
+        "avgLossUsd": -3.253905444566153,
+        "payoff": 0.7752347101774502,
+        "expectancyUsd": 1.3672512664972245
+      },
+      "survived": false,
+      "cohorts": {
+        "dead-or-dormant": {
+          "trades": 20,
+          "pnl": 27.34502532994449
+        }
+      }
+    },
+    {
+      "metrics": {
+        "key": "sl-8-tp8",
+        "label": "SL-8 TP+8",
+        "rr": "1:1.00",
+        "stopLossPct": -8,
+        "takeProfitNetPct": 8,
+        "ratchetArmNetPct": null,
+        "ratchetStopNetPct": 1,
+        "trades": 12,
+        "winRatePct": 58.333333333333336,
+        "profitFactor": 1.4989577432988725,
+        "netPnlUsd": 8.089362216113301,
+        "returnPct": 8.089362216113301,
+        "maxDrawdownPct": 6.40165104640836,
+        "maxDrawdownUsd": 6.401651046408361,
+        "returnToDrawdown": 1.2636368582839,
+        "avgHoldHours": 6.75,
+        "medianHoldHours": 7,
+        "totalHoursInMarket": 81,
+        "exits": {
+          "OUT_OF_RANGE": 5,
+          "FEE_TAKE_PROFIT": 0,
+          "TAKE_PROFIT": 2,
+          "TIMEOUT": 0,
+          "END_OF_DATA": 0,
+          "STOP_LOSS": 5,
+          "RATCHET_STOP": 0,
+          "RUGGED": 0
+        },
+        "avgWinUsd": 3.4716974089753996,
+        "avgLossUsd": -3.2425039293428997,
+        "payoff": 1.0706841023563374,
+        "expectancyUsd": 0.6741135180094417,
+        "totalFeesUsd": 11.339145174283924,
+        "totalPositionValueChangeUsd": 0.46397723932147183,
+        "gasUsd": 0.9097638879219889,
+        "slippageUsd": 2.803996309570109,
+        "frictionUsd": 3.713760197492098,
+        "frictionPerTradeUsd": 0.3094800164576748,
+        "frictionVsFees": 0.32751676959869463
+      },
+      "inSample": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWinUsd": 0,
+        "avgLossUsd": 0,
+        "payoff": null,
+        "expectancyUsd": 0
+      },
+      "outSample": {
+        "trades": 12,
+        "winRatePct": 58.333333333333336,
+        "netPnlUsd": 8.089362216113301,
+        "profitFactor": 1.4989577432988725,
+        "maxDrawdownPct": 6.40165104640836,
+        "avgWinUsd": 3.4716974089753996,
+        "avgLossUsd": -3.2425039293428997,
+        "payoff": 1.0706841023563374,
+        "expectancyUsd": 0.6741135180094417
+      },
+      "survived": false,
+      "cohorts": {
+        "dead-or-dormant": {
+          "trades": 12,
+          "pnl": 8.089362216113301
+        }
+      }
+    },
+    {
+      "metrics": {
+        "key": "sl-8-tp10",
+        "label": "SL-8 TP+10",
+        "rr": "1:1.25",
+        "stopLossPct": -8,
+        "takeProfitNetPct": 10,
+        "ratchetArmNetPct": null,
+        "ratchetStopNetPct": 1,
+        "trades": 10,
+        "winRatePct": 50,
+        "profitFactor": 1.4525668947201857,
+        "netPnlUsd": 7.299070682687196,
+        "returnPct": 7.299070682687196,
+        "maxDrawdownPct": 6.40165104640836,
+        "maxDrawdownUsd": 6.401651046408361,
+        "returnToDrawdown": 1.140185653634203,
+        "avgHoldHours": 8.9,
+        "medianHoldHours": 9,
+        "totalHoursInMarket": 89,
+        "exits": {
+          "OUT_OF_RANGE": 5,
+          "FEE_TAKE_PROFIT": 0,
+          "TAKE_PROFIT": 1,
+          "TIMEOUT": 0,
+          "END_OF_DATA": 0,
+          "STOP_LOSS": 4,
+          "RATCHET_STOP": 0,
+          "RUGGED": 0
+        },
+        "avgWinUsd": 4.685445868703836,
+        "avgLossUsd": -3.2256317321663963,
+        "payoff": 1.4525668947201855,
+        "expectancyUsd": 0.7299070682687196,
+        "totalFeesUsd": 14.204999265609537,
+        "totalPositionValueChangeUsd": -3.685842563207693,
+        "gasUsd": 0.7544936792165056,
+        "slippageUsd": 2.4655923404981404,
+        "frictionUsd": 3.220086019714646,
+        "frictionPerTradeUsd": 0.32200860197146464,
+        "frictionVsFees": 0.22668681352983316
+      },
+      "inSample": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWinUsd": 0,
+        "avgLossUsd": 0,
+        "payoff": null,
+        "expectancyUsd": 0
+      },
+      "outSample": {
+        "trades": 10,
+        "winRatePct": 50,
+        "netPnlUsd": 7.299070682687196,
+        "profitFactor": 1.4525668947201857,
+        "maxDrawdownPct": 6.40165104640836,
+        "avgWinUsd": 4.685445868703836,
+        "avgLossUsd": -3.2256317321663963,
+        "payoff": 1.4525668947201855,
+        "expectancyUsd": 0.7299070682687196
+      },
+      "survived": false,
+      "cohorts": {
+        "dead-or-dormant": {
+          "trades": 10,
+          "pnl": 7.299070682687196
+        }
+      }
+    },
+    {
+      "metrics": {
+        "key": "sl-8-tp12",
+        "label": "SL-8 TP+12",
+        "rr": "1:1.50",
+        "stopLossPct": -8,
+        "takeProfitNetPct": 12,
+        "ratchetArmNetPct": null,
+        "ratchetStopNetPct": 1,
+        "trades": 10,
+        "winRatePct": 60,
+        "profitFactor": 2.111145716469009,
+        "netPnlUsd": 12.443384892524206,
+        "returnPct": 12.443384892524206,
+        "maxDrawdownPct": 6.40165104640836,
+        "maxDrawdownUsd": 6.401651046408361,
+        "returnToDrawdown": 1.943777441525113,
+        "avgHoldHours": 8.8,
+        "medianHoldHours": 9,
+        "totalHoursInMarket": 88,
+        "exits": {
+          "OUT_OF_RANGE": 7,
+          "FEE_TAKE_PROFIT": 0,
+          "TAKE_PROFIT": 0,
+          "TIMEOUT": 1,
+          "END_OF_DATA": 0,
+          "STOP_LOSS": 2,
+          "RATCHET_STOP": 0,
+          "RUGGED": 0
+        },
+        "avgWinUsd": 3.940347085725119,
+        "avgLossUsd": -2.7996744054566274,
+        "payoff": 1.407430477646006,
+        "expectancyUsd": 1.2443384892524205,
+        "totalFeesUsd": 13.148429659190874,
+        "totalPositionValueChangeUsd": 2.6523193815408854,
+        "gasUsd": 0.7555069495202424,
+        "slippageUsd": 2.6018571986873122,
+        "frictionUsd": 3.3573641482075547,
+        "frictionPerTradeUsd": 0.33573641482075545,
+        "frictionVsFees": 0.2553433554599979
+      },
+      "inSample": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWinUsd": 0,
+        "avgLossUsd": 0,
+        "payoff": null,
+        "expectancyUsd": 0
+      },
+      "outSample": {
+        "trades": 10,
+        "winRatePct": 60,
+        "netPnlUsd": 12.443384892524206,
+        "profitFactor": 2.111145716469009,
+        "maxDrawdownPct": 6.40165104640836,
+        "avgWinUsd": 3.940347085725119,
+        "avgLossUsd": -2.7996744054566274,
+        "payoff": 1.407430477646006,
+        "expectancyUsd": 1.2443384892524205
+      },
+      "survived": false,
+      "cohorts": {
+        "dead-or-dormant": {
+          "trades": 10,
+          "pnl": 12.443384892524206
+        }
+      }
+    },
+    {
+      "metrics": {
+        "key": "sl-8-tp15",
+        "label": "SL-8 TP+15",
+        "rr": "1:1.88",
+        "stopLossPct": -8,
+        "takeProfitNetPct": 15,
+        "ratchetArmNetPct": null,
+        "ratchetStopNetPct": 1,
+        "trades": 10,
+        "winRatePct": 60,
+        "profitFactor": 2.111145716469009,
+        "netPnlUsd": 12.443384892524206,
+        "returnPct": 12.443384892524206,
+        "maxDrawdownPct": 6.40165104640836,
+        "maxDrawdownUsd": 6.401651046408361,
+        "returnToDrawdown": 1.943777441525113,
+        "avgHoldHours": 8.8,
+        "medianHoldHours": 9,
+        "totalHoursInMarket": 88,
+        "exits": {
+          "OUT_OF_RANGE": 7,
+          "FEE_TAKE_PROFIT": 0,
+          "TAKE_PROFIT": 0,
+          "TIMEOUT": 1,
+          "END_OF_DATA": 0,
+          "STOP_LOSS": 2,
+          "RATCHET_STOP": 0,
+          "RUGGED": 0
+        },
+        "avgWinUsd": 3.940347085725119,
+        "avgLossUsd": -2.7996744054566274,
+        "payoff": 1.407430477646006,
+        "expectancyUsd": 1.2443384892524205,
+        "totalFeesUsd": 13.148429659190874,
+        "totalPositionValueChangeUsd": 2.6523193815408854,
+        "gasUsd": 0.7555069495202424,
+        "slippageUsd": 2.6018571986873122,
+        "frictionUsd": 3.3573641482075547,
+        "frictionPerTradeUsd": 0.33573641482075545,
+        "frictionVsFees": 0.2553433554599979
+      },
+      "inSample": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWinUsd": 0,
+        "avgLossUsd": 0,
+        "payoff": null,
+        "expectancyUsd": 0
+      },
+      "outSample": {
+        "trades": 10,
+        "winRatePct": 60,
+        "netPnlUsd": 12.443384892524206,
+        "profitFactor": 2.111145716469009,
+        "maxDrawdownPct": 6.40165104640836,
+        "avgWinUsd": 3.940347085725119,
+        "avgLossUsd": -2.7996744054566274,
+        "payoff": 1.407430477646006,
+        "expectancyUsd": 1.2443384892524205
+      },
+      "survived": false,
+      "cohorts": {
+        "dead-or-dormant": {
+          "trades": 10,
+          "pnl": 12.443384892524206
+        }
+      }
+    },
+    {
+      "metrics": {
+        "key": "sl-8-tp18",
+        "label": "SL-8 TP+18",
+        "rr": "1:2.25",
+        "stopLossPct": -8,
+        "takeProfitNetPct": 18,
+        "ratchetArmNetPct": null,
+        "ratchetStopNetPct": 1,
+        "trades": 10,
+        "winRatePct": 60,
+        "profitFactor": 2.111145716469009,
+        "netPnlUsd": 12.443384892524206,
+        "returnPct": 12.443384892524206,
+        "maxDrawdownPct": 6.40165104640836,
+        "maxDrawdownUsd": 6.401651046408361,
+        "returnToDrawdown": 1.943777441525113,
+        "avgHoldHours": 8.8,
+        "medianHoldHours": 9,
+        "totalHoursInMarket": 88,
+        "exits": {
+          "OUT_OF_RANGE": 7,
+          "FEE_TAKE_PROFIT": 0,
+          "TAKE_PROFIT": 0,
+          "TIMEOUT": 1,
+          "END_OF_DATA": 0,
+          "STOP_LOSS": 2,
+          "RATCHET_STOP": 0,
+          "RUGGED": 0
+        },
+        "avgWinUsd": 3.940347085725119,
+        "avgLossUsd": -2.7996744054566274,
+        "payoff": 1.407430477646006,
+        "expectancyUsd": 1.2443384892524205,
+        "totalFeesUsd": 13.148429659190874,
+        "totalPositionValueChangeUsd": 2.6523193815408854,
+        "gasUsd": 0.7555069495202424,
+        "slippageUsd": 2.6018571986873122,
+        "frictionUsd": 3.3573641482075547,
+        "frictionPerTradeUsd": 0.33573641482075545,
+        "frictionVsFees": 0.2553433554599979
+      },
+      "inSample": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWinUsd": 0,
+        "avgLossUsd": 0,
+        "payoff": null,
+        "expectancyUsd": 0
+      },
+      "outSample": {
+        "trades": 10,
+        "winRatePct": 60,
+        "netPnlUsd": 12.443384892524206,
+        "profitFactor": 2.111145716469009,
+        "maxDrawdownPct": 6.40165104640836,
+        "avgWinUsd": 3.940347085725119,
+        "avgLossUsd": -2.7996744054566274,
+        "payoff": 1.407430477646006,
+        "expectancyUsd": 1.2443384892524205
+      },
+      "survived": false,
+      "cohorts": {
+        "dead-or-dormant": {
+          "trades": 10,
+          "pnl": 12.443384892524206
+        }
+      }
+    },
+    {
+      "metrics": {
+        "key": "sl-8-tp20",
+        "label": "SL-8 TP+20",
+        "rr": "1:2.50",
+        "stopLossPct": -8,
+        "takeProfitNetPct": 20,
+        "ratchetArmNetPct": null,
+        "ratchetStopNetPct": 1,
+        "trades": 10,
+        "winRatePct": 60,
+        "profitFactor": 2.111145716469009,
+        "netPnlUsd": 12.443384892524206,
+        "returnPct": 12.443384892524206,
+        "maxDrawdownPct": 6.40165104640836,
+        "maxDrawdownUsd": 6.401651046408361,
+        "returnToDrawdown": 1.943777441525113,
+        "avgHoldHours": 8.8,
+        "medianHoldHours": 9,
+        "totalHoursInMarket": 88,
+        "exits": {
+          "OUT_OF_RANGE": 7,
+          "FEE_TAKE_PROFIT": 0,
+          "TAKE_PROFIT": 0,
+          "TIMEOUT": 1,
+          "END_OF_DATA": 0,
+          "STOP_LOSS": 2,
+          "RATCHET_STOP": 0,
+          "RUGGED": 0
+        },
+        "avgWinUsd": 3.940347085725119,
+        "avgLossUsd": -2.7996744054566274,
+        "payoff": 1.407430477646006,
+        "expectancyUsd": 1.2443384892524205,
+        "totalFeesUsd": 13.148429659190874,
+        "totalPositionValueChangeUsd": 2.6523193815408854,
+        "gasUsd": 0.7555069495202424,
+        "slippageUsd": 2.6018571986873122,
+        "frictionUsd": 3.3573641482075547,
+        "frictionPerTradeUsd": 0.33573641482075545,
+        "frictionVsFees": 0.2553433554599979
+      },
+      "inSample": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWinUsd": 0,
+        "avgLossUsd": 0,
+        "payoff": null,
+        "expectancyUsd": 0
+      },
+      "outSample": {
+        "trades": 10,
+        "winRatePct": 60,
+        "netPnlUsd": 12.443384892524206,
+        "profitFactor": 2.111145716469009,
+        "maxDrawdownPct": 6.40165104640836,
+        "avgWinUsd": 3.940347085725119,
+        "avgLossUsd": -2.7996744054566274,
+        "payoff": 1.407430477646006,
+        "expectancyUsd": 1.2443384892524205
+      },
+      "survived": false,
+      "cohorts": {
+        "dead-or-dormant": {
+          "trades": 10,
+          "pnl": 12.443384892524206
+        }
+      }
+    },
+    {
+      "metrics": {
+        "key": "sl-8-tp22",
+        "label": "SL-8 TP+22",
+        "rr": "1:2.75",
+        "stopLossPct": -8,
+        "takeProfitNetPct": 22,
+        "ratchetArmNetPct": null,
+        "ratchetStopNetPct": 1,
+        "trades": 10,
+        "winRatePct": 60,
+        "profitFactor": 2.111145716469009,
+        "netPnlUsd": 12.443384892524206,
+        "returnPct": 12.443384892524206,
+        "maxDrawdownPct": 6.40165104640836,
+        "maxDrawdownUsd": 6.401651046408361,
+        "returnToDrawdown": 1.943777441525113,
+        "avgHoldHours": 8.8,
+        "medianHoldHours": 9,
+        "totalHoursInMarket": 88,
+        "exits": {
+          "OUT_OF_RANGE": 7,
+          "FEE_TAKE_PROFIT": 0,
+          "TAKE_PROFIT": 0,
+          "TIMEOUT": 1,
+          "END_OF_DATA": 0,
+          "STOP_LOSS": 2,
+          "RATCHET_STOP": 0,
+          "RUGGED": 0
+        },
+        "avgWinUsd": 3.940347085725119,
+        "avgLossUsd": -2.7996744054566274,
+        "payoff": 1.407430477646006,
+        "expectancyUsd": 1.2443384892524205,
+        "totalFeesUsd": 13.148429659190874,
+        "totalPositionValueChangeUsd": 2.6523193815408854,
+        "gasUsd": 0.7555069495202424,
+        "slippageUsd": 2.6018571986873122,
+        "frictionUsd": 3.3573641482075547,
+        "frictionPerTradeUsd": 0.33573641482075545,
+        "frictionVsFees": 0.2553433554599979
+      },
+      "inSample": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWinUsd": 0,
+        "avgLossUsd": 0,
+        "payoff": null,
+        "expectancyUsd": 0
+      },
+      "outSample": {
+        "trades": 10,
+        "winRatePct": 60,
+        "netPnlUsd": 12.443384892524206,
+        "profitFactor": 2.111145716469009,
+        "maxDrawdownPct": 6.40165104640836,
+        "avgWinUsd": 3.940347085725119,
+        "avgLossUsd": -2.7996744054566274,
+        "payoff": 1.407430477646006,
+        "expectancyUsd": 1.2443384892524205
+      },
+      "survived": false,
+      "cohorts": {
+        "dead-or-dormant": {
+          "trades": 10,
+          "pnl": 12.443384892524206
+        }
+      }
+    },
+    {
+      "metrics": {
+        "key": "sl-8-tp25",
+        "label": "SL-8 TP+25",
+        "rr": "1:3.13",
+        "stopLossPct": -8,
+        "takeProfitNetPct": 25,
+        "ratchetArmNetPct": null,
+        "ratchetStopNetPct": 1,
+        "trades": 10,
+        "winRatePct": 60,
+        "profitFactor": 2.111145716469009,
+        "netPnlUsd": 12.443384892524206,
+        "returnPct": 12.443384892524206,
+        "maxDrawdownPct": 6.40165104640836,
+        "maxDrawdownUsd": 6.401651046408361,
+        "returnToDrawdown": 1.943777441525113,
+        "avgHoldHours": 8.8,
+        "medianHoldHours": 9,
+        "totalHoursInMarket": 88,
+        "exits": {
+          "OUT_OF_RANGE": 7,
+          "FEE_TAKE_PROFIT": 0,
+          "TAKE_PROFIT": 0,
+          "TIMEOUT": 1,
+          "END_OF_DATA": 0,
+          "STOP_LOSS": 2,
+          "RATCHET_STOP": 0,
+          "RUGGED": 0
+        },
+        "avgWinUsd": 3.940347085725119,
+        "avgLossUsd": -2.7996744054566274,
+        "payoff": 1.407430477646006,
+        "expectancyUsd": 1.2443384892524205,
+        "totalFeesUsd": 13.148429659190874,
+        "totalPositionValueChangeUsd": 2.6523193815408854,
+        "gasUsd": 0.7555069495202424,
+        "slippageUsd": 2.6018571986873122,
+        "frictionUsd": 3.3573641482075547,
+        "frictionPerTradeUsd": 0.33573641482075545,
+        "frictionVsFees": 0.2553433554599979
+      },
+      "inSample": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWinUsd": 0,
+        "avgLossUsd": 0,
+        "payoff": null,
+        "expectancyUsd": 0
+      },
+      "outSample": {
+        "trades": 10,
+        "winRatePct": 60,
+        "netPnlUsd": 12.443384892524206,
+        "profitFactor": 2.111145716469009,
+        "maxDrawdownPct": 6.40165104640836,
+        "avgWinUsd": 3.940347085725119,
+        "avgLossUsd": -2.7996744054566274,
+        "payoff": 1.407430477646006,
+        "expectancyUsd": 1.2443384892524205
+      },
+      "survived": false,
+      "cohorts": {
+        "dead-or-dormant": {
+          "trades": 10,
+          "pnl": 12.443384892524206
+        }
+      }
+    }
+  ]
+}

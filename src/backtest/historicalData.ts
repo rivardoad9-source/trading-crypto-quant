@@ -62,6 +62,15 @@ export interface PoolHistory {
    * include.
    */
   tvlTodayUsd: number;
+  /**
+   * Pool creation time in unix ms, 0 when upstream did not report one.
+   *
+   * Carried so the backtest can apply the live MIN_POOL_AGE_HOURS gate at each bar
+   * instead of only knowing the pool's age today. A missing value is NOT the same as
+   * a young pool and NOT the same as an old one — the gate rejects it, mirroring the
+   * live screener's `ageUnknown` bucket.
+   */
+  createdAtMs: number;
   /** Pool base fee as a fraction (0.0004 === 0.04%). */
   feeRate: number;
   binStep: number;
@@ -188,6 +197,8 @@ function readCacheFile(path: string): HistoricalDataset | null {
     if (!Array.isArray(parsed.pools) || parsed.pools.length === 0) return null;
     // Reject a cache written before cohorts existed, or the unbiased run is a lie.
     if (parsed.pools.some((p) => p.cohort === undefined)) return null;
+    // Same for creation time: without it the pool-age gate silently rejects everything.
+    if (parsed.pools.some((p) => p.createdAtMs === undefined)) return null;
     return parsed;
   } catch {
     return null;
@@ -211,6 +222,10 @@ export interface IngestOptions {
   force?: boolean;
   /** How many dead/dormant pools to include alongside the survivors. */
   deadPoolCount?: number;
+  /** Restricts the survivor cohort to the strategy's target TVL band. */
+  survivorTvlBand?: { minUsd: number; maxUsd: number };
+  /** Pages of today's volume leaders to scan when building the universe. */
+  survivorPages?: number;
 }
 
 /** Trims bars to the requested trailing window. */
@@ -250,8 +265,10 @@ export async function loadHistoricalData(options: IngestOptions = {}): Promise<H
   console.log("[backtest] building point-in-time pool universe (including dead pools)…");
   const universe = await buildPointInTimeUniverse({
     windowDays,
-    survivorPages: 3,
+    // A TVL band rejects most of each page, so more pages are needed to fill the cohort.
+    survivorPages: options.survivorPages ?? (options.survivorTvlBand ? 12 : 3),
     cohortPages: 30,
+    survivorTvlBand: options.survivorTvlBand,
   });
 
   console.log(
@@ -297,6 +314,7 @@ export async function loadHistoricalData(options: IngestOptions = {}): Promise<H
           baseMint: pool.baseMint,
           quoteMint: pool.quoteMint,
           tvlTodayUsd: pool.tvlTodayUsd,
+          createdAtMs: pool.createdAtMs,
           feeRate: pool.feeRate,
           binStep: pool.binStep,
           quoteIsUsd: USD_QUOTE.has(pool.quoteSymbol.toUpperCase()),

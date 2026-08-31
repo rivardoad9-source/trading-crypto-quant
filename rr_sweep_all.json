@@ -1,0 +1,350 @@
+{
+  "generatedAt": "2026-08-30T11:01:12.064Z",
+  "dataFetchedAt": "2026-08-30T10:37:30.698Z",
+  "window": {
+    "days": 91,
+    "solBars": 2184
+  },
+  "universe": {
+    "survivors": 10,
+    "dead": 12
+  },
+  "tvlModel": {
+    "medianK": 0.1794640378883267,
+    "p25K": 0.09226097943851033,
+    "p75K": 0.4467139280227759
+  },
+  "options": {
+    "capitalUsd": 100,
+    "positionSizePct": 27.5,
+    "maxConcurrentPositions": 3,
+    "gasSolPerTransaction": 0.0005
+  },
+  "splitAt": "2026-07-15T22:30:00.000Z",
+  "variants": [
+    {
+      "metrics": {
+        "key": "baseline",
+        "label": "Baseline V1.1",
+        "rr": "1:0.63",
+        "stopLossPct": -8,
+        "takeProfitNetPct": 5,
+        "ratchetArmNetPct": null,
+        "ratchetStopNetPct": 0,
+        "trades": 20,
+        "winRatePct": 80,
+        "profitFactor": 3.1009388407098006,
+        "netPnlUsd": 27.34502532994449,
+        "returnPct": 27.345025329944487,
+        "maxDrawdownPct": 6.40165104640836,
+        "maxDrawdownUsd": 6.401651046408361,
+        "returnToDrawdown": 4.271558248287586,
+        "avgHoldHours": 5.25,
+        "medianHoldHours": 3,
+        "totalHoursInMarket": 105,
+        "exits": {
+          "OUT_OF_RANGE": 5,
+          "FEE_TAKE_PROFIT": 0,
+          "TAKE_PROFIT": 11,
+          "TIMEOUT": 0,
+          "END_OF_DATA": 0,
+          "STOP_LOSS": 4,
+          "RATCHET_STOP": 0,
+          "RUGGED": 0
+        },
+        "avgWinUsd": 2.522540444263069,
+        "avgLossUsd": -3.253905444566153,
+        "payoff": 0.7752347101774502,
+        "expectancyUsd": 1.3672512664972245,
+        "totalFeesUsd": 18.625872747988588,
+        "totalPositionValueChangeUsd": 12.95320964261401,
+        "gasUsd": 1.516701909206138,
+        "slippageUsd": 2.7173551514519674,
+        "frictionUsd": 4.234057060658105,
+        "frictionPerTradeUsd": 0.21170285303290526,
+        "frictionVsFees": 0.22732127068329414
+      },
+      "inSample": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWinUsd": 0,
+        "avgLossUsd": 0,
+        "payoff": null,
+        "expectancyUsd": 0
+      },
+      "outSample": {
+        "trades": 20,
+        "winRatePct": 80,
+        "netPnlUsd": 27.34502532994449,
+        "profitFactor": 3.1009388407098006,
+        "maxDrawdownPct": 6.40165104640836,
+        "avgWinUsd": 2.522540444263069,
+        "avgLossUsd": -3.253905444566153,
+        "payoff": 0.7752347101774502,
+        "expectancyUsd": 1.3672512664972245
+      },
+      "survived": false,
+      "cohorts": {
+        "dead-or-dormant": {
+          "trades": 20,
+          "pnl": 27.34502532994449
+        }
+      },
+      "concentration": {
+        "distinctPools": 1,
+        "pairs": [
+          "Jimothy-SOL"
+        ],
+        "firstEntry": "2026-07-18T21:00:00.000Z",
+        "lastEntry": "2026-07-28T20:00:00.000Z",
+        "entrySpanDays": 9.958333333333334
+      }
+    },
+    {
+      "metrics": {
+        "key": "v1",
+        "label": "V1 Tighter risk",
+        "rr": "1:3.00",
+        "stopLossPct": -6,
+        "takeProfitNetPct": 18,
+        "ratchetArmNetPct": null,
+        "ratchetStopNetPct": 0,
+        "trades": 10,
+        "winRatePct": 60,
+        "profitFactor": 2.10631981024891,
+        "netPnlUsd": 13.375485738574568,
+        "returnPct": 13.37548573857457,
+        "maxDrawdownPct": 5.728949989211628,
+        "maxDrawdownUsd": 5.728949989211628,
+        "returnToDrawdown": 2.334718537212295,
+        "avgHoldHours": 4.8,
+        "medianHoldHours": 4,
+        "totalHoursInMarket": 48,
+        "exits": {
+          "OUT_OF_RANGE": 6,
+          "FEE_TAKE_PROFIT": 0,
+          "TAKE_PROFIT": 0,
+          "TIMEOUT": 0,
+          "END_OF_DATA": 0,
+          "STOP_LOSS": 4,
+          "RATCHET_STOP": 0,
+          "RUGGED": 0
+        },
+        "avgWinUsd": 4.244259559467221,
+        "avgLossUsd": -3.0225179045571897,
+        "payoff": 1.4042132068326065,
+        "expectancyUsd": 1.3375485738574568,
+        "totalFeesUsd": 6.073695455195668,
+        "totalPositionValueChangeUsd": 11.041511784853162,
+        "gasUsd": 0.7570690455218705,
+        "slippageUsd": 2.982652455952392,
+        "frictionUsd": 3.7397215014742624,
+        "frictionPerTradeUsd": 0.37397215014742624,
+        "frictionVsFees": 0.6157242372557821
+      },
+      "inSample": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWinUsd": 0,
+        "avgLossUsd": 0,
+        "payoff": null,
+        "expectancyUsd": 0
+      },
+      "outSample": {
+        "trades": 10,
+        "winRatePct": 60,
+        "netPnlUsd": 13.375485738574568,
+        "profitFactor": 2.10631981024891,
+        "maxDrawdownPct": 5.728949989211628,
+        "avgWinUsd": 4.244259559467221,
+        "avgLossUsd": -3.0225179045571897,
+        "payoff": 1.4042132068326065,
+        "expectancyUsd": 1.3375485738574568
+      },
+      "survived": false,
+      "cohorts": {
+        "dead-or-dormant": {
+          "trades": 10,
+          "pnl": 13.375485738574568
+        }
+      },
+      "concentration": {
+        "distinctPools": 1,
+        "pairs": [
+          "Jimothy-SOL"
+        ],
+        "firstEntry": "2026-07-18T21:00:00.000Z",
+        "lastEntry": "2026-07-28T20:00:00.000Z",
+        "entrySpanDays": 9.958333333333334
+      }
+    },
+    {
+      "metrics": {
+        "key": "v2",
+        "label": "V2 Wider reward",
+        "rr": "1:2.75",
+        "stopLossPct": -8,
+        "takeProfitNetPct": 22,
+        "ratchetArmNetPct": null,
+        "ratchetStopNetPct": 0,
+        "trades": 10,
+        "winRatePct": 60,
+        "profitFactor": 2.111145716469009,
+        "netPnlUsd": 12.443384892524206,
+        "returnPct": 12.443384892524206,
+        "maxDrawdownPct": 6.40165104640836,
+        "maxDrawdownUsd": 6.401651046408361,
+        "returnToDrawdown": 1.943777441525113,
+        "avgHoldHours": 8.8,
+        "medianHoldHours": 9,
+        "totalHoursInMarket": 88,
+        "exits": {
+          "OUT_OF_RANGE": 7,
+          "FEE_TAKE_PROFIT": 0,
+          "TAKE_PROFIT": 0,
+          "TIMEOUT": 1,
+          "END_OF_DATA": 0,
+          "STOP_LOSS": 2,
+          "RATCHET_STOP": 0,
+          "RUGGED": 0
+        },
+        "avgWinUsd": 3.940347085725119,
+        "avgLossUsd": -2.7996744054566274,
+        "payoff": 1.407430477646006,
+        "expectancyUsd": 1.2443384892524205,
+        "totalFeesUsd": 13.148429659190874,
+        "totalPositionValueChangeUsd": 2.6523193815408854,
+        "gasUsd": 0.7555069495202424,
+        "slippageUsd": 2.6018571986873122,
+        "frictionUsd": 3.3573641482075547,
+        "frictionPerTradeUsd": 0.33573641482075545,
+        "frictionVsFees": 0.2553433554599979
+      },
+      "inSample": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWinUsd": 0,
+        "avgLossUsd": 0,
+        "payoff": null,
+        "expectancyUsd": 0
+      },
+      "outSample": {
+        "trades": 10,
+        "winRatePct": 60,
+        "netPnlUsd": 12.443384892524206,
+        "profitFactor": 2.111145716469009,
+        "maxDrawdownPct": 6.40165104640836,
+        "avgWinUsd": 3.940347085725119,
+        "avgLossUsd": -2.7996744054566274,
+        "payoff": 1.407430477646006,
+        "expectancyUsd": 1.2443384892524205
+      },
+      "survived": false,
+      "cohorts": {
+        "dead-or-dormant": {
+          "trades": 10,
+          "pnl": 12.443384892524206
+        }
+      },
+      "concentration": {
+        "distinctPools": 1,
+        "pairs": [
+          "Jimothy-SOL"
+        ],
+        "firstEntry": "2026-07-18T21:00:00.000Z",
+        "lastEntry": "2026-07-28T18:00:00.000Z",
+        "entrySpanDays": 9.875
+      }
+    },
+    {
+      "metrics": {
+        "key": "v3",
+        "label": "V3 Ratchet",
+        "rr": "1:2.50",
+        "stopLossPct": -8,
+        "takeProfitNetPct": 20,
+        "ratchetArmNetPct": 7,
+        "ratchetStopNetPct": 1,
+        "trades": 11,
+        "winRatePct": 63.63636363636363,
+        "profitFactor": 2.5090488723661317,
+        "netPnlUsd": 17.285584733327966,
+        "returnPct": 17.285584733327966,
+        "maxDrawdownPct": 6.40165104640836,
+        "maxDrawdownUsd": 6.401651046408361,
+        "returnToDrawdown": 2.7001760339664287,
+        "avgHoldHours": 5.636363636363637,
+        "medianHoldHours": 3,
+        "totalHoursInMarket": 62,
+        "exits": {
+          "OUT_OF_RANGE": 7,
+          "FEE_TAKE_PROFIT": 0,
+          "TAKE_PROFIT": 0,
+          "TIMEOUT": 0,
+          "END_OF_DATA": 0,
+          "STOP_LOSS": 3,
+          "RATCHET_STOP": 1,
+          "RUGGED": 0
+        },
+        "avgWinUsd": 4.105743849420542,
+        "avgLossUsd": -2.863655553153958,
+        "payoff": 1.4337422127806467,
+        "expectancyUsd": 1.5714167939389059,
+        "totalFeesUsd": 8.996379172658566,
+        "totalPositionValueChangeUsd": 12.44956818364198,
+        "gasUsd": 0.8323082084007066,
+        "slippageUsd": 3.3280544145718767,
+        "frictionUsd": 4.160362622972583,
+        "frictionPerTradeUsd": 0.37821478390659846,
+        "frictionVsFees": 0.4624485632638284
+      },
+      "inSample": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWinUsd": 0,
+        "avgLossUsd": 0,
+        "payoff": null,
+        "expectancyUsd": 0
+      },
+      "outSample": {
+        "trades": 11,
+        "winRatePct": 63.63636363636363,
+        "netPnlUsd": 17.285584733327966,
+        "profitFactor": 2.5090488723661317,
+        "maxDrawdownPct": 6.40165104640836,
+        "avgWinUsd": 4.105743849420542,
+        "avgLossUsd": -2.863655553153958,
+        "payoff": 1.4337422127806467,
+        "expectancyUsd": 1.5714167939389059
+      },
+      "survived": false,
+      "cohorts": {
+        "dead-or-dormant": {
+          "trades": 11,
+          "pnl": 17.285584733327966
+        }
+      },
+      "concentration": {
+        "distinctPools": 1,
+        "pairs": [
+          "Jimothy-SOL"
+        ],
+        "firstEntry": "2026-07-18T21:00:00.000Z",
+        "lastEntry": "2026-07-28T20:00:00.000Z",
+        "entrySpanDays": 9.958333333333334
+      }
+    }
+  ]
+}

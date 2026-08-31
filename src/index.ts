@@ -9,7 +9,7 @@ import { startApiServer, stopApiServer } from "./api/server.js";
 import { startTelegramCommands, stopTelegramCommands } from "./services/telegramCommands.js";
 
 /**
- * Serialises cron jobs. A 10-minute DLMM cycle that overruns must not overlap the
+ * Serialises cron jobs. A DLMM cycle that overruns its window must not overlap the
  * next tick — overlapping ticks would double-accrue fees on the same interval.
  */
 function withLock(name: string, task: () => Promise<unknown>): () => Promise<void> {
@@ -57,9 +57,10 @@ async function main(): Promise<void> {
     cron.schedule(CRON.DAILY_MACRO, withLock("macro", runMacroResearcher), { timezone: env.TZ }),
     /*
      * The screener skips its own monitor stage: the 1-minute loop below owns position
-     * marking, and a second pass on the 10-minute clock would only re-measure what was
+     * marking, and a second pass on the screener's clock would only re-measure what was
      * already measured 60 seconds ago. If the fast monitor is switched off, this stage
-     * comes back so positions are never left unmonitored.
+     * comes back so positions are never left unmonitored — note that would then be the
+     * only exit check, on the 30-minute screener clock.
      */
     cron.schedule(
       CRON.DLMM_LOOP,
@@ -74,8 +75,8 @@ async function main(): Promise<void> {
   if (env.FAST_MONITOR_ENABLED) {
     /*
      * Its own cron job with its own lock, so a screener cycle that overruns its
-     * 10-minute window cannot delay an exit. The two contend only for positionMutex,
-     * and a fast tick that loses that race skips rather than queues.
+     * window cannot delay an exit. The two contend only for positionMutex, and a fast
+     * tick that loses that race skips rather than queues.
      */
     tasks.push(
       cron.schedule(CRON.FAST_MONITOR, withLock("fast-monitor", runFastPositionMonitor), {
@@ -84,14 +85,14 @@ async function main(): Promise<void> {
     );
     console.log(`[cron] monitor  ${CRON.FAST_MONITOR}      (${env.TZ})`);
   } else {
-    console.warn("[cron] fast monitor DISABLED — exits are only checked on the 10m screener tick");
+    console.warn("[cron] fast monitor DISABLED — exits are only checked on the 30m screener tick");
   }
 
   console.log(`[cron] macro    ${CRON.DAILY_MACRO}    (${env.TZ})`);
   console.log(`[cron] dlmm     ${CRON.DLMM_LOOP}   (${env.TZ})`);
   console.log(`[cron] snapshot ${CRON.DAILY_SNAPSHOT}   (${env.TZ})`);
 
-  // Run one cycle immediately so a fresh start has data rather than waiting 10 minutes.
+  // Run one cycle immediately so a fresh start has data rather than waiting 30 minutes.
   void withLock("dlmm:boot", runDlmmTradingCycle)();
 
   const shutdown = async (signal: string): Promise<void> => {
