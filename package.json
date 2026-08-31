@@ -23,13 +23,15 @@
     "smoke": "node --import tsx src/scripts/smokeServices.ts",
     "seed:demo": "node --import tsx src/scripts/seedDemo.ts",
     "backtest": "node --import tsx src/backtest/runBacktest.ts",
+    "backtest:micro": "node --import tsx src/backtest/runMicroCapital.ts",
     "test:local": "node --import tsx scripts/test-local.ts",
     "audit:report": "node --import tsx scripts/generate-audit-report.ts",
     "sweep": "node --import tsx src/scripts/sweepGuardrails.ts",
     "research": "node --import tsx src/scripts/research.ts",
     "report:final": "node --import tsx scripts/render-report.ts",
     "sweep:exits": "node --import tsx src/scripts/sweepExits.ts",
-    "sweep:entry": "node --import tsx src/scripts/sweepEntry.ts"
+    "sweep:entry": "node --import tsx src/scripts/sweepEntry.ts",
+    "sweep:rr": "node --import tsx src/scripts/sweepRiskReward.ts"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.1",

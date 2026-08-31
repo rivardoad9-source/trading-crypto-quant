@@ -55,6 +55,28 @@ export interface BacktestConfig {
   /** Entry filter: minimum TVL in USD, applied to the MODELLED point-in-time TVL. */
   minTvlUsd: number;
   /**
+   * Entry filter: upper TVL bound — the live MAX_TVL_USD "sweet spot" ceiling.
+   *
+   * Above it fee share is too thin to clear friction. Defaults to Infinity so every
+   * pre-existing run and sweep is bit-for-bit unchanged; the live V1.1 value is 500k.
+   */
+  maxTvlUsd: number;
+  /**
+   * Entry filter: reject pools younger than this at the SIMULATED bar, from the
+   * pool's on-chain creation time. Defaults to 0 (gate off) for backward
+   * compatibility. Live V1.1 uses 48.
+   *
+   * Fails closed exactly like the live screener: a pool with no known creation time
+   * is rejected rather than waved through, because "not measured" must not resolve
+   * to "fine".
+   */
+  minPoolAgeHours: number;
+  /**
+   * Entry filter: reject a pool whose price gained more than this over the single
+   * preceding bar. Defaults to Infinity (gate off). Live V1.1 uses 10.
+   */
+  maxPriceSurge1hPct: number;
+  /**
    * Entry filter: reject a pool whose token gained more than this over the trailing
    * 24 bars. Entering at the top of a pump is how a position ends up fully converted
    * to the dumped token on the retrace.
@@ -92,10 +114,43 @@ export interface BacktestConfig {
    * negative number (e.g. -100) to disable.
    */
   stopLossPct: number;
+  /**
+   * Exit: arm a profit ratchet once mark-to-market NET PnL first reaches this
+   * percentage of notional. Once armed the stop moves UP to `ratchetStopNetPct` and
+   * never moves back down, so a position that ran into profit cannot return a loss
+   * bigger than that floor.
+   *
+   * Defaults to Infinity, i.e. never arms, so every pre-existing run and sweep is
+   * bit-for-bit unchanged — the same inert-default rule `takeProfitNetPct`,
+   * `maxTvlUsd` and the anti-churn gates already follow. The live engine has no
+   * equivalent: this is a proposal being measured, not a mirror of production.
+   */
+  ratchetArmNetPct: number;
+  /**
+   * Where the stop sits once the ratchet has armed, as a percentage of notional.
+   * Positive locks in a gain; 0 is a pure breakeven stop. Only read when
+   * `ratchetArmNetPct` is finite.
+   */
+  ratchetStopNetPct: number;
   /** Exit: maximum holding period in hours. */
   maxDurationHours: number;
   /** How many positions may be open at once across all pools. */
   maxConcurrentPositions: number;
+
+  /* ---- Anti-churn gates (mirror of assessPoolCooldown) ---- */
+  /**
+   * Hours a pool is benched after ANY of its positions closes, win or lose.
+   * 0 disables, which is the default so existing runs are unchanged. Live V1.1: 4.
+   */
+  poolCooldownHours: number;
+  /**
+   * Consecutive failing closes on one pool that trip the circuit breaker. A failing
+   * close is a stop-loss, an out-of-range exit, or a rug — mirroring the live
+   * FAILURE_STATUSES set. Any other outcome resets the run. 0 disables. Live: 2.
+   */
+  lockoutConsecutiveFailures: number;
+  /** Hours a tripped pool stays locked, measured from its last failure. Live: 24. */
+  lockoutHours: number;
 
   /* ---- Realistic execution costs ---- */
   /** SOL burnt per transaction (priority + base fee). A position costs two. */
@@ -124,13 +179,21 @@ export const defaultBacktestConfig = (): BacktestConfig => ({
   minFeeTvlRatio: 0.008,
   maxFeeTvlRatio: 0.25,
   minTvlUsd: 50_000,
+  maxTvlUsd: Number.POSITIVE_INFINITY,
+  minPoolAgeHours: 0,
+  maxPriceSurge1hPct: Number.POSITIVE_INFINITY,
   maxPriceChange24hPct: 150,
   minFeeCostCoverage: 1.0,
   takeProfitFeePct: 5,
   takeProfitNetPct: Number.POSITIVE_INFINITY,
   stopLossPct: -15,
+  ratchetArmNetPct: Number.POSITIVE_INFINITY,
+  ratchetStopNetPct: 0,
   maxDurationHours: 24,
   maxConcurrentPositions: 1,
+  poolCooldownHours: 0,
+  lockoutConsecutiveFailures: 0,
+  lockoutHours: 0,
   gasSolPerTransaction: 0.0035,
   forcedExitSlippagePct: 1.0,
   rugLookaheadBars: 24,
@@ -144,6 +207,7 @@ export type ExitReason =
   | "TIMEOUT"
   | "END_OF_DATA"
   | "STOP_LOSS"
+  | "RATCHET_STOP"
   | "RUGGED";
 
 export interface BacktestTrade {
@@ -314,6 +378,88 @@ export function priceChange24hPct(bars: Bar[], index: number): number | null {
   return (now / then - 1) * 100;
 }
 
+/**
+ * Single-bar price change as a percentage, i.e. the 1h surge the live
+ * MAX_PRICE_SURGE_1H_PCT gate measures. Returns null when there is no prior bar —
+ * callers must treat that as unknown and reject, not as flat.
+ */
+export function priceSurge1hPct(bars: Bar[], index: number): number | null {
+  if (index < 1) return null;
+  const now = bars[index]?.c;
+  const prev = bars[index - 1]?.c;
+  if (!now || !prev || prev <= 0) return null;
+  return (now / prev - 1) * 100;
+}
+
+/**
+ * Per-pool close history, the backtest's stand-in for `getPoolExitHistory()`.
+ * Mirrors PoolExitRecord: unix seconds instead of DB timestamp strings.
+ */
+interface PoolExitState {
+  lastClosedAt: number | null;
+  lastFailureAt: number | null;
+  consecutiveFailures: number;
+}
+
+/**
+ * Does this exit count as a FAILURE for the circuit breaker?
+ *
+ * Mirrors the live mapping. `evaluateExit` picks the status from the exit REASON, not
+ * from the PnL sign, so a range exit is a failure even if it happened to close green,
+ * and a timeout is neutral even if it closed red. FAILURE_STATUSES is
+ * CLOSED_LOSS + CLOSED_OUT_OF_RANGE, i.e. stop-loss and out-of-range here. A rug is a
+ * forced liquidation out of the range, so it counts too.
+ */
+export function isFailureExit(reason: ExitReason): boolean {
+  return reason === "STOP_LOSS" || reason === "OUT_OF_RANGE" || reason === "RUGGED";
+}
+
+/*
+ * RATCHET_STOP is deliberately absent from the list above. The ratchet only fires on a
+ * position that already reached `ratchetArmNetPct`, and it fires at a floor set at or
+ * above breakeven, so it is a profit-taking exit that live would book as CLOSED_PROFIT
+ * — not a CLOSED_LOSS. This engine maps failures from the exit REASON rather than the
+ * PnL sign (a range exit counts even when it closes green), so classifying the ratchet
+ * by reason is the consistent choice; a run of successful ratchets must not arm the
+ * circuit breaker.
+ */
+
+/**
+ * Backtest mirror of `assessPoolCooldown`, on unix seconds.
+ *
+ * Lockout is checked first because it is the longer and more serious of the two, and
+ * a pool with no closed history is never blocked — both exactly as live. The live
+ * function's unparseable-timestamp branch has no analogue here: these timestamps are
+ * generated by the simulation, so they cannot fail to parse.
+ */
+export function assessCooldownAt(
+  state: PoolExitState | undefined,
+  nowSeconds: number,
+  config: Pick<
+    BacktestConfig,
+    "poolCooldownHours" | "lockoutConsecutiveFailures" | "lockoutHours"
+  >,
+): { blocked: boolean; kind: "cooldown" | "lockout" | null } {
+  if (!state) return { blocked: false, kind: null };
+
+  if (
+    config.lockoutConsecutiveFailures > 0 &&
+    config.lockoutHours > 0 &&
+    state.consecutiveFailures >= config.lockoutConsecutiveFailures &&
+    state.lastFailureAt !== null
+  ) {
+    const elapsedHours = (nowSeconds - state.lastFailureAt) / 3600;
+    if (elapsedHours < config.lockoutHours) return { blocked: true, kind: "lockout" };
+  }
+
+  if (config.poolCooldownHours > 0 && state.lastClosedAt !== null) {
+    const elapsedHours = (nowSeconds - state.lastClosedAt) / 3600;
+    if (elapsedHours < config.poolCooldownHours) return { blocked: true, kind: "cooldown" };
+  }
+
+  return { blocked: false, kind: null };
+}
+
 export interface LiquidationCheck {
   rugged: boolean;
   /** Ratio the position could actually be liquidated at. */
@@ -409,6 +555,8 @@ interface OpenPosition {
   feesUsd: number;
   barsHeld: number;
   barsOutOfRange: number;
+  /** True once mark-to-market net PnL has touched `ratchetArmNetPct`. Never unset. */
+  ratchetArmed: boolean;
 }
 
 export interface SimulationInput {
@@ -438,6 +586,9 @@ export function runSimulation(input: SimulationInput): BacktestResult {
   let barsWithNoCandidate = 0;
   const gateRejections: Record<string, number> = {};
 
+  /** Per-pool close history driving the cooldown and lockout gates. */
+  const exitState = new Map<string, PoolExitState>();
+
   const firstSolPrice = solUsdBars[0]?.c ?? 0;
   const startingEquityUsd =
     config.startingCapitalUsd !== null
@@ -466,7 +617,16 @@ export function runSimulation(input: SimulationInput): BacktestResult {
     });
 
     // Slippage applies whenever the exit was forced by the market rather than chosen.
-    const forced = reason === "OUT_OF_RANGE" || reason === "STOP_LOSS" || liquidation.rugged;
+    /*
+     * The ratchet is a market-triggered exit like the stop: the position moved against
+     * a level and the engine had to hit the book, so it pays the same concession. Only
+     * TAKE_PROFIT / FEE_TAKE_PROFIT / TIMEOUT are chosen exits.
+     */
+    const forced =
+      reason === "OUT_OF_RANGE" ||
+      reason === "STOP_LOSS" ||
+      reason === "RATCHET_STOP" ||
+      liquidation.rugged;
     const slippageFactor = forced ? 1 - config.forcedExitSlippagePct / 100 : 1;
     const realisedRatio = Math.max(0, liquidation.realisableRatio * slippageFactor);
 
@@ -527,6 +687,26 @@ export function runSimulation(input: SimulationInput): BacktestResult {
       barsHeld: pos.barsHeld,
       barsOutOfRange: pos.barsOutOfRange,
     });
+
+    /*
+     * Fold the close into the pool's anti-churn record. The run of consecutive
+     * failures is incremented by a failing exit and reset by anything else, which is
+     * what `summarisePoolExits` does when it walks the rows newest-first.
+     */
+    const effectiveReason: ExitReason = liquidation.rugged ? "RUGGED" : reason;
+    const state = exitState.get(pos.pool.address) ?? {
+      lastClosedAt: null,
+      lastFailureAt: null,
+      consecutiveFailures: 0,
+    };
+    state.lastClosedAt = t;
+    if (isFailureExit(effectiveReason)) {
+      state.consecutiveFailures++;
+      state.lastFailureAt = t;
+    } else {
+      state.consecutiveFailures = 0;
+    }
+    exitState.set(pos.pool.address, state);
   };
 
   for (const t of timeline) {
@@ -567,8 +747,23 @@ export function runSimulation(input: SimulationInput): BacktestResult {
             100
           : 0;
 
+      /*
+       * Arm the ratchet BEFORE the exit ladder is evaluated, so the bar that reaches
+       * the trigger is already protected. It is a one-way latch: `ratchetArmed` is
+       * never cleared, which is what makes the floor a ratchet rather than a level the
+       * position can slip back under unnoticed.
+       */
+      if (markNetPct >= config.ratchetArmNetPct) pos.ratchetArmed = true;
+
       let reason: ExitReason | null = null;
       if (!inRange) reason = "OUT_OF_RANGE";
+      /*
+       * The armed floor sits above `stopLossPct` by construction, so it is tested
+       * first; a gap straight through both still books the ratchet, which is the
+       * level that was actually live at the time.
+       */
+      else if (pos.ratchetArmed && markNetPct <= config.ratchetStopNetPct)
+        reason = "RATCHET_STOP";
       else if (markNetPct <= config.stopLossPct) reason = "STOP_LOSS";
       else if (markNetPct >= config.takeProfitNetPct) reason = "TAKE_PROFIT";
       else if (feePct >= config.takeProfitFeePct) reason = "FEE_TAKE_PROFIT";
@@ -594,18 +789,64 @@ export function runSimulation(input: SimulationInput): BacktestResult {
 
     // Position size is needed by the breakeven gate, so resolve it before screening.
     const solUsdForSizing = solPriceAt(solUsdBars, t);
+
+    /*
+     * Capital already tied up in open positions cannot be deployed again.
+     *
+     * `equityUsd` only steps on a close, so with more than one concurrent position
+     * sizing off equity alone would let the account deploy the same dollars two or
+     * three times over — invisible leverage that flatters every result. Subtracting
+     * the open notional caps total exposure at the account. With
+     * maxConcurrentPositions = 1 nothing is ever open at this point, so the figure is
+     * identical to before and prior runs are unaffected.
+     */
+    const deployedUsd = open.reduce((sum, p) => sum + p.notionalUsd, 0);
+    const freeCapitalUsd = Math.max(0, equityUsd - deployedUsd);
+
     const prospectiveNotional =
       config.startingCapitalUsd !== null
-        ? equityUsd * (config.positionSizePct / 100)
+        ? Math.min(equityUsd * (config.positionSizePct / 100), freeCapitalUsd)
         : config.virtualSol * (solUsdForSizing ?? 0);
     const gasRoundTripUsd =
       config.gasSolPerTransaction * 2 * (solUsdForSizing ?? 0);
+
+    if (!(prospectiveNotional > 0)) {
+      gateRejections.noFreeCapital = (gateRejections.noFreeCapital ?? 0) + 1;
+      barsWithNoCandidate++;
+      continue;
+    }
 
     for (const pool of usablePools) {
       if (held.has(pool.address)) continue;
 
       const idx = poolIndexes.get(pool.address)?.get(t);
       if (idx === undefined) continue;
+
+      // Anti-churn gates first: they are the cheapest and the most decisive.
+      const cooldown = assessCooldownAt(exitState.get(pool.address), t, config);
+      if (cooldown.blocked) {
+        const key = cooldown.kind === "lockout" ? "lockout" : "cooldown";
+        gateRejections[key] = (gateRejections[key] ?? 0) + 1;
+        continue;
+      }
+
+      /*
+       * Pool-age gate, evaluated at the SIMULATED bar rather than against the pool's
+       * age today — a pool that is 200 days old now was 3 hours old in June, and
+       * using today's age would wave through exactly the launches this gate exists
+       * to refuse. Fails closed on an unknown creation time, as live does.
+       */
+      if (config.minPoolAgeHours > 0) {
+        if (!(pool.createdAtMs > 0)) {
+          gateRejections.ageUnknown = (gateRejections.ageUnknown ?? 0) + 1;
+          continue;
+        }
+        const ageHours = (t * 1000 - pool.createdAtMs) / 3_600_000;
+        if (ageHours < config.minPoolAgeHours) {
+          gateRejections.tooYoung = (gateRejections.tooYoung ?? 0) + 1;
+          continue;
+        }
+      }
 
       const vol24h = trailing24hVolume(pool.bars, idx);
       if (vol24h === null) continue;
@@ -619,6 +860,12 @@ export function runSimulation(input: SimulationInput): BacktestResult {
       const tvl = estimateTvlAt(tvlModel, pool.address, vol24h).tvlUsd;
       if (tvl < config.minTvlUsd) {
         gateRejections.lowTvl = (gateRejections.lowTvl ?? 0) + 1;
+        continue;
+      }
+      // Sweet-spot ceiling: above it the position's share of the pool is too small
+      // for fees to clear friction. Mirrors the live MAX_TVL_USD gate.
+      if (tvl > config.maxTvlUsd) {
+        gateRejections.highTvl = (gateRejections.highTvl ?? 0) + 1;
         continue;
       }
 
@@ -641,6 +888,19 @@ export function runSimulation(input: SimulationInput): BacktestResult {
       if (change24h > config.maxPriceChange24hPct) {
         gateRejections.pumped = (gateRejections.pumped ?? 0) + 1;
         continue;
+      }
+
+      // 1h surge gate. Unknown is rejected, same fail-closed rule as the 24h gate.
+      if (Number.isFinite(config.maxPriceSurge1hPct)) {
+        const surge1h = priceSurge1hPct(pool.bars, idx);
+        if (surge1h === null) {
+          gateRejections.surgeUnknown = (gateRejections.surgeUnknown ?? 0) + 1;
+          continue;
+        }
+        if (surge1h > config.maxPriceSurge1hPct) {
+          gateRejections.surged = (gateRejections.surged ?? 0) + 1;
+          continue;
+        }
       }
 
       // Breakeven gate: fees must clear the cost of getting in and out.
@@ -674,7 +934,7 @@ export function runSimulation(input: SimulationInput): BacktestResult {
 
     const notionalUsd =
       config.startingCapitalUsd !== null
-        ? equityUsd * (config.positionSizePct / 100)
+        ? Math.min(equityUsd * (config.positionSizePct / 100), freeCapitalUsd)
         : config.virtualSol * solUsd;
     if (!(notionalUsd > 0)) {
       barsWithNoCandidate++;
@@ -696,6 +956,7 @@ export function runSimulation(input: SimulationInput): BacktestResult {
       feesUsd: 0,
       barsHeld: 0,
       barsOutOfRange: 0,
+      ratchetArmed: false,
     });
   }
 
@@ -756,6 +1017,7 @@ export function summarise(trades: BacktestTrade[], startingEquityUsd: number): B
     TIMEOUT: 0,
     END_OF_DATA: 0,
     STOP_LOSS: 0,
+    RATCHET_STOP: 0,
     RUGGED: 0,
   };
   for (const t of trades) exitReasonCounts[t.exitReason]++;

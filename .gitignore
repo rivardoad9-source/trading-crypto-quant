@@ -31,3 +31,15 @@ backtest_results_*.json
 
 # Generated audit reports
 reports/
+
+# Database & Raw Data (JANGAN DI-PUSH)
+*.sqlite
+*.db
+flowmetrix.db
+flowmetrix_legacy_*.db
+data/historical/
+*.csv
+
+# Allow Laporan Backtest (BOLEH DI-PUSH)
+!backtest_micro_capital_report.txt
+!backtest_*_summary.json
