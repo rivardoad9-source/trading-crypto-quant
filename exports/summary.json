@@ -1,5 +1,5 @@
 {
-  "exportedAt": "2026-08-30T15:00:22.729Z",
+  "exportedAt": "2026-08-31T15:00:38.759Z",
   "sourceDb": "flowmetrix.db",
   "cutoffs": [
     {
@@ -7,11 +7,11 @@
       "openedAtFrom": "2026-08-29T13:20:40.000Z"
     }
   ],
-  "totalSimulatedTrades": 33,
-  "activePositions": 0,
-  "closedProfit": 12,
+  "totalSimulatedTrades": 35,
+  "activePositions": 1,
+  "closedProfit": 13,
   "closedLoss": 13,
-  "totalRealizedPnlUsd": 19.53,
+  "totalRealizedPnlUsd": 25.16,
   "perVersion": [
     {
       "version": "v1.0",
@@ -22,12 +22,12 @@
     },
     {
       "version": "v1.1",
-      "total": 6,
-      "wins": 5,
+      "total": 8,
+      "wins": 6,
       "losses": 1,
-      "netUsd": 22.87
+      "netUsd": 28.5
     }
   ],
-  "researchLogs": 3,
-  "dailyPnlSnapshots": 3
+  "researchLogs": 4,
+  "dailyPnlSnapshots": 4
 }
