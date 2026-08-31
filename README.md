@@ -132,7 +132,7 @@ are limited by different things.
 | Loop | Cadence | Does | Costs |
 |---|---|---|---|
 | Fast monitor | 60s | Marks open positions (≤ `MAX_CONCURRENT_POSITIONS`), fires exits | ≤3 Meteora pool reads, fetched concurrently |
-| Screener | 10m | 600-pool scan, GeckoTerminal volume, anti-rug RPC, DeepSeek reasoning | Every rate-limited upstream in the project |
+| Screener | 30m | 600-pool scan, GeckoTerminal volume, anti-rug RPC, DeepSeek reasoning | Every rate-limited upstream in the project, plus one deepseek-reasoner call |
 
 **Why.** An exit threshold is only as tight as the interval that tests it. On the old
 single 10-minute loop the dry run in `exports/` fired its `STOP_LOSS_PCT=-8` stop at a
@@ -140,11 +140,29 @@ median -9.79% and a worst **-13.84%**: price crossed the level and kept going wh
 engine sat between ticks. `evaluateExit` was never wrong — it just was not asked often
 enough. Checking every 60 seconds bounds the overshoot to what a pool moves in a minute.
 
-The screener stays on 10 minutes on purpose. It is the loop that touches the
-rate-limited upstreams, and running it 10x more often to fix an exit-timing problem
-would trade one failure for another. When `FAST_MONITOR_ENABLED` is true the screener
-skips its own monitor stage (`runDlmmTradingCycle({ skipMonitor: true })`); when it is
-false the stage returns, so positions are never left unmonitored.
+The screener stays slow on purpose. It is the loop that touches the rate-limited
+upstreams, and running it 30x more often to fix an exit-timing problem would trade one
+failure for another. It moved from 10 minutes to 30 for a second reason: every tick
+spends a `deepseek-reasoner` call whose chain-of-thought dominates the token bill, and
+at 10 minutes it paid three times over for entries the anti-churn gates mostly refuse
+anyway — `POOL_COOLDOWN_HOURS` is measured in hours, so a pool re-examined 20 minutes
+sooner is still benched. When `FAST_MONITOR_ENABLED` is true the screener skips its own
+monitor stage (`runDlmmTradingCycle({ skipMonitor: true })`); when it is false the stage
+returns, so positions are never left unmonitored — at screener cadence, which is now
+30 minutes, so expect the overshoot above to come back worse.
+
+**DeepSeek cost ceiling.** A reasoning call is capped at `REASONER_MAX_TOKENS` (8000),
+covering chain-of-thought *and* the answer, and that budget is identical on every
+attempt. It used to double after a truncated attempt, so one tick could spend 4000 then
+8000 reasoning tokens and still return nothing — the failure mode billed twice.
+`structuredCompletion` now allows at most `MAX_STRUCTURED_ATTEMPTS` (2, i.e. one retry);
+the retry repairs malformed JSON by feeding the error back, and is a plain re-roll when
+nothing came back at all. If the second attempt is still empty it throws
+`DeepSeekTruncatedError`, which `seekNewEntry` catches to skip the cycle
+(`skipReason: "DeepSeek CoT truncated, skipping cycle"`) rather than raise. Open
+positions are untouched by that skip: the fast monitor marks and exits them on its own
+clock, and only a *new* entry is deferred to the next tick. Any other DeepSeek failure
+still propagates — swallowing those would hide real bugs.
 
 Prices for the fast monitor come from **Meteora**, not DexScreener. `entry_price`,
 `lower_bin_price` and `upper_bin_price` are all stored from `DlmmPool.currentPrice`, so
