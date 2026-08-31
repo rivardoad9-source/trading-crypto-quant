@@ -30,6 +30,53 @@ export class DeepSeekUnavailableError extends Error {
   }
 }
 
+/**
+ * The model spent its whole token budget on chain-of-thought and returned no answer.
+ *
+ * Distinct from a schema-validation failure on purpose: there is nothing to repair and
+ * nothing to feed back, so the only sane response is for the caller to skip this cycle.
+ * Callers that can do without a decision should catch THIS and skip; a generic catch
+ * would also swallow real bugs.
+ */
+export class DeepSeekTruncatedError extends Error {
+  constructor(detail: string) {
+    super(`[deepseek] chain-of-thought truncated before an answer was written: ${detail}`);
+    this.name = "DeepSeekTruncatedError";
+  }
+}
+
+/**
+ * Hard ceiling on a single deepseek-reasoner call, covering chain-of-thought AND the
+ * answer.
+ *
+ * Locked rather than escalating. The budget used to double on a truncated attempt, so
+ * one screener tick could spend 4000 then 8000 reasoning tokens and still return
+ * nothing — the failure mode paid for twice. A fixed ceiling makes the worst-case cost
+ * of a tick knowable in advance; a run that cannot answer inside it is skipped (see
+ * DeepSeekTruncatedError) rather than bought a bigger budget. Callers may ask for
+ * LESS, never more.
+ */
+export const REASONER_MAX_TOKENS = 8000;
+
+/**
+ * At most one retry — two attempts total.
+ *
+ * The retry earns its keep on a malformed-JSON answer, where the error is fed back and
+ * the model repairs it. It earns nothing on a third pass: by then the prompt is the
+ * suspect, and each further attempt is another full chain-of-thought billed for the
+ * same tick.
+ */
+export const MAX_STRUCTURED_ATTEMPTS = 2;
+
+/** Reasoning calls are capped at REASONER_MAX_TOKENS; chat calls keep their own default. */
+export function resolveTokenBudget(
+  reasoning: boolean | undefined,
+  requested: number | undefined,
+): number {
+  if (!reasoning) return requested ?? 1500;
+  return Math.min(requested ?? REASONER_MAX_TOKENS, REASONER_MAX_TOKENS);
+}
+
 export interface ChatOptions {
   system: string;
   user: string;
@@ -57,7 +104,7 @@ export async function chatCompletion(opts: ChatOptions): Promise<string> {
     ],
     // deepseek-reasoner rejects a temperature override; only send it for chat.
     ...(opts.reasoning ? {} : { temperature: opts.temperature ?? 0.4 }),
-    max_tokens: opts.maxTokens ?? 1500,
+    max_tokens: resolveTokenBudget(opts.reasoning, opts.maxTokens),
   });
 
   const content = res.choices[0]?.message?.content;
@@ -85,24 +132,40 @@ export function extractJsonBlock(raw: string): string {
 
 export interface StructuredOptions<T> extends ChatOptions {
   schema: ZodType<T>;
-  /** Retries on parse/validation failure, feeding the error back to the model. */
+  /**
+   * Retries on parse/validation failure, feeding the error back to the model.
+   * Clamped to MAX_STRUCTURED_ATTEMPTS — a caller cannot buy more chain-of-thought.
+   */
   maxAttempts?: number;
 }
 
 /**
  * Requests JSON output and validates it against a Zod schema. On a validation
  * failure the error is fed back to the model so it can repair its own output.
+ *
+ * Two failure shapes, deliberately reported as different errors:
+ *  - malformed or schema-invalid JSON — retried once with the error fed back, then a
+ *    plain Error;
+ *  - an empty completion (`finish_reason: "length"`), i.e. the reasoner burned the
+ *    whole budget thinking — retried once, then DeepSeekTruncatedError, which callers
+ *    treat as "skip this cycle" rather than as a bug.
  */
 export async function structuredCompletion<T>(opts: StructuredOptions<T>): Promise<T> {
   if (!client) throw new DeepSeekUnavailableError();
 
   const model = opts.reasoning ? env.DEEPSEEK_MODEL_REASONER : env.DEEPSEEK_MODEL_CHAT;
-  const maxAttempts = opts.maxAttempts ?? 2;
+  const maxAttempts = Math.min(
+    opts.maxAttempts ?? MAX_STRUCTURED_ATTEMPTS,
+    MAX_STRUCTURED_ATTEMPTS,
+  );
 
   // max_tokens covers chain-of-thought AND the answer. deepseek-reasoner writes the
   // thinking first, so a chat-sized budget is spent before `content` begins and the
-  // call returns "" with finish_reason "length". Reasoning calls need real headroom.
-  let tokenBudget = opts.maxTokens ?? (opts.reasoning ? 4000 : 1200);
+  // call returns "" with finish_reason "length". Reasoning calls need real headroom —
+  // but a FIXED amount of it: this budget is the same on every attempt.
+  const tokenBudget = opts.reasoning
+    ? resolveTokenBudget(true, opts.maxTokens)
+    : (opts.maxTokens ?? 1200);
 
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
     { role: "system", content: opts.system },
@@ -135,7 +198,7 @@ export async function structuredCompletion<T>(opts: StructuredOptions<T>): Promi
         const reasoningTokens = (
           res.usage as { completion_tokens_details?: { reasoning_tokens?: number } } | undefined
         )?.completion_tokens_details?.reasoning_tokens;
-        truncated = choice?.finish_reason === "length";
+        truncated = true;
         throw new Error(
           `empty completion (model=${model}, finish_reason=${choice?.finish_reason ?? "unknown"}` +
             (reasoningTokens === undefined ? "" : `, reasoning_tokens=${reasoningTokens}`) +
@@ -155,25 +218,21 @@ export async function structuredCompletion<T>(opts: StructuredOptions<T>): Promi
 
       console.warn(`[deepseek] structured output attempt ${attempt} failed: ${lastError}`);
 
-      if (attempt < maxAttempts) {
-        if (truncated) {
-          // Nothing was returned to correct, and repeating the call with the same
-          // budget reproduces the truncation exactly. Give the next attempt room
-          // instead of asking the model to repair an answer it never produced.
-          tokenBudget = Math.min(tokenBudget * 2, 8000);
-          console.warn(`[deepseek] retrying with max_tokens=${tokenBudget}`);
-        } else {
-          messages.push({ role: "assistant", content: raw });
-          messages.push({
-            role: "user",
-            content:
-              `Your previous response failed schema validation: ${lastError}. ` +
-              `Respond again with ONLY a valid JSON object matching the required schema. No prose.`,
-          });
-        }
+      // Nothing came back to correct, so there is no repair message to add; the retry
+      // is a plain re-roll on the same fixed budget. Growing the budget here is what
+      // this change removed — see REASONER_MAX_TOKENS.
+      if (attempt < maxAttempts && !truncated) {
+        messages.push({ role: "assistant", content: raw });
+        messages.push({
+          role: "user",
+          content:
+            `Your previous response failed schema validation: ${lastError}. ` +
+            `Respond again with ONLY a valid JSON object matching the required schema. No prose.`,
+        });
       }
     }
   }
 
+  if (truncated) throw new DeepSeekTruncatedError(`${maxAttempts} attempts; ${lastError}`);
   throw new Error(`[deepseek] structured output failed after ${maxAttempts} attempts: ${lastError}`);
 }

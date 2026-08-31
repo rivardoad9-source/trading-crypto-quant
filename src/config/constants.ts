@@ -2,15 +2,24 @@
 export const CRON = {
   /** Daily macro research report at 07:00 WIB. */
   DAILY_MACRO: "0 7 * * *",
-  /** DLMM screener every 10 minutes: 600-pool scan, GeckoTerminal volume, DeepSeek. */
-  DLMM_LOOP: "*/10 * * * *",
+  /**
+   * DLMM screener every 30 minutes: 600-pool scan, GeckoTerminal volume, DeepSeek.
+   *
+   * Every tick spends a deepseek-reasoner call, whose chain-of-thought dominates the
+   * token bill; at 10 minutes the screener burned three times the tokens for entries
+   * the anti-churn gates mostly refuse anyway (POOL_COOLDOWN_HOURS is measured in
+   * hours, not minutes). This clock only governs when a NEW entry may be considered —
+   * open positions are marked by FAST_MONITOR below and are unaffected.
+   */
+  DLMM_LOOP: "*/30 * * * *",
   /**
    * Position monitor every 60 seconds.
    *
-   * Deliberately 10x the screener's rate. Exit thresholds are only as tight as the
-   * interval that tests them: at 10 minutes the dry run overshot a -8% stop-loss to
-   * -13.84%. This loop touches only open positions, so it carries none of the
-   * screener's rate-limited upstreams.
+   * Deliberately far faster than the screener, and independent of it. Exit thresholds
+   * are only as tight as the interval that tests them: at 10 minutes the dry run
+   * overshot a -8% stop-loss to -13.84%. This loop touches only open positions, so it
+   * carries none of the screener's rate-limited upstreams and none of its LLM cost —
+   * slowing the screener must never slow this.
    */
   FAST_MONITOR: "* * * * *",
   /** Roll up closed trades into daily_pnl_snapshots just before midnight. */

@@ -27,7 +27,11 @@ import {
   fetchRealizedVolatilityPctPerHour,
   fetchSolPriceUsd,
 } from "../services/marketData.js";
-import { isDeepSeekAvailable, structuredCompletion } from "../services/deepseek.js";
+import {
+  DeepSeekTruncatedError,
+  isDeepSeekAvailable,
+  structuredCompletion,
+} from "../services/deepseek.js";
 import { positionMutex } from "../services/mutex.js";
 import {
   getPriorityFeeEstimateSafe,
@@ -723,8 +727,8 @@ export interface FastMonitorResult extends MonitorSummary {
  * pool moves in a minute.
  *
  * It carries no screening, no LLM call and no macro data — only the positions already
- * open, so it stays cheap enough to run 10x more often than the screener while the
- * heavy 600-pool scan and its rate-limited upstreams stay on the 10-minute clock.
+ * open, so it stays cheap enough to run every minute while the heavy 600-pool scan and
+ * its rate-limited upstreams stay on the 30-minute screener clock.
  *
  * A tick that cannot take the lock returns `ran: false` and does nothing. That is not
  * a missed check: the holder is the screener's own monitor pass or /close_all, both of
@@ -1222,22 +1226,38 @@ async function seekNewEntry(): Promise<EntrySummary> {
   top.length = 0;
   top.push(...affordable);
 
-  const decision = await structuredCompletion({
-    system: STRATEGY_SYSTEM_PROMPT,
-    user: buildCandidatePrompt(
-      top.map((t) => t.pool),
-      solPriceUsd,
-      priorityFee,
-      /*
-       * In-context learning: the last few losing closes, so the model sizes this range
-       * against how its recent ranges actually behaved instead of judging every
-       * candidate from a blank slate.
-       */
-      getRecentFailurePostMortems(env.LOSS_CONTEXT_TRADES),
-    ),
-    schema: DLMMPoolDecisionSchema,
-    reasoning: true,
-  });
+  /*
+   * A reasoner that burns its whole budget on chain-of-thought and returns nothing is
+   * an expected outcome, not a fault: there is no decision to act on, and no amount of
+   * retrying inside one tick produces one. Skip the cycle and let the next screener
+   * tick try again — open positions are unaffected, the fast monitor still marks and
+   * exits them on its own clock. Only the truncation is swallowed; any other DeepSeek
+   * failure still propagates, because it means something is genuinely wrong.
+   */
+  let decision: DLMMPoolDecision;
+  try {
+    decision = await structuredCompletion({
+      system: STRATEGY_SYSTEM_PROMPT,
+      user: buildCandidatePrompt(
+        top.map((t) => t.pool),
+        solPriceUsd,
+        priorityFee,
+        /*
+         * In-context learning: the last few losing closes, so the model sizes this range
+         * against how its recent ranges actually behaved instead of judging every
+         * candidate from a blank slate.
+         */
+        getRecentFailurePostMortems(env.LOSS_CONTEXT_TRADES),
+      ),
+      schema: DLMMPoolDecisionSchema,
+      reasoning: true,
+    });
+  } catch (err) {
+    if (!(err instanceof DeepSeekTruncatedError)) throw err;
+    summary.skipReason = "DeepSeek CoT truncated, skipping cycle";
+    console.warn(`[dlmm] DeepSeek CoT truncated, skipping cycle: ${err.message}`);
+    return summary;
+  }
   summary.decision = decision;
 
   if (decision.action !== "ENTER" || decision.selectedPool === "NONE") {
@@ -1362,8 +1382,8 @@ export interface CycleOptions {
   /**
    * Skip the monitor stage and only look for a new entry.
    *
-   * Set by the 10-minute scheduler, because the 1-minute fast monitor owns position
-   * marking there and a second pass 10 minutes apart adds nothing. Left false for
+   * Set by the screener's scheduler, because the 1-minute fast monitor owns position
+   * marking there and a second pass 30 minutes apart adds nothing. Left false for
    * `npm run dlmm:once`, the smoke test and any manual trigger, where "one cycle" is
    * expected to mean screen AND monitor.
    */
@@ -1372,7 +1392,7 @@ export interface CycleOptions {
 
 /**
  * One full paper-trading cycle: mark open positions, then look for a new entry.
- * Runs every 10 minutes via cron; also exported for manual triggering.
+ * Runs every 30 minutes via cron; also exported for manual triggering.
  */
 export async function runDlmmTradingCycle(
   options: CycleOptions = {},

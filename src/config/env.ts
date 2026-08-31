@@ -267,16 +267,16 @@ const EnvSchema = z
      * nothing was watching. Unobserved time is not evidence the position was earning:
      * the same fail-closed rule the anti-rug and volatility gates use.
      *
-     * Generous next to the 60s monitor and the 10m screener, so normal operation never
+     * Generous next to the 60s monitor and the 30m screener, so normal operation never
      * reaches it; only a restart or a long stall does.
      */
     MAX_FEE_ACCRUAL_GAP_HOURS: numeric(1),
 
     /* ---- Fast position monitor ---- */
     /**
-     * Runs the position monitor every 60s, decoupled from the 10-minute screener.
+     * Runs the position monitor every 60s, decoupled from the 30-minute screener.
      *
-     * On for good reason: the 10-minute cadence let a -8% stop-loss close at -13.84%
+     * On for good reason: a 10-minute cadence let a -8% stop-loss close at -13.84%
      * because price crossed the threshold between ticks. Turn it off only to fall back
      * to monitoring at screener cadence, and expect that overshoot back.
      */
