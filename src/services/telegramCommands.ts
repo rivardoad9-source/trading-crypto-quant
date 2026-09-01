@@ -382,7 +382,7 @@ export function startTelegramCommands(): void {
 
   bot.command("position", async (ctx) => {
     if (!isCommandAuthorized(ctx.from?.id)) return deny(ctx, "position");
-    const arg = ((ctx as any).match ?? "").trim();
+    const arg = String((ctx as any).payload ?? "").trim();
     if (!arg) {
       await replyMarkdown(ctx, "Usage: /position <position_id>\nGet the id from /status or /trades.");
       return;
@@ -414,6 +414,11 @@ export function startTelegramCommands(): void {
   // loop — so log readiness immediately and keep the catch for boot failures
   // (getMe / deleteWebhook errors). The 409 conflict case is handled inside
   // telegraf's polling loop with retries; it surfaces here only on boot.
+  // A command handler error must never kill the whole bot: log it and keep
+  // polling (without bot.catch(), Telegraf re-throws and polling stops).
+  bot.catch((err) => {
+    console.error("[telegram] command error:", err);
+  });
   bot.launch().catch((err) => {
     started = false;
     console.error("[telegram] bot launch failed:", err);
