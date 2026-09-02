@@ -111,6 +111,32 @@
     background:rgba(16,185,129,.10);
     color:#6ee7b7;
   }
+  /* ---- monthly rows ---- */
+  .mrow{
+    display:grid;
+    grid-template-columns:82px minmax(0,1fr) auto;
+    align-items:center;
+    gap:14px;
+    padding:9px 10px;
+    border-radius:9px;
+  }
+  .mrow:hover{ background:rgba(255,255,255,.028); }
+  .mtrack{
+    position:relative;
+    height:8px;
+    border-radius:999px;
+    background:rgba(255,255,255,.05);
+    overflow:hidden;
+  }
+  .mfill{
+    position:absolute; inset:0 auto 0 0;
+    border-radius:999px;
+    /* Width is set inline from the month's share of the largest month. */
+  }
+  .mfill-pos{ background:linear-gradient(90deg,#047857,#34d399); }
+  .mfill-neg{ background:linear-gradient(90deg,#991b1b,#f87171); }
+  .mnum{ font-variant-numeric:tabular-nums; }
+
   /* Hairline that fades at both ends, so the header ends without a hard rule. */
   .header-rule{
     height:1px;
@@ -203,11 +229,6 @@
       <div class="flex shrink-0 flex-col items-start gap-2.5 sm:items-end">
         <!-- Filled by setStatus(). Distinguishes a live figure from a frozen one. -->
         <div id="conn-status" class="inline-flex items-center gap-2 rounded-full border border-zinc-800 bg-zinc-900/60 px-3 py-1.5"></div>
-        <!-- zinc-600 measured 2.0:1 over the strengthened wash — unreadable. -->
-        <p class="font-mono text-[11px] leading-relaxed text-zinc-500 sm:text-right">
-          <span id="src-label" class="text-zinc-400">…</span><br class="hidden sm:inline">
-          <span id="src-meta"></span>
-        </p>
       </div>
     </div>
 
@@ -276,6 +297,18 @@
       <span class="inline-flex items-center gap-1.5"><span class="cell inline-block h-[9px] w-[9px] shrink-0" style="background:#dc2626"></span>Loss day</span>
       <span class="inline-flex items-center gap-1.5"><span class="cell inline-block h-[9px] w-[9px] shrink-0" style="background:#3f4650"></span>Impas — net $0.00</span>
     </div>
+  </section>
+
+  <!-- Monthly performance -->
+  <section class="card mb-5 rounded-xl p-5 sm:p-6">
+    <div class="mb-5 flex flex-col gap-1.5 sm:flex-row sm:items-end sm:justify-between">
+      <div>
+        <h2 class="text-[15px] font-semibold tracking-tight text-zinc-100">Monthly Performance</h2>
+        <p id="monthly-sub" class="mt-1 text-[12.5px] text-zinc-500">—</p>
+      </div>
+      <p class="text-[11px] text-zinc-500">panjang bar relatif terhadap bulan terbesar</p>
+    </div>
+    <div id="monthly-body" class="flex flex-col gap-1"></div>
   </section>
 
   <!-- Historical trades — collapsed by default so the page stays scannable. -->
@@ -457,7 +490,6 @@ const archiveTrades = TRADES.map(t => ({ ...t, ms: Date.parse(t.t), src: "archiv
  */
 
 let liveTrades = [];
-let liveMeta = null;
 
 /**
  * Archive ∪ live, deduped by position id, oldest close first.
@@ -832,6 +864,66 @@ document.getElementById("fact-next").addEventListener("click", () => {
   cycleFacts();
 });
 
+/* ---------- monthly performance ---------- */
+
+/**
+ * Closed trades grouped by calendar month, newest first.
+ *
+ * Months come from UTC components of the close, the same basis as the heatmap day
+ * keys, so a trade cannot sit in September on one panel and August on another.
+ */
+function monthlyBuckets(rows) {
+  const buckets = new Map();
+  for (const t of rows) {
+    const d = new Date(t.ms);
+    const key = d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0");
+    const cur = buckets.get(key) || { pnl: 0, n: 0, wins: 0 };
+    cur.pnl += t.p;
+    cur.n += 1;
+    if (t.p > 0) cur.wins += 1;
+    buckets.set(key, cur);
+  }
+  return [...buckets.entries()].sort((a, b) => b[0].localeCompare(a[0]));
+}
+
+function renderMonthly(v) {
+  const body = document.getElementById("monthly-body");
+  const months = monthlyBuckets(v.rows);
+
+  if (!months.length) {
+    body.innerHTML = '<p class="px-2 py-3 text-[13px] text-zinc-500">Belum ada posisi ditutup.</p>';
+    document.getElementById("monthly-sub").textContent = "belum ada data";
+    return;
+  }
+
+  // Bars are scaled against the largest ABSOLUTE month, so a losing month is as long
+  // as a winning month of the same size instead of reading as a smaller result.
+  const maxAbs = Math.max(...months.map(([, m]) => Math.abs(m.pnl)), 0.01);
+
+  body.innerHTML = months.map(([key, m]) => {
+    const [y, mo] = key.split("-").map(Number);
+    const label = MONTHS[mo - 1] + " " + y;
+    const pct = Math.max((Math.abs(m.pnl) / maxAbs) * 100, 1.5);
+    const pos = m.pnl > 0;
+    const tone = m.pnl > 0 ? "text-emerald-400" : m.pnl < 0 ? "text-red-400" : "text-zinc-300";
+    const winRate = m.n > 0 ? (m.wins / m.n) * 100 : 0;
+
+    return '<div class="mrow">'
+      + '<div class="text-[12.5px] font-medium text-zinc-300">' + esc(label) + "</div>"
+      + '<div>'
+      +   '<div class="mtrack"><div class="mfill ' + (pos ? "mfill-pos" : "mfill-neg") + '" style="width:' + pct.toFixed(1) + '%"></div></div>'
+      +   '<div class="mt-1.5 text-[11px] text-zinc-500">' + m.n + " trade · " + m.wins + "W " + (m.n - m.wins) + "L · win rate " + winRate.toFixed(0) + "%</div>"
+      + "</div>"
+      + '<div class="mnum text-right text-[14px] font-semibold ' + tone + '">' + esc(usd(m.pnl)) + "</div>"
+      + "</div>";
+  }).join("");
+
+  const best = months.reduce((a, b) => (b[1].pnl > a[1].pnl ? b : a));
+  const [by, bm] = best[0].split("-").map(Number);
+  document.getElementById("monthly-sub").textContent =
+    months.length + " bulan · terbaik " + MONTHS[bm - 1] + " " + by + " (" + usd(best[1].pnl) + ")";
+}
+
 /* ---------- historical trades ---------- */
 
 /**
@@ -1007,6 +1099,7 @@ function paint(range) {
 
   renderCards(v);
   renderHeatmap(v, range);
+  renderMonthly(v);
   renderTrades(v);
   facts = buildFacts(v);
   factIdx = 0;
@@ -1024,14 +1117,6 @@ function paint(range) {
     note.textContent = "";
     note.classList.add("hidden");
   }
-
-  // Always say what the mix is. "40 trades" means nothing without knowing how many
-  // came from a live database and how many from a frozen file.
-  document.getElementById("src-meta").textContent =
-    v.archiveCount + " arsip + " + v.liveCount + " live = " + v.trades + " closed trades (V1.1)";
-  document.getElementById("src-label").textContent = liveMeta
-    ? "exports/trades.csv + GET /api/analytics/live"
-    : "exports/trades.csv (arsip beku)";
 
   firstPaintDone = true;
 }
@@ -1051,14 +1136,12 @@ async function refresh(range, { silent = false } = {}) {
       pool: t.pool,
       src: "live",
     }));
-    liveMeta = payload;
     paint(range);
     setStatus("live", "diperbarui " + new Date().toLocaleTimeString());
   } catch (err) {
     // Graceful fallback: the archive alone still renders a complete page. Never leave
     // the UI blank because an upstream is down.
     liveTrades = [];
-    liveMeta = null;
     paint(range);
     setStatus("archive", String(err && err.message ? err.message : err));
   }
