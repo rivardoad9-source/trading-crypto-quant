@@ -7,11 +7,12 @@
  *
  * Two contracts this file must keep:
  *
- * - **Day keys are the API's local day**, produced by `date(closed_at, 'localtime')` in
- *   `aggregateClosedTradesByDate`. That matches `/api/pnl-calendar` and the Next.js
- *   dashboard, so the two surfaces cannot disagree about which day a trade landed on.
- *   The timezone is reported in the payload (`timezone`) so the page can label it —
- *   an unlabelled date column is exactly how a 7-hour offset goes unnoticed.
+ * - **Day keys are the API's local day**, resolved through the IANA database in
+ *   `src/services/timezone.ts` and applied by `aggregateClosedTradesByDate`. That
+ *   matches `/api/pnl-calendar` and the Next.js dashboard, so the two surfaces cannot
+ *   disagree about which day a trade landed on. The timezone is reported in the payload
+ *   (`timezone`) so the page can label it — an unlabelled date column is exactly how a
+ *   7-hour offset goes unnoticed.
  * - **Undefined metrics stay null.** `topPool` is null with no closed trades and
  *   `maxDrawdownPct` is 0 on a monotonic curve; neither is padded into a fake reading.
  */
