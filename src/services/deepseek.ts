@@ -228,16 +228,24 @@ export async function structuredCompletion<T>(opts: StructuredOptions<T>): Promi
 
       console.warn(`[deepseek] structured output attempt ${attempt} failed: ${lastError}`);
 
-      // Nothing came back to correct, so there is no repair message to add; the retry
-      // is a plain re-roll on the same fixed budget. Growing the budget here is what
-      // this change removed — see REASONER_MAX_TOKENS.
-      if (attempt < maxAttempts && !truncated) {
-        messages.push({ role: "assistant", content: raw });
+      // The retry always gets told what went wrong. A truncated attempt used to fall
+      // through with no feedback at all, making attempt 2 a blind re-roll under the
+      // same heavy context — which is how a cycle could burn the whole budget on
+      // chain-of-thought and then answer with an over-long string. The budget itself
+      // stays fixed; growing it is what this change removed — see REASONER_MAX_TOKENS.
+      if (attempt < maxAttempts) {
+        // A truncated attempt has no content to quote back, and an empty assistant
+        // turn is not a message the model can learn from.
+        if (raw.trim() !== "") messages.push({ role: "assistant", content: raw });
         messages.push({
           role: "user",
-          content:
-            `Your previous response failed schema validation: ${lastError}. ` +
-            `Respond again with ONLY a valid JSON object matching the required schema. No prose.`,
+          content: truncated
+            ? `Your previous response was cut off before any answer was written ` +
+              `(the reasoning used the entire token budget). Answer again with ONLY a ` +
+              `valid JSON object matching the required schema. Reason briefly, keep every ` +
+              `string well inside its character limit, and add no prose outside the object.`
+            : `Your previous response failed schema validation: ${lastError}. ` +
+              `Respond again with ONLY a valid JSON object matching the required schema. No prose.`,
         });
       }
     }

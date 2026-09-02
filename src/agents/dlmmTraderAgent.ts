@@ -69,7 +69,7 @@ export const DLMMPoolDecisionSchema = z.object({
   binRangeDownsideCoverPct: z.number().min(0).max(100),
   binRangeUpsideCoverPct: z.number().min(0).max(100),
   confidenceScore: z.number().min(0).max(100),
-  thesis: z.string().max(200),
+  thesis: z.string().max(400),
 });
 
 export type DLMMPoolDecision = z.infer<typeof DLMMPoolDecisionSchema>;
@@ -111,7 +111,7 @@ Adaptive range sizing — bounded improvisation:
 - With no RECENT LOSSES block there is no evidence of a regime. Size the range on the
   candidate's own metrics and do not invent a loss history to justify a width.
 - confidenceScore reflects conviction, 0-100.
-- thesis: at most 200 characters, factual, referencing the metrics you were given.
+- thesis: at most 400 characters, factual, referencing the metrics you were given.
 
 Respond with ONLY a JSON object. Every key below is REQUIRED, including on a SKIP:
 
@@ -123,7 +123,7 @@ Respond with ONLY a JSON object. Every key below is REQUIRED, including on a SKI
   "binRangeDownsideCoverPct": number  // 0-100
   "binRangeUpsideCoverPct":   number  // 0-100
   "confidenceScore":          number  // 0-100
-  "thesis":       string  // HARD LIMIT 200 characters, one or two sentences
+  "thesis":       string  // HARD LIMIT 400 characters, one to three sentences, concise
 }`;
 
 /**
