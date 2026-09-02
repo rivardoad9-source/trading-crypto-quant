@@ -81,7 +81,32 @@
     backdrop-filter:blur(6px);
     -webkit-backdrop-filter:blur(6px);
   }
-  .card:hover{ border-color:#2c2f34; }
+  .card{ border-color:#1e293b; }              /* slate-800 */
+  .card:hover{
+    border-color:#334155;                     /* slate-700 */
+    box-shadow:0 0 0 1px rgba(148,163,184,.06), 0 8px 28px -14px rgba(148,163,184,.35);
+  }
+
+  /* ---- metric cards ---- */
+  .mlabel{
+    font-size:10.5px; font-weight:500; text-transform:uppercase; letter-spacing:.1em;
+    color:#64748b;
+  }
+  /* Two tiers on purpose: the four headline figures carry the result, the other four
+     are supporting detail and should not compete with them at a glance. */
+  .mval-primary{ font-size:32px; font-weight:650; letter-spacing:-.025em; line-height:1; }
+  .mval-secondary{ font-size:22px; font-weight:600; letter-spacing:-.02em; line-height:1.1; }
+  .msub{ font-size:11.5px; color:#64748b; }
+  .tone-pos{ color:#10b981; }
+  .tone-neg{ color:#ef4444; }
+  .tone-flat{ color:#e2e8f0; }
+
+  .mbar{ height:4px; border-radius:999px; background:rgba(148,163,184,.14); overflow:hidden; }
+  .mbar-fill{ height:100%; border-radius:999px; background:linear-gradient(90deg,#059669,#10b981); }
+
+  @media (max-width:400px){
+    .mval-primary{ font-size:27px; }
+  }
 
   /* ---- header ---- */
   .brand-mark{
@@ -118,18 +143,12 @@
   }
   .sysitem + .sysitem{ box-shadow:inset 1px 0 0 #1e293b; }
   .sysitem-accent{ color:#6ee7b7; }
+  /* The standing-start caveat is required context but not headline material. */
+  .sysitem-quiet{ color:#64748b; font-weight:400; }
+  .sysitem-live{ gap:8px; }
   .sysdot{ height:6px; width:6px; border-radius:999px; flex:none; }
 
   /* ---- live indicator ---- */
-  .livebar{
-    display:inline-flex; align-items:center; gap:9px;
-    border:1px solid #1e293b;
-    background:rgba(15,23,42,.50);
-    border-radius:999px;
-    padding:7px 14px;
-    backdrop-filter:blur(4px);
-    -webkit-backdrop-filter:blur(4px);
-  }
   .livedot{
     position:relative; height:7px; width:7px; border-radius:999px; flex:none;
     background:#10b981;
@@ -267,40 +286,37 @@
 
   <!-- Header -->
   <header class="mb-9">
-    <div class="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
-      <div class="min-w-0">
-        <div class="mb-3.5 flex items-center gap-2.5">
-          <span class="brand-mark">F</span>
-          <span class="eyebrow">FlowMetrix DLMM Engine</span>
-        </div>
+    <div class="mb-3.5 flex items-center gap-2.5">
+      <span class="brand-mark">F</span>
+      <span class="eyebrow">FlowMetrix DLMM Engine</span>
+    </div>
 
-        <h1 class="hero-title text-[30px] font-semibold leading-[1.08] tracking-[-.02em] sm:text-[38px]">
-          Performance &amp; Analytics
-        </h1>
+    <h1 class="hero-title text-[30px] font-semibold leading-[1.08] tracking-[-.02em] sm:text-[38px]">
+      Performance &amp; Analytics
+    </h1>
 
-        <p class="mt-2.5 max-w-[46ch] text-[13.5px] leading-relaxed text-slate-400">
-          Simulasi di Meteora DLMM
-        </p>
+    <p class="mt-2.5 max-w-[46ch] text-[13.5px] leading-relaxed text-slate-400">
+      Simulasi di Meteora DLMM
+    </p>
 
-        <!-- System status bar: the three standing qualifiers as one unit, so they read
-             as the rig's configuration rather than three loose tags. -->
-        <div class="sysbar mt-4">
-          <span class="sysitem sysitem-accent">
-            <span class="sysdot bg-emerald-400"></span>Engine V1.1
-          </span>
-          <span class="sysitem">
-            <span class="sysdot bg-slate-500"></span>Saldo awal $1.000
-          </span>
-          <span class="sysitem">
-            <span class="sysdot bg-slate-500"></span>DRY RUN · zero capital
-          </span>
-        </div>
-      </div>
-
-      <div class="flex shrink-0 flex-col items-start gap-2.5 sm:items-end">
-        <!-- Filled by setStatus(). Distinguishes a live figure from a frozen one. -->
-        <div id="conn-status" class="livebar"></div>
-      </div>
+    <!--
+      One system status bar: connection state, engine baseline and execution mode read
+      as the rig's standing configuration rather than as scattered tags. The live
+      indicator lives here too, so there is a single place to look for "is this real
+      and what is it".
+    -->
+    <div class="sysbar mt-5">
+      <!-- Filled by setStatus(). Distinguishes a live figure from a frozen one. -->
+      <span id="conn-status" class="sysitem sysitem-live"></span>
+      <span class="sysitem sysitem-accent">
+        <span class="sysdot bg-emerald-400"></span>V1.1 Official Baseline
+      </span>
+      <span class="sysitem">
+        <span class="sysdot bg-slate-500"></span>DRY RUN Mode
+      </span>
+      <span class="sysitem sysitem-quiet">
+        <span class="sysdot bg-slate-600"></span>Saldo awal $1.000 — bukan saldo akun
+      </span>
     </div>
 
     <div class="header-rule mt-7"></div>
@@ -1034,13 +1050,66 @@ function buildView(range) {
 }
 
 /* ---------- metric cards ---------- */
-function card(label, value, sub, tone) {
-  const toneClass = tone === "pos" ? "text-emerald-400" : tone === "neg" ? "text-red-400" : "text-zinc-50";
-  return '<div class="card rounded-xl p-4 transition-colors">'
-    + '<p class="mb-2 text-[11.5px] font-medium uppercase tracking-wider text-zinc-500">' + esc(label) + '</p>'
-    + '<p class="truncate text-[26px] font-semibold leading-none tracking-tight ' + toneClass + '" title="' + esc(value) + '">' + esc(value) + '</p>'
-    + '<p class="mt-2 truncate text-[12px] text-zinc-500" title="' + esc(sub) + '">' + esc(sub) + '</p>'
-    + '</div>';
+/**
+ * One metric card.
+ *
+ * `opts.primary` picks the larger type for the four headline figures. `opts.corner`
+ * takes trusted markup for the top-right slot (the sparkline) and `opts.footer` for a
+ * full-width strip under the subtitle (the win-rate bar); both are built here, never
+ * from data, so neither is an injection path.
+ */
+function card(label, value, sub, tone, opts = {}) {
+  const toneClass = tone === "pos" ? "tone-pos" : tone === "neg" ? "tone-neg" : "tone-flat";
+  const valClass = opts.primary ? "mval-primary" : "mval-secondary";
+  return '<div class="card rounded-xl p-4 transition-all duration-200">'
+    + '<div class="flex items-start justify-between gap-2">'
+    +   '<p class="mlabel">' + esc(label) + "</p>"
+    +   (opts.corner ?? "")
+    + "</div>"
+    + '<p class="mt-2.5 truncate ' + valClass + " " + toneClass + '" title="' + esc(value) + '">' + esc(value) + "</p>"
+    + '<p class="msub mt-2 truncate" title="' + esc(sub) + '">' + esc(sub) + "</p>"
+    + (opts.footer ?? "")
+    + "</div>";
+}
+
+/**
+ * Cumulative realised-PnL sparkline for the Net PnL card.
+ *
+ * Drawn from the actual curve, not a decorative upward squiggle: it steps once per
+ * closed trade in close order, exactly like `computeMaxDrawdown`. If the run were
+ * losing, this line would fall — the shape is a reading, not an ornament.
+ */
+function sparkline(rows) {
+  if (rows.length < 2) return "";
+
+  let cum = 0;
+  const pts = rows.map(t => (cum += t.p));
+  const lo = Math.min(0, ...pts);
+  const hi = Math.max(0, ...pts);
+  const span = hi - lo || 1;
+
+  const W = 62, H = 22;
+  const xy = pts.map((v, i) => {
+    const x = (i / (pts.length - 1)) * W;
+    const y = H - ((v - lo) / span) * H;
+    return x.toFixed(1) + "," + y.toFixed(1);
+  });
+
+  const up = pts[pts.length - 1] >= 0;
+  const stroke = up ? "#10b981" : "#ef4444";
+  const id = "spark-" + (up ? "up" : "dn");
+
+  return '<svg viewBox="0 0 ' + W + " " + H + '" width="' + W + '" height="' + H + '" fill="none" '
+    + 'aria-hidden="true" class="shrink-0 overflow-visible">'
+    +   "<defs><linearGradient id=\"" + id + "\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"1\">"
+    +     '<stop offset="0%" stop-color="' + stroke + '" stop-opacity=".28"/>'
+    +     '<stop offset="100%" stop-color="' + stroke + '" stop-opacity="0"/>'
+    +   "</linearGradient></defs>"
+    +   '<polygon points="0,' + H + " " + xy.join(" ") + " " + W + "," + H + '" fill="url(#' + id + ')"/>'
+    +   '<polyline points="' + xy.join(" ") + '" stroke="' + stroke + '" stroke-width="1.5" '
+    +     'stroke-linejoin="round" stroke-linecap="round"/>'
+    +   '<circle cx="' + W + '" cy="' + xy[xy.length - 1].split(",")[1] + '" r="1.9" fill="' + stroke + '"/>'
+    + "</svg>";
 }
 
 function skeletonCards() {
@@ -1058,13 +1127,31 @@ function renderCards(v) {
     : "profit factor " + v.profitFactor.toFixed(2);
   const signedPct = (v.netPct >= 0 ? "+" : "−") + Math.abs(v.netPct).toFixed(2) + "%";
 
+  // Bar is clamped so a 0.4% win rate still shows a sliver rather than an empty track.
+  const winBar = '<div class="mt-3"><div class="mbar">'
+    + '<div class="mbar-fill" style="width:' + Math.min(Math.max(v.winRate, 1.5), 100).toFixed(1) + '%"></div>'
+    + "</div></div>";
+
+  // Headline four first, supporting four after — the order IS the hierarchy.
   document.getElementById("metric-grid").innerHTML = [
-    card("Total Trades", v.trades, v.wins + " menang · " + v.losses + " kalah", "neutral"),
-    card("Win Rate", v.winRate.toFixed(1) + "%", v.wins + " dari " + v.trades + " · " + pf, v.winRate >= 50 ? "pos" : "neg"),
-    card("Net Realized PnL", usd(v.net), signedPct + " dari modal $" + STARTING_BALANCE.toLocaleString("en-US"), v.net >= 0 ? "pos" : "neg"),
+    card("Net Realized PnL", usd(v.net),
+      signedPct + " dari modal $" + STARTING_BALANCE.toLocaleString("en-US"),
+      v.net >= 0 ? "pos" : "neg",
+      { primary: true, corner: sparkline(v.rows) }),
+    card("Win Rate", v.winRate.toFixed(1) + "%",
+      v.wins + " dari " + v.trades + " · " + pf,
+      v.winRate >= 50 ? "pos" : "neg",
+      { primary: true, footer: winBar }),
+    card("Total Trades", v.trades,
+      v.wins + " menang · " + v.losses + " kalah", "neutral",
+      { primary: true }),
+    card("Max Drawdown", "−" + v.dd.pct.toFixed(2) + "%",
+      "−" + usdPlain(v.dd.usd) + " puncak ke lembah (realised)",
+      v.dd.pct > 0 ? "neg" : "neutral",
+      { primary: true }),
+
     card("Active Days", v.activeDays, "hari dengan minimal 1 posisi ditutup", "neutral"),
     card("Current Win Streak", v.streak, v.streak ? "penutupan profit beruntun terakhir" : "penutupan terakhir merugi", v.streak > 0 ? "pos" : "neutral"),
-    card("Max Drawdown", "−" + v.dd.pct.toFixed(2) + "%", "−" + usdPlain(v.dd.usd) + " puncak ke lembah (realised)", v.dd.pct > 0 ? "neg" : "neutral"),
     card("Peak Trading Hour", String(v.peakHour).padStart(2, "0") + ":00 UTC", usd(v.peakHourPnl) + " dibukukan pada jam ini", v.peakHourPnl >= 0 ? "pos" : "neg"),
     card("Top Pool", v.topPool, usd(v.topPoolPnl) + " dari " + v.topPoolTrades + " trades", v.topPoolPnl >= 0 ? "pos" : "neg"),
   ].join("");
