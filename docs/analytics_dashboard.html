@@ -87,6 +87,34 @@
     box-shadow:0 0 0 1px rgba(148,163,184,.06), 0 8px 28px -14px rgba(148,163,184,.35);
   }
 
+  /* ---- open positions ---- */
+  .posrow{
+    display:grid;
+    grid-template-columns:minmax(0,1.4fr) repeat(3,minmax(0,1fr)) auto;
+    align-items:center;
+    gap:12px;
+    padding:11px 14px;
+    border-top:1px solid rgba(30,41,59,.75);
+  }
+  .posrow:first-child{ border-top:0; }
+  .poslabel{ font-size:10px; text-transform:uppercase; letter-spacing:.09em; color:#64748b; }
+  .posval{ font-size:13px; color:#e2e8f0; font-variant-numeric:tabular-nums; }
+  .pospill{
+    display:inline-flex; align-items:center; gap:6px;
+    border-radius:999px; padding:3px 9px;
+    font-size:10.5px; font-weight:600; letter-spacing:.05em; text-transform:uppercase;
+  }
+  .pos-in{ background:rgba(16,185,129,.12); color:#6ee7b7; }
+  .pos-out{ background:rgba(245,158,11,.12); color:#fbbf24; }
+  /* Range meter: where the mark sits between the bin bounds. */
+  .rangebar{ position:relative; height:5px; border-radius:999px; background:rgba(148,163,184,.16); }
+  .rangefill{ position:absolute; top:0; bottom:0; border-radius:999px; background:rgba(16,185,129,.35); }
+  .rangemark{ position:absolute; top:-2px; height:9px; width:2px; border-radius:1px; background:#e2e8f0; }
+  @media (max-width:760px){
+    .posrow{ grid-template-columns:minmax(0,1fr) auto; row-gap:8px; }
+    .posrow > .poscell-hide{ display:none; }
+  }
+
   /* ---- metric cards ---- */
   .mlabel{
     font-size:10.5px; font-weight:500; text-transform:uppercase; letter-spacing:.1em;
@@ -340,6 +368,18 @@
 
   <!-- 8 metric cards -->
   <section id="metric-grid" class="mb-10 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4"></section>
+
+  <!-- Open positions: what the engine is holding right now -->
+  <section class="card mb-5 rounded-xl">
+    <div class="flex flex-col gap-1.5 p-5 pb-4 sm:flex-row sm:items-end sm:justify-between sm:p-6 sm:pb-4">
+      <div>
+        <h2 class="text-[15px] font-semibold tracking-tight text-slate-100">Current Positions</h2>
+        <p id="pos-sub" class="mt-1 text-[12.5px] text-slate-500">memuat…</p>
+      </div>
+      <span id="pos-count" class="pospill pos-in">—</span>
+    </div>
+    <div id="pos-body" class="border-t border-slate-800/70"></div>
+  </section>
 
   <!-- Heatmap -->
   <section class="card mb-5 rounded-xl p-5 sm:p-6">
@@ -908,7 +948,40 @@ const RANGE_DAYS = { all: null, "30d": 30, "7d": 7 };
 const MS_DAY = 86400000;
 const usd = n => (n < 0 ? "−$" : "+$") + Math.abs(n).toFixed(2);
 const usdPlain = n => "$" + Math.abs(n).toFixed(2);
-const dayKey = d => d.toISOString().slice(0, 10);
+/*
+ * Day keys are bucketed in the ENGINE's timezone, not the viewer's and not UTC.
+ *
+ * The API groups its own day and hour buckets in `env.TZ` (src/services/timezone.ts),
+ * and /api/pnl-calendar has always done the same. Keying this page in UTC instead meant
+ * a close at 19:00 UTC filed under one day here and the next day on the other surface —
+ * the same trade, two answers. The live payload reports the zone it used; until it
+ * arrives, the archive is bucketed in the engine's configured default.
+ */
+let DISPLAY_TZ = "Asia/Jakarta";
+
+const dayKeyFmt = () =>
+  new Intl.DateTimeFormat("en-CA", {
+    timeZone: DISPLAY_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+
+const dayKey = d => dayKeyFmt().format(d);
+
+/** Hour of day, 00-23, in the display zone. */
+const zonedHour = d =>
+  Number(new Intl.DateTimeFormat("en-GB", { timeZone: DISPLAY_TZ, hour: "2-digit", hour12: false }).format(d));
+
+/** Steps a YYYY-MM-DD key by whole days. Pure calendar arithmetic on the key itself. */
+const addDays = (key, delta) => {
+  const d = new Date(key + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + delta);
+  return d.toISOString().slice(0, 10);
+};
+
+/** Day of week for a key, 0 = Sunday. Keys are anchored at UTC midnight to count. */
+const keyWeekday = key => new Date(key + "T00:00:00Z").getUTCDay();
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const prettyDate = key => {
   const [y, m, d] = key.split("-").map(Number);
@@ -927,6 +1000,7 @@ const keyMs = key => Date.parse(key + "T00:00:00Z");
  */
 const spanDaysBetween = (firstMs, lastMs) =>
   Math.round((keyMs(dayKey(new Date(lastMs))) - keyMs(dayKey(new Date(firstMs)))) / MS_DAY) + 1;
+
 
 /* ---------- the merged trade list ---------- */
 const archiveTrades = TRADES.map(t => ({ ...t, ms: Date.parse(t.t), src: "archive" }));
@@ -1004,7 +1078,7 @@ function buildView(range) {
 
   const byHour = new Map();
   for (const t of rows) {
-    const h = new Date(t.ms).getUTCHours();
+    const h = zonedHour(new Date(t.ms));
     byHour.set(h, (byHour.get(h) || 0) + t.p);
   }
   const peak = [...byHour.entries()].sort((a, b) => b[1] - a[1])[0];
@@ -1152,7 +1226,7 @@ function renderCards(v) {
 
     card("Active Days", v.activeDays, "hari dengan minimal 1 posisi ditutup", "neutral"),
     card("Current Win Streak", v.streak, v.streak ? "penutupan profit beruntun terakhir" : "penutupan terakhir merugi", v.streak > 0 ? "pos" : "neutral"),
-    card("Peak Trading Hour", String(v.peakHour).padStart(2, "0") + ":00 UTC", usd(v.peakHourPnl) + " dibukukan pada jam ini", v.peakHourPnl >= 0 ? "pos" : "neg"),
+    card("Peak Trading Hour", String(v.peakHour).padStart(2, "0") + ":00", usd(v.peakHourPnl) + " dibukukan pada jam ini (" + DISPLAY_TZ + ")", v.peakHourPnl >= 0 ? "pos" : "neg"),
     card("Top Pool", v.topPool, usd(v.topPoolPnl) + " dari " + v.topPoolTrades + " trades", v.topPoolPnl >= 0 ? "pos" : "neg"),
   ].join("");
 }
@@ -1212,11 +1286,16 @@ function renderHeatmap(v, range) {
   grid.style.maxWidth = cap;
   labels.style.maxWidth = cap;
 
-  // End on the Saturday of the anchor week so the final column is complete.
-  const end = new Date(v.anchorMs);
-  end.setUTCHours(0, 0, 0, 0);
-  end.setUTCDate(end.getUTCDate() + (6 - end.getUTCDay()));
-  const start = new Date(end.getTime() - (weeks * 7 - 1) * MS_DAY);
+  /*
+   * The whole walk happens in day-key space.
+   *
+   * Stepping Date objects would re-enter a timezone on every cell and drift against the
+   * zone-bucketed keys the trades carry; stepping the keys themselves cannot.
+   */
+  const anchorKey = dayKey(new Date(v.anchorMs));
+  const firstKey = dayKey(new Date(v.firstMs));
+  const endKey = addDays(anchorKey, 6 - keyWeekday(anchorKey));
+  const startKey = addDays(endKey, -(weeks * 7 - 1));
 
   const maxAbs = Math.max(...[...v.days.values()].map(d => Math.abs(d.pnl)), 1);
   const windowDays = RANGE_DAYS[range];
@@ -1225,8 +1304,8 @@ function renderHeatmap(v, range) {
   // Month labels share the grid's column track, so they stay aligned as it resizes.
   let lastMonth = -1;
   for (let col = 0; col < weeks; col++) {
-    const midweek = new Date(start.getTime() + (col * 7 + 3) * MS_DAY);
-    const m = midweek.getUTCMonth();
+    const midweek = addDays(startKey, col * 7 + 3);
+    const m = Number(midweek.slice(5, 7)) - 1;
     const span = document.createElement("span");
     // Label a column by the month at its MIDPOINT, so the column is named after the
     // month that owns most of it. Keying off the Sunday dropped the final month
@@ -1238,17 +1317,17 @@ function renderHeatmap(v, range) {
 
   for (let i = 0; i < weeks * 7; i++) {
     // Column-major fill, so index i walks down a week before moving to the next.
-    const d = new Date(start.getTime() + i * MS_DAY);
-    const key = dayKey(d);
+    const key = addDays(startKey, i);
 
     const cell = document.createElement("div");
     cell.className = "cell transition-colors";
 
     const rec = v.days.get(key);
-    const dayStart = keyMs(key);
-    const inWindow = dayStart + MS_DAY > from;
-    const beforeEngine = dayStart < v.firstMs;
-    const afterData = dayStart > v.anchorMs;
+    // Compared as keys, not instants: a day either is or is not inside the range, and
+    // "the day the first trade landed on" is a key, not a timestamp.
+    const inWindow = keyMs(key) + MS_DAY > from;
+    const beforeEngine = key < firstKey;
+    const afterData = key > anchorKey;
 
     let tip;
     if (rec && inWindow) {
@@ -1285,8 +1364,8 @@ function renderHeatmap(v, range) {
   const span = spanDaysBetween(v.firstMs, v.anchorMs);
   document.getElementById("heatmap-sub").textContent =
     v.trades + " trades ditutup dalam " + v.activeDays + " hari aktif · rentang data "
-    + prettyDate(dayKey(new Date(v.firstMs))) + " → " + prettyDate(dayKey(new Date(v.anchorMs)))
-    + " (" + span + " hari, kunci tanggal UTC)";
+    + prettyDate(firstKey) + " → " + prettyDate(anchorKey)
+    + " (" + span + " hari, zona " + DISPLAY_TZ + ")";
 }
 
 /* ---------- tooltip ---------- */
@@ -1388,6 +1467,116 @@ document.getElementById("fact-next").addEventListener("click", () => {
   cycleFacts();
 });
 
+/* ---------- open positions ---------- */
+
+let openPositions = [];
+
+/**
+ * What the engine is holding right now.
+ *
+ * Floating, therefore never merged into the realised figures above — the cards, the
+ * heatmap and the monthly panel all step on a CLOSE and would stop being reproducible
+ * from the trade log if an open mark were folded in. This panel is a separate reading
+ * of a separate thing, and says so.
+ */
+function renderPositions() {
+  const body = document.getElementById("pos-body");
+  const sub = document.getElementById("pos-sub");
+  const count = document.getElementById("pos-count");
+
+  if (openPositions === null) {
+    count.className = "pospill pos-out";
+    count.textContent = "tidak diketahui";
+    sub.textContent = "engine tak terjangkau — status posisi tidak bisa dipastikan";
+    // An unreachable engine is NOT evidence of a flat book. Saying "0 posisi" here
+    // would report a fact nobody checked.
+    body.innerHTML = '<p class="px-5 py-6 text-[13px] text-slate-500">Tidak ada koneksi ke engine, '
+      + "jadi halaman ini tidak tahu apakah ada posisi berjalan. Angka realised di atas tetap dari arsip.</p>";
+    return;
+  }
+
+  if (!openPositions.length) {
+    count.className = "pospill pos-in";
+    count.textContent = "0 open";
+    sub.textContent = "tidak ada posisi berjalan — engine sedang menunggu sinyal entry";
+    body.innerHTML = '<p class="px-5 py-6 text-[13px] text-slate-500">Book kosong. '
+      + "Screener berjalan tiap 30 menit; posisi yang terbuka akan muncul di sini dalam 60 detik.</p>";
+    return;
+  }
+
+  count.className = "pospill pos-in";
+  count.textContent = openPositions.length + " open";
+
+  const floating = openPositions.reduce((a, p) => a + (p.floatingPnlUsd ?? 0), 0);
+  const fees = openPositions.reduce((a, p) => a + (p.unclaimedFeeUsd ?? 0), 0);
+  sub.textContent = "floating " + usd(floating) + " · fee belum diklaim " + usd(fees)
+    + " · tidak termasuk dalam angka realised di atas";
+
+  body.innerHTML = openPositions.map(p => {
+    const price = p.currentPrice ?? p.entryPrice;
+    const lo = p.lowerBinPrice, hi = p.upperBinPrice;
+    const inRange = Number.isFinite(lo) && Number.isFinite(hi) && price >= lo && price <= hi;
+
+    // Where the mark sits across the bin range, clamped so an out-of-range mark still
+    // renders at the edge instead of escaping the track.
+    const pct = Number.isFinite(lo) && Number.isFinite(hi) && hi > lo
+      ? Math.min(Math.max(((price - lo) / (hi - lo)) * 100, 0), 100)
+      : 50;
+
+    const openedMs = Date.parse(String(p.openedAt ?? "").trim().replace(" ", "T") + "Z");
+    const age = Number.isFinite(openedMs)
+      ? ((Date.now() - openedMs) / 3600000).toFixed(1) + " jam"
+      : "—";
+
+    const fl = p.floatingPnlUsd ?? 0;
+    const flTone = fl > 0 ? "tone-pos" : fl < 0 ? "tone-neg" : "tone-flat";
+
+    return '<div class="posrow">'
+      + '<div class="min-w-0">'
+      +   '<div class="posval truncate font-medium" title="' + esc(p.pairName ?? "") + '">' + esc(p.pairName || "—") + "</div>"
+      +   '<div class="poslabel mt-0.5">' + esc(p.strategyType ?? "—") + " · " + esc(age) + "</div>"
+      + "</div>"
+      + '<div class="poscell-hide">'
+      +   '<div class="poslabel">Entry → Mark</div>'
+      +   '<div class="posval mt-0.5">' + fmtPrice(p.entryPrice) + " → " + fmtPrice(price) + "</div>"
+      + "</div>"
+      + '<div class="poscell-hide">'
+      +   '<div class="poslabel">Range</div>'
+      +   '<div class="rangebar mt-2">'
+      +     '<div class="rangefill" style="left:0;width:100%"></div>'
+      +     '<div class="rangemark" style="left:calc(' + pct.toFixed(1) + '% - 1px)"></div>'
+      +   "</div>"
+      + "</div>"
+      + '<div class="poscell-hide">'
+      +   '<div class="poslabel">Floating</div>'
+      +   '<div class="posval mt-0.5 ' + flTone + '">' + usd(fl) + "</div>"
+      + "</div>"
+      + '<div><span class="pospill ' + (inRange ? "pos-in" : "pos-out") + '">'
+      +   (inRange ? "In range" : "Out of range") + "</span></div>"
+      + "</div>";
+  }).join("");
+}
+
+async function refreshPositions() {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    const res = await fetch(API_BASE + "/api/positions/active?cohort=current", {
+      signal: ctrl.signal,
+      headers: { accept: "application/json" },
+    });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const payload = await res.json();
+    openPositions = Array.isArray(payload.positions) ? payload.positions : [];
+  } catch {
+    // null, not []: "we could not ask" is a different statement from "there are none".
+    openPositions = null;
+  } finally {
+    clearTimeout(timer);
+  }
+  renderPositions();
+}
+
 /* ---------- monthly performance ---------- */
 
 /**
@@ -1399,8 +1588,9 @@ document.getElementById("fact-next").addEventListener("click", () => {
 function monthlyBuckets(rows) {
   const buckets = new Map();
   for (const t of rows) {
-    const d = new Date(t.ms);
-    const key = d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0");
+    // Derived from the day key, so a trade cannot sit in September on the heatmap and
+    // August here.
+    const key = dayKey(new Date(t.ms)).slice(0, 7);
     const cur = buckets.get(key) || { pnl: 0, n: 0, wins: 0 };
     cur.pnl += t.p;
     cur.n += 1;
@@ -1464,15 +1654,18 @@ function renderTrades(v) {
 
   body.innerHTML = rows.map(t => {
     const when = new Date(t.ms);
-    const stamp = MONTHS[when.getUTCMonth()] + " " + when.getUTCDate()
-      + ", " + String(when.getUTCHours()).padStart(2, "0") + ":" + String(when.getUTCMinutes()).padStart(2, "0");
+    const key = dayKey(when);
+    const hhmm = new Intl.DateTimeFormat("en-GB", {
+      timeZone: DISPLAY_TZ, hour: "2-digit", minute: "2-digit", hour12: false,
+    }).format(when);
+    const stamp = MONTHS[Number(key.slice(5, 7)) - 1] + " " + Number(key.slice(8, 10)) + ", " + hhmm;
     const tone = t.p > 0 ? "text-emerald-400" : t.p < 0 ? "text-red-400" : "text-zinc-300";
     const src = t.src === "live"
       ? '<span class="text-emerald-500/80">live</span>'
       : '<span class="text-zinc-500">arsip</span>';
     return '<tr class="trow border-t border-zinc-800/50" data-trade-id="' + esc(t.id) + '" tabindex="0" role="button" aria-expanded="false">'
       + '<td class="whitespace-nowrap px-4 py-2 font-mono text-[11.5px] text-zinc-400">'
-      +   '<span class="tcaret mr-1.5">\u25B8</span>' + esc(stamp) + " UTC</td>"
+      +   '<span class="tcaret mr-1.5">\u25B8</span>' + esc(stamp) + "</td>"
       + '<td class="max-w-[220px] truncate px-4 py-2 text-zinc-300" title="' + esc(t.pool) + '">' + esc(t.pool) + "</td>"
       + '<td class="whitespace-nowrap px-4 py-2 text-right font-mono ' + tone + '">' + esc(usd(t.p)) + "</td>"
       + '<td class="whitespace-nowrap px-4 py-2 text-right text-[11.5px]">' + src + "</td>"
@@ -1850,6 +2043,8 @@ async function refresh(range, { silent = false } = {}) {
 
   try {
     const payload = await fetchLive();
+    // Follow the engine's own zone rather than assuming it.
+    if (typeof payload.timezone === "string" && payload.timezone) DISPLAY_TZ = payload.timezone;
     liveTrades = (payload.trades ?? []).map(t => ({
       id: t.id,
       t: t.closedAt,
@@ -1877,6 +2072,7 @@ function startPolling() {
   pollTimer = setInterval(() => {
     refresh(currentRange, { silent: true });
     refreshBrief();
+    refreshPositions();
   }, POLL_MS);
 }
 
@@ -1904,6 +2100,7 @@ setStatus("loading");
 skeletonCards();
 refresh("all");
 refreshBrief();
+refreshPositions();
 startPolling();
 startTicker();
 
