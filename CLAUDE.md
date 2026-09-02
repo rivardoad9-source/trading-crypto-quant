@@ -2,6 +2,35 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Official baseline: FlowMetrix DLMM AI Agent V1.1
+
+**V1.1 is the only configuration the live engine runs.** There is no v1.0 code path, no legacy
+mode, and no env flag that reverts the engine to pre-V1.1 behaviour. These six values are the
+parsed defaults, and `src/tests/v11Baseline.test.ts` fails if any drifts:
+
+| Guardrail | Value | Symbol |
+|---|---|---|
+| Pool cooldown | 4 h | `POOL_COOLDOWN_HOURS` |
+| Lockout | 2 consecutive failures → 24 h | `POOL_LOCKOUT_CONSECUTIVE_FAILURES` / `POOL_LOCKOUT_HOURS` |
+| Breakeven friction gate | ON, 2.5× round-trip cost | `MIN_FEE_COST_COVERAGE` |
+| Screener cadence | 30 min | `CRON.DLMM_LOOP` |
+| Fast monitor | 60 s | `CRON.FAST_MONITOR` |
+| Reasoning cap | 16 000 tokens, graceful skip | `REASONER_MAX_TOKENS` |
+
+Changing any of them is a change to the official baseline: update the test in the same commit and
+say why in the message. A zero is not a neutral value here — `POOL_COOLDOWN_HOURS=0` and
+`POOL_LOCKOUT_*=0` disable those gates entirely (`env.ts` accepts zero and says so), which is
+pre-V1.1 behaviour reintroduced through configuration.
+
+**Two things reference v1.0 on purpose. Do not "clean them up".**
+
+- `engine_version`, `ENGINE_V11_CUTOFF` and `src/services/cohort.ts` label the 27 pre-V1.1 trades
+  rather than deleting them, so V1.1 can be reported on its own. Dropping the label does not remove
+  the trades — it merges a superseded engine's −$3.34 into V1.1's +$44.32 and misstates both.
+- `withoutAntiChurn` and the inert guardrail defaults in `defaultBacktestConfig()` are the CONTROL
+  ARM of the anti-churn A/B that `backtest:micro` and `backtest:annual` run. They are measurement
+  scaffolding, not a legacy fallback; see "The backtest's V1.1 guardrails default to OFF" below.
+
 ## Commands
 
 ```bash

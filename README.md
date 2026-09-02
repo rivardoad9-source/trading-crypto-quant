@@ -1,4 +1,4 @@
-# FlowMetrix / Meteora AI Engine
+# FlowMetrix DLMM AI Agent V1.1 (Official)
 
 Modular AI agent stack for Solana **Meteora DLMM** liquidity research and **zero-capital paper
 trading**, with a local quant dashboard.
@@ -7,6 +7,32 @@ trading**, with a local quant dashboard.
 > Solana transaction. `DRY_RUN=true` is the default, and the process refuses to boot if it is set
 > to `false` (live execution is not implemented).
 
+## V1.1 is the official baseline
+
+**V1.1 is the only configuration the live engine runs.** There is no v1.0 code path, no legacy
+mode, and no flag that reverts the engine to pre-V1.1 behaviour — the values below are the parsed
+defaults in `src/config/`, and `src/tests/v11Baseline.test.ts` fails the build if any of them
+drifts.
+
+| Guardrail | Value | Defined in |
+|---|---|---|
+| Pool cooldown after a close | **4 h** | `POOL_COOLDOWN_HOURS` |
+| Lockout | **2 consecutive failures → 24 h** | `POOL_LOCKOUT_CONSECUTIVE_FAILURES` / `POOL_LOCKOUT_HOURS` |
+| Breakeven friction gate | **ON** — fees must cover **2.5×** round-trip cost | `MIN_FEE_COST_COVERAGE` |
+| Screener cadence | **30 min** | `CRON.DLMM_LOOP` |
+| Fast position monitor | **60 s** | `CRON.FAST_MONITOR` |
+| DeepSeek reasoning cap | **16 000 tokens**, graceful skip on truncation | `REASONER_MAX_TOKENS` |
+
+Two things that mention v1.0 are deliberate and are **not** legacy code:
+
+- **`engine_version` + the cohort filter.** The database still holds the 27 trades the pre-V1.1
+  screener opened. They are labelled, not deleted, so the dashboard can report V1.1 on its own
+  (`?cohort=current`) instead of averaging a superseded engine into it.
+- **The backtest's anti-churn control arm** (`withoutAntiChurn`, and the inert guardrail defaults
+  in `defaultBacktestConfig`). `npm run backtest:micro` and `npm run backtest:annual` run the
+  strategy with and without the V1.1 gates side by side — that A/B is the evidence the gates work.
+  Removing it would delete the proof, not the legacy.
+
 ---
 
 ## What it does
@@ -14,7 +40,7 @@ trading**, with a local quant dashboard.
 | Subsystem | What it does | Entry point |
 |---|---|---|
 | **Macro Researcher** | Pulls Fear & Greed, CoinGecko global + spot prices, DEXScreener trending, and optional FRED macro; asks DeepSeek for a 4-section Markdown brief; stores it and pushes it to Telegram. Runs 07:00 WIB. | `src/agents/researcherAgent.ts` |
-| **DLMM Paper Trader** | Screens live Meteora pools on hard quantitative filters, runs an anti-rug screen, asks DeepSeek (Zod-validated JSON) to pick a pool and bin range, then runs a position state machine tracking fee yield vs impermanent loss. Runs every 10 min. | `src/agents/dlmmTraderAgent.ts` |
+| **DLMM Paper Trader** | Screens live Meteora pools on hard quantitative filters, runs an anti-rug screen, asks DeepSeek (Zod-validated JSON) to pick a pool and bin range, then runs a position state machine tracking fee yield vs impermanent loss. Screens every 30 min; open positions are marked every 60 s by the fast monitor. | `src/agents/dlmmTraderAgent.ts` |
 | **Post-Trade Reflection** | On close, asks DeepSeek for a one-sentence post-mortem and stores it. Failures are retried on later cycles. | `src/agents/postMortemAgent.ts` |
 | **REST API** | Fastify server on port 4000 serving the dashboard. | `src/api/server.ts` |
 | **Dashboard** | Next.js 16 + Tailwind v4 dark command center, polling every 10s. | `dashboard/` |
