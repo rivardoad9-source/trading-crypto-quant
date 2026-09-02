@@ -111,6 +111,25 @@
     background:rgba(16,185,129,.10);
     color:#6ee7b7;
   }
+  /* ---- trade detail ---- */
+  .trow{ cursor:pointer; }
+  .trow:hover{ background:rgba(255,255,255,.028); }
+  .trow.open{ background:rgba(255,255,255,.05); }
+  .tcaret{ display:inline-block; transition:transform .15s ease; color:#71717a; }
+  .trow.open .tcaret{ transform:rotate(90deg); color:#a1a1aa; }
+  .dgrid{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(168px,1fr));
+    gap:10px 18px;
+  }
+  .dlabel{ font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; color:#71717a; }
+  .dvalue{ font-size:12.5px; color:#d4d4d8; font-variant-numeric:tabular-nums; word-break:break-word; }
+  .dnote{
+    border-left:2px solid rgba(255,255,255,.10);
+    padding-left:10px;
+    font-size:12.5px; line-height:1.6; color:#a1a1aa;
+  }
+
   /* ---- monthly rows ---- */
   .mrow{
     display:grid;
@@ -401,6 +420,372 @@ const TRADES = [
   {"id": "367fb3b3-f769-403e-bd08-ed55e9c6319c", "t": "2026-09-02T02:33:00Z", "p": 4.992399, "pool": "DOGE-1-SOL"}
 ];
 const STARTING_BALANCE = 1000;
+
+/**
+ * Per-trade detail for the archived trades, keyed by position id.
+ *
+ * Embedded rather than fetched so a row still opens when the engine is unreachable —
+ * the same contract as the trade list itself. Live-only trades are not in here; those
+ * are fetched from GET /api/positions/:id when their row is opened.
+ *
+ * Three fields carry meanings that must not be flattened when rendering:
+ *   - `divergence` is loss-vs-holding, a DIAGNOSTIC. `valueChange` is what happened to
+ *     the capital and is the term that drives PnL. They are not the same number.
+ *   - `mintRevoked` / `freezeRevoked` are true / false / null, where null means the
+ *     check never ran. Rendering null as "no" would claim an authority is live when it
+ *     was simply never looked at.
+ *   - `gasUsd` is recorded, never deducted from PnL, and null when unavailable.
+ */
+const TRADE_DETAILS = {
+ "dd8326f5-1c21-40de-91be-fb3d4e0b8829": {
+  "status": "CLOSED_PROFIT",
+  "strategy": "BID_ASK",
+  "openedAt": "2026-08-29 13:50:38",
+  "closedAt": "2026-08-29 15:07:17",
+  "entryPrice": 0.00017881,
+  "exitPrice": 0.00020149,
+  "lower": 9.835e-05,
+  "upper": 0.00020564,
+  "virtualSol": 1.0,
+  "entrySolUsd": 103.7,
+  "entryTvl": 87615.48182557,
+  "entryVol24h": 488179.35349026,
+  "fees": 0.68632613,
+  "valueChange": 6.37963962,
+  "divergence": -0.18453629,
+  "pnlPct": 6.81385318,
+  "closeReason": "Take-profit hit (6.81% >= 5%).",
+  "confidence": 70.0,
+  "thesis": "2% fee pool, 12.4% daily fee/TVL, $488k vol, verified tokens. Fees for 1 SOL LP should clear tx cost and likely beat IL over 8h.",
+  "postMortem": "The price surged 12.68% and hit the 5% take-profit in 1.3h, so fees were irrelevant to the outcome, and the lesson is that directional moves, not fee accrual, drove this win.",
+  "safety": "PASS",
+  "top10Pct": 11.6248451,
+  "mintRevoked": true,
+  "freezeRevoked": true,
+  "gasUsd": 0.0012118,
+  "breakevenCoverage": 6.20586479,
+  "expectedFee24h": 12.87848383
+ },
+ "a8260168-0620-44f1-bcdd-7ee7c743b63a": {
+  "status": "CLOSED_PROFIT",
+  "strategy": "BID_ASK",
+  "openedAt": "2026-08-29 14:00:27",
+  "closedAt": "2026-08-29 15:07:17",
+  "entryPrice": 0.00018423,
+  "exitPrice": 0.00020351,
+  "lower": 0.00010133,
+  "upper": 0.00021187,
+  "virtualSol": 1.0,
+  "entrySolUsd": 103.92,
+  "entryTvl": 158122.34626846,
+  "entryVol24h": 1437080.33960457,
+  "fees": 0.55062097,
+  "valueChange": 5.30096441,
+  "divergence": -0.12848029,
+  "pnlPct": 5.63085583,
+  "closeReason": "Take-profit hit (5.63% >= 5%).",
+  "confidence": 65.0,
+  "thesis": "24h fee/TVL 11.6%, APR 4222% but pool age 62h suggests early volatility; taking balanced range with 7% bounds to earn high fees.",
+  "postMortem": "Price rose 10.46% through the bin range in 1.1h, triggering the 5% take-profit before fees could offset impermanent loss, so locking quick directional gains beat waiting for yield.",
+  "safety": "PASS",
+  "top10Pct": 11.61784928,
+  "mintRevoked": true,
+  "freezeRevoked": true,
+  "gasUsd": 0.00122455,
+  "breakevenCoverage": 5.78014564,
+  "expectedFee24h": 12.02053279
+ },
+ "100f2302-2c93-4790-a007-277896be6af3": {
+  "status": "CLOSED_PROFIT",
+  "strategy": "BID_ASK",
+  "openedAt": "2026-08-29 15:51:31",
+  "closedAt": "2026-08-29 16:45:00",
+  "entryPrice": 1.562e-05,
+  "exitPrice": 1.725e-05,
+  "lower": 7.03e-06,
+  "upper": 2.031e-05,
+  "virtualSol": 1.0,
+  "entrySolUsd": 105.04,
+  "entryTvl": 100787.8950105,
+  "entryVol24h": 407471.04991723,
+  "fees": 0.34383212,
+  "valueChange": 5.35809566,
+  "divergence": -0.12986499,
+  "pnlPct": 5.42833947,
+  "closeReason": "Take-profit hit (5.43% >= 5%).",
+  "confidence": 60.0,
+  "thesis": "Fee/TVL 8.6%, vol $407k; widening upside to 30% (from 15%) avoids the out-of-range exits that dominated prior losses. BID_ASK spans volatility safely.",
+  "postMortem": "The price surged 10.46% and hit the 5% take-profit in under an hour, so the wide bin range captured the move and fees offset the small IL, proving that widening the range to match volatility converts quick trends into realized gains.",
+  "safety": "PASS",
+  "top10Pct": 21.47270131,
+  "mintRevoked": true,
+  "freezeRevoked": true,
+  "gasUsd": 0.0010504,
+  "breakevenCoverage": 4.29952973,
+  "expectedFee24h": 9.03696829
+ },
+ "0c31e40f-0194-4cc9-b9b5-33d0808d5aad": {
+  "status": "CLOSED_PROFIT",
+  "strategy": "SPOT",
+  "openedAt": "2026-08-29 17:31:52",
+  "closedAt": "2026-08-29 18:20:00",
+  "entryPrice": 0.00017795,
+  "exitPrice": 0.00020303,
+  "lower": 7.118e-05,
+  "upper": 0.00024912,
+  "virtualSol": 1.0,
+  "entrySolUsd": 104.68,
+  "entryTvl": 345676.63953553,
+  "entryVol24h": 11031625.97464135,
+  "fees": 0.4825628,
+  "valueChange": 7.13460257,
+  "divergence": -0.22712646,
+  "pnlPct": 7.27661957,
+  "closeReason": "Take-profit hit (7.28% >= 5%).",
+  "confidence": 65.0,
+  "thesis": "14.3% fee/TVL and $11M volume indicate strong fee income; widening to 60% down/40% up avoids rapid range exits on volatile fone-SOL.",
+  "postMortem": "The 14.1% price surge hit the 5% take-profit in under an hour, so fees never offset the quick exit, and the lesson is to widen profit targets when volatility is high.",
+  "safety": "PASS",
+  "top10Pct": 12.08014576,
+  "mintRevoked": true,
+  "freezeRevoked": true,
+  "gasUsd": 0.00113306,
+  "breakevenCoverage": 7.14430905,
+  "expectedFee24h": 14.96542034
+ },
+ "66ad2a98-3f68-4dd5-a2ff-fe191ff08680": {
+  "status": "CLOSED_PROFIT",
+  "strategy": "SPOT",
+  "openedAt": "2026-08-29 18:51:31",
+  "closedAt": "2026-08-30 01:14:00",
+  "entryPrice": 1.691e-05,
+  "exitPrice": 1.734e-05,
+  "lower": 9.3e-06,
+  "upper": 2.367e-05,
+  "virtualSol": 1.0,
+  "entrySolUsd": 105.14,
+  "entryTvl": 129628.67587864,
+  "entryVol24h": 1960398.08395678,
+  "fees": 3.98748508,
+  "valueChange": 1.31918254,
+  "divergence": -0.00817265,
+  "pnlPct": 5.04723951,
+  "closeReason": "Take-profit hit (5.05% >= 5%).",
+  "confidence": 65.0,
+  "thesis": "Pistacio-SOL fee yield 11.5%/d; widening upside to 40% to survive volatile moves seen in losses. Strong 24h volume should cover IL over hours.",
+  "postMortem": "The 2.53% favorable price move pushed the position past the 5% take-profit in 6.4h, so fees and IL were negligible, proving that a wide bin range plus high volume lets price action alone drive quick exits.",
+  "safety": "PASS",
+  "top10Pct": 19.42062146,
+  "mintRevoked": true,
+  "freezeRevoked": true,
+  "gasUsd": 0.00130382,
+  "breakevenCoverage": 5.76931494,
+  "expectedFee24h": 12.1392376
+ },
+ "763f8e3b-06c1-477e-80bc-11aa4a871e3f": {
+  "status": "CLOSED_LOSS",
+  "strategy": "SPOT",
+  "openedAt": "2026-08-29 19:21:02",
+  "closedAt": "2026-08-29 20:14:00",
+  "entryPrice": 0.00022037,
+  "exitPrice": 0.00018423,
+  "lower": 0.0001212,
+  "upper": 0.00031954,
+  "virtualSol": 1.0,
+  "entrySolUsd": 105.7,
+  "entryTvl": 143049.95497045,
+  "entryVol24h": 1138707.74772986,
+  "fees": 0.3815934,
+  "valueChange": -9.05428058,
+  "divergence": -0.42243135,
+  "pnlPct": -8.20500206,
+  "closeReason": "Stop-loss hit (-8.21% <= -8%).",
+  "confidence": 68.0,
+  "thesis": "10% daily fee/TVL with 3.7k% APR; recent losses were upper exits on 16-20% moves, so symmetrical 45% range keeps active through swings. Fees $14.4k/24h plausibly offset IL.",
+  "postMortem": "Price fell 16.4% in under an hour, triggering the 8% stop-loss before fees could offset the loss, so the lesson is to size positions for immediate adverse moves, not just fee income.",
+  "safety": "PASS",
+  "top10Pct": 11.91194902,
+  "mintRevoked": true,
+  "freezeRevoked": true,
+  "gasUsd": 0.00113441,
+  "breakevenCoverage": 5.02959298,
+  "expectedFee24h": 10.6382652
+ },
+ "4b1f68ce-f38a-4a13-9f94-18ea7cced1ae": {
+  "status": "CLOSED_PROFIT",
+  "strategy": "SPOT",
+  "openedAt": "2026-08-31 03:41:10",
+  "closedAt": "2026-08-31 05:17:00",
+  "entryPrice": 0.02703863,
+  "exitPrice": 0.02980407,
+  "lower": 0.01487125,
+  "upper": 0.03515022,
+  "virtualSol": 1.0,
+  "entrySolUsd": 101.85,
+  "entryTvl": 82238.6495942,
+  "entryVol24h": 1972863.38136845,
+  "fees": 0.54694111,
+  "valueChange": 5.08169932,
+  "divergence": -0.12060544,
+  "pnlPct": 5.52640199,
+  "closeReason": "Take-profit hit (5.53% >= 5%).",
+  "confidence": 75.0,
+  "thesis": "Fee/TVL 7.87%/day, daily vol $1.97M; widened upside to 30% to survive recent 20% fone wicks.",
+  "postMortem": "Price rose 10.23% and hit the 5% take-profit in 1.6h, so fees were irrelevant; the lesson is that a wide range still captures directional moves, but TP timing, not fee income, drove this win.",
+  "safety": "PASS",
+  "top10Pct": 11.94669002,
+  "mintRevoked": true,
+  "freezeRevoked": true,
+  "gasUsd": 0.0010185,
+  "breakevenCoverage": 3.93501241,
+  "expectedFee24h": 8.01962809
+ },
+ "fc95267b-021f-42d6-9662-e58bdb8ee1ce": {
+  "status": "CLOSED_PROFIT",
+  "strategy": "BID_ASK",
+  "openedAt": "2026-08-31 14:41:13",
+  "closedAt": "2026-08-31 16:12:00",
+  "entryPrice": 0.02247711,
+  "exitPrice": 0.02465259,
+  "lower": 0.00899084,
+  "upper": 0.0303441,
+  "virtualSol": 1.0,
+  "entrySolUsd": 102.76,
+  "entryTvl": 81597.4338411,
+  "entryVol24h": 1257581.96983225,
+  "fees": 0.37454949,
+  "valueChange": 4.85805768,
+  "divergence": -0.10953351,
+  "pnlPct": 5.09206614,
+  "closeReason": "Take-profit hit (5.09% >= 5%).",
+  "confidence": 70.0,
+  "thesis": "High fee/TVL 5.88%/day, wide range 60/35 avoids out-of-range exits in recent losses; fees outweigh IL over hours.",
+  "postMortem": "The price rallied 9.68% and hit the 5% take-profit in 1.5h, so fees were irrelevant; the lesson is to size for quick directional moves, not fee income.",
+  "safety": "PASS",
+  "top10Pct": 12.12324364,
+  "mintRevoked": true,
+  "freezeRevoked": true,
+  "gasUsd": 0.0012295,
+  "breakevenCoverage": 2.93628515,
+  "expectedFee24h": 6.03826342
+ },
+ "c653a8bc-5616-4e75-a23d-1baf5702976b": {
+  "status": "CLOSED_PROFIT",
+  "strategy": "SPOT",
+  "openedAt": "2026-09-01 01:02:00",
+  "closedAt": "2026-09-01 01:51:00",
+  "entryPrice": 0.02101175,
+  "exitPrice": 0.02310301,
+  "lower": 0.0084047,
+  "upper": 0.02836586,
+  "virtualSol": 1.0,
+  "entrySolUsd": 103.13,
+  "entryTvl": 72850.74453804,
+  "entryVol24h": 1268709.45029707,
+  "fees": 0.17582067,
+  "valueChange": 5.01047237,
+  "divergence": -0.11594461,
+  "pnlPct": 5.02888882,
+  "closeReason": "Take-profit hit (5.03% >= 5%).",
+  "confidence": 68.0,
+  "thesis": "fone-USDC fee/TVL 6.42%, volume $1.27M/24h; widening to -60%/+35% counters sharp wicks seen in recent losses while fees still exceed tx costs.",
+  "postMortem": "Price rose 9.95% and hit the 5% take-profit in 0.8h, so the win came from momentum, not fees, and the lesson is to let winners run when the thesis is directional.",
+  "safety": "PASS",
+  "top10Pct": 12.2627078,
+  "mintRevoked": true,
+  "freezeRevoked": true,
+  "gasUsd": 0.0010313,
+  "breakevenCoverage": 3.21038347,
+  "expectedFee24h": 6.6250478
+ },
+ "d287ab44-f918-4ca3-8750-cff6e9b0c68e": {
+  "status": "CLOSED_PROFIT",
+  "strategy": "BID_ASK",
+  "openedAt": "2026-09-01 09:31:48",
+  "closedAt": "2026-09-01 11:29:01",
+  "entryPrice": 3.2e-06,
+  "exitPrice": 3.43e-06,
+  "lower": 1.6e-06,
+  "upper": 4.16e-06,
+  "virtualSol": 1.0,
+  "entrySolUsd": 102.14,
+  "entryTvl": 52269.69016571,
+  "entryVol24h": 360121.41446045,
+  "fees": 1.67000848,
+  "valueChange": 3.72886278,
+  "divergence": -0.06562592,
+  "pnlPct": 5.28575608,
+  "closeReason": "Take-profit hit (5.29% >= 5%).",
+  "confidence": 72.0,
+  "thesis": "DOGE-1-SOL fee/TVL 17.8%/d, mature 8.6k h pool; range 50/30 stays active through >20% moves, BID_ASK for volatility.",
+  "postMortem": "Take-profit at 5.29% capped a 7.43% favorable move after 2h, so the lesson is to let winners run when fees are negligible and momentum persists.",
+  "safety": "PASS",
+  "top10Pct": 13.43354597,
+  "mintRevoked": true,
+  "freezeRevoked": true,
+  "gasUsd": 0.0010214,
+  "breakevenCoverage": 8.87918222,
+  "expectedFee24h": 18.14746263
+ },
+ "4f884320-8504-4f71-a9dd-420427cc65f6": {
+  "status": "CLOSED_PROFIT",
+  "strategy": "SPOT",
+  "openedAt": "2026-09-01 16:02:01",
+  "closedAt": "2026-09-01 17:24:00",
+  "entryPrice": 0.00012252,
+  "exitPrice": 0.00013399,
+  "lower": 6.738e-05,
+  "upper": 0.00015927,
+  "virtualSol": 1.0,
+  "entrySolUsd": 102.03,
+  "entryTvl": 383391.89242307,
+  "entryVol24h": 3566590.56892131,
+  "fees": 0.62174409,
+  "valueChange": 4.67237071,
+  "divergence": -0.10219633,
+  "pnlPct": 5.18878251,
+  "closeReason": "Take-profit hit (5.19% >= 5%).",
+  "confidence": 65.0,
+  "thesis": "fone-SOL pool has 10.3% fee/TVL/day and $247k 1h volume; wide -45%/+30% range absorbs observed 20% wicks, fees should outweigh IL over a few hours.",
+  "postMortem": "Price rose 9.37% in 1.4h and hit the 5% take-profit before fees could offset IL, so locking in quick directional gains beat waiting for fee accrual.",
+  "safety": "PASS",
+  "top10Pct": 13.64028225,
+  "mintRevoked": true,
+  "freezeRevoked": true,
+  "gasUsd": 0.00131427,
+  "breakevenCoverage": 5.1670827,
+  "expectedFee24h": 10.55073989
+ },
+ "367fb3b3-f769-403e-bd08-ed55e9c6319c": {
+  "status": "CLOSED_PROFIT",
+  "strategy": "SPOT",
+  "openedAt": "2026-09-02 02:01:11",
+  "closedAt": "2026-09-02 02:33:00",
+  "entryPrice": 4.47e-06,
+  "exitPrice": 4.88e-06,
+  "lower": 2.46e-06,
+  "upper": 6.48e-06,
+  "virtualSol": 1.0,
+  "entrySolUsd": 98.97,
+  "entryTvl": 53780.01072079,
+  "entryVol24h": 529933.55879361,
+  "fees": 0.55859903,
+  "valueChange": 4.43379949,
+  "divergence": -0.09496612,
+  "pnlPct": 5.04435538,
+  "closeReason": "Take-profit hit (5.04% >= 5%).",
+  "confidence": 68.0,
+  "thesis": "Mature DOGE-1-SOL pool with 24.3% daily fee/TVL on $98.97 earns ~$24/day; wide -45%/+45% range survives volatility and clears tx costs.",
+  "postMortem": "The take-profit triggered after only 0.5h on a 9.16% price move, so fees ($0.56) were negligible versus the 5% gain, proving quick directional exits beat waiting for range-bound fee income.",
+  "safety": "PASS",
+  "top10Pct": 12.51317947,
+  "mintRevoked": true,
+  "freezeRevoked": true,
+  "gasUsd": 0.0009897,
+  "breakevenCoverage": 12.14468433,
+  "expectedFee24h": 24.05120776
+ }
+};
 
 /**
  * Fallback macro brief — the most recent one in exports/research_logs.json.
@@ -946,17 +1331,176 @@ function renderTrades(v) {
     const src = t.src === "live"
       ? '<span class="text-emerald-500/80">live</span>'
       : '<span class="text-zinc-500">arsip</span>';
-    return '<tr class="border-t border-zinc-800/50 hover:bg-zinc-800/20">'
-      + '<td class="whitespace-nowrap px-4 py-2 font-mono text-[11.5px] text-zinc-400">' + esc(stamp) + " UTC</td>"
+    return '<tr class="trow border-t border-zinc-800/50" data-trade-id="' + esc(t.id) + '" tabindex="0" role="button" aria-expanded="false">'
+      + '<td class="whitespace-nowrap px-4 py-2 font-mono text-[11.5px] text-zinc-400">'
+      +   '<span class="tcaret mr-1.5">\u25B8</span>' + esc(stamp) + " UTC</td>"
       + '<td class="max-w-[220px] truncate px-4 py-2 text-zinc-300" title="' + esc(t.pool) + '">' + esc(t.pool) + "</td>"
       + '<td class="whitespace-nowrap px-4 py-2 text-right font-mono ' + tone + '">' + esc(usd(t.p)) + "</td>"
       + '<td class="whitespace-nowrap px-4 py-2 text-right text-[11.5px]">' + src + "</td>"
+      + "</tr>"
+      + '<tr class="tdetail hidden" data-detail-for="' + esc(t.id) + '">'
+      +   '<td colspan="4" class="bg-black/25 px-4 py-4"></td>'
       + "</tr>";
   }).join("");
 
   document.getElementById("trades-sub").textContent =
     rows.length + " trade V1.1 ditutup · " + v.archiveCount + " arsip + " + v.liveCount + " live";
 }
+
+/* ---------- trade detail ---------- */
+
+const fmtPrice = n =>
+  n === null || n === undefined || !Number.isFinite(n)
+    ? "—"
+    : Math.abs(n) >= 1 ? n.toFixed(4) : n.toPrecision(4);
+
+const fmtUsd = n => (n === null || n === undefined || !Number.isFinite(n) ? "—" : usd(n));
+
+/**
+ * Three-state boolean.
+ *
+ * null means the check never ran, and it renders as "belum dicek", never as "tidak".
+ * Collapsing it to a no would claim an authority was verified as live when nobody ever
+ * looked — the same rule the database column follows.
+ */
+const fmtTri = v => (v === null || v === undefined ? "belum dicek" : v ? "ya" : "tidak");
+
+const field = (label, value) =>
+  '<div><div class="dlabel">' + esc(label) + '</div><div class="dvalue">' + value + "</div></div>";
+
+function detailHtml(t, d) {
+  if (!d) {
+    return '<p class="text-[12.5px] text-zinc-500">Detail untuk trade ini tidak tersedia — '
+      + "posisi ini ada di log engine tapi bukan di arsip, dan engine sedang tak terjangkau.</p>";
+  }
+
+  const openMs = Date.parse(String(d.openedAt).trim().replace(" ", "T") + "Z");
+  const closeMs = Date.parse(String(d.closedAt).trim().replace(" ", "T") + "Z");
+  const hours = Number.isFinite(openMs) && Number.isFinite(closeMs)
+    ? ((closeMs - openMs) / 3600000).toFixed(1) + " jam"
+    : "—";
+
+  const notional = d.virtualSol !== null && d.entrySolUsd !== null
+    ? "$" + (d.virtualSol * d.entrySolUsd).toFixed(2)
+    : "—";
+
+  const grid = [
+    field("Status", esc(d.status ?? "—")),
+    field("Strategi", esc(d.strategy ?? "—")),
+    field("Durasi", hours),
+    field("Notional saat entry", notional),
+    field("Harga entry", fmtPrice(d.entryPrice)),
+    field("Harga exit", fmtPrice(d.exitPrice)),
+    field("Rentang bin", fmtPrice(d.lower) + " – " + fmtPrice(d.upper)),
+    field("Fee terkumpul", fmtUsd(d.fees)),
+    // The two loss numbers are different quantities; labelling them apart is the point.
+    // Number.isFinite first: null >= 0 is true in JS, which would paint a missing
+    // value emerald as though it were a gain.
+    field("Perubahan nilai LP", Number.isFinite(d.valueChange)
+      ? '<span class="' + (d.valueChange >= 0 ? "text-emerald-400" : "text-red-400") + '">' + fmtUsd(d.valueChange) + "</span>"
+      : fmtUsd(d.valueChange)),
+    field("Divergensi vs hold", fmtUsd(d.divergence) + ' <span class="text-zinc-500">(diagnostik)</span>'),
+    field("Realised PnL", '<span class="' + (t.p >= 0 ? "text-emerald-400" : "text-red-400") + '">' + usd(t.p)
+      + (d.pnlPct === null ? "" : " · " + d.pnlPct.toFixed(2) + "%") + "</span>"),
+    field("Estimasi gas", fmtUsd(d.gasUsd) + ' <span class="text-zinc-500">(dicatat, tidak dipotong)</span>'),
+    field("Confidence", d.confidence === null ? "—" : d.confidence + " / 100"),
+    field("Coverage breakeven", d.breakevenCoverage === null ? "—" : d.breakevenCoverage.toFixed(2) + "x"),
+    field("Anti-rug", esc(d.safety ?? "—")
+      + ' <span class="text-zinc-500">· top10 ' + (d.top10Pct === null ? "—" : d.top10Pct.toFixed(1) + "%") + "</span>"),
+    field("Mint / freeze dicabut", fmtTri(d.mintRevoked) + " / " + fmtTri(d.freezeRevoked)),
+  ].join("");
+
+  let notes = "";
+  if (d.closeReason) {
+    notes += '<div class="mt-4"><div class="dlabel mb-1.5">Alasan close</div>'
+      + '<div class="dnote">' + esc(d.closeReason) + "</div></div>";
+  }
+  if (d.thesis) {
+    notes += '<div class="mt-3"><div class="dlabel mb-1.5">Tesis entry</div>'
+      + '<div class="dnote">' + esc(d.thesis) + "</div></div>";
+  }
+  if (d.postMortem) {
+    notes += '<div class="mt-3"><div class="dlabel mb-1.5">Post-mortem</div>'
+      + '<div class="dnote">' + esc(d.postMortem) + "</div></div>";
+  }
+
+  return '<div class="dgrid">' + grid + "</div>" + notes;
+}
+
+/**
+ * Opens one row at a time.
+ *
+ * Detail comes from the embedded archive first so a row still opens with the engine
+ * down; a live-only trade falls back to GET /api/positions/:id.
+ */
+async function toggleTradeRow(row) {
+  const id = row.dataset.tradeId;
+  const detailRow = document.querySelector('[data-detail-for="' + id + '"]');
+  if (!detailRow) return;
+
+  const isOpen = !detailRow.classList.contains("hidden");
+  // Close whatever else is open, so the table never grows into a wall of panels.
+  document.querySelectorAll(".tdetail").forEach(r => r.classList.add("hidden"));
+  document.querySelectorAll(".trow").forEach(r => {
+    r.classList.remove("open");
+    r.setAttribute("aria-expanded", "false");
+  });
+  if (isOpen) return;
+
+  detailRow.classList.remove("hidden");
+  row.classList.add("open");
+  row.setAttribute("aria-expanded", "true");
+
+  const cell = detailRow.firstElementChild;
+  const trade = mergedTrades().find(t => t.id === id);
+  let detail = TRADE_DETAILS[id] ?? null;
+
+  if (!detail) {
+    cell.innerHTML = '<p class="text-[12.5px] text-zinc-500">Memuat detail…</p>';
+    try {
+      const res = await fetch(API_BASE + "/api/positions/" + encodeURIComponent(id), {
+        headers: { accept: "application/json" },
+      });
+      if (res.ok) {
+        const dto = (await res.json()).position ?? (await Promise.resolve(null));
+        if (dto) {
+          detail = {
+            status: dto.status, strategy: dto.strategyType,
+            openedAt: dto.openedAt, closedAt: dto.closedAt,
+            entryPrice: dto.entryPrice, exitPrice: dto.exitPrice,
+            lower: dto.lowerBinPrice, upper: dto.upperBinPrice,
+            virtualSol: dto.virtualSolAmount, entrySolUsd: dto.entrySolPriceUsd,
+            fees: dto.unclaimedFeeUsd, valueChange: dto.positionValueChangeUsd,
+            divergence: dto.divergenceVsHoldUsd, pnlPct: dto.realizedPnlPct,
+            closeReason: dto.closeReason, confidence: dto.confidenceScore,
+            thesis: dto.thesis, postMortem: dto.postMortem,
+            safety: dto.safety?.verdict ?? null, top10Pct: dto.safety?.top10HolderPct ?? null,
+            mintRevoked: dto.safety?.mintAuthorityRevoked ?? null,
+            freezeRevoked: dto.safety?.freezeAuthorityRevoked ?? null,
+            gasUsd: dto.estGasCostUsd ?? null,
+            breakevenCoverage: dto.breakevenCoverageRatio ?? null,
+          };
+        }
+      }
+    } catch {
+      // Leave detail null — detailHtml says so rather than showing a spinner forever.
+    }
+  }
+
+  cell.innerHTML = detailHtml(trade ?? { p: 0 }, detail);
+}
+
+document.addEventListener("click", e => {
+  const row = e.target.closest(".trow");
+  if (row) void toggleTradeRow(row);
+});
+document.addEventListener("keydown", e => {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  const row = e.target.closest?.(".trow");
+  if (!row) return;
+  e.preventDefault();
+  void toggleTradeRow(row);
+});
 
 /* ---------- daily macro brief ---------- */
 
@@ -1059,11 +1603,45 @@ function setStatus(state, detail) {
     archive: ["bg-amber-400", "text-amber-400/90", "Arsip — engine tak terjangkau"],
   };
   const [dot, text, label] = map[state];
+  // The detail half is its own span so the ticker can rewrite the elapsed time every
+  // second without rebuilding the pill (which would restart the ping animation).
   statusEl.innerHTML =
     '<span class="relative flex h-1.5 w-1.5">'
     + (state === "loading" ? '<span class="absolute inline-flex h-full w-full animate-ping rounded-full ' + dot + ' opacity-60"></span>' : "")
     + '<span class="relative inline-flex h-1.5 w-1.5 rounded-full ' + dot + '"></span></span>'
-    + '<span class="text-[11.5px] font-medium ' + text + '">' + esc(label) + (detail ? " · " + esc(detail) : "") + "</span>";
+    + '<span class="text-[11.5px] font-medium ' + text + '">' + esc(label) + "</span>"
+    + '<span id="conn-detail" class="text-[11.5px] ' + text + '">' + (detail ? " · " + esc(detail) : "") + "</span>";
+}
+
+/* ---------- elapsed-time ticker ---------- */
+
+/**
+ * The pill used to print a fixed clock time from the moment of the last poll, so it sat
+ * unchanged for a whole minute and read as frozen. It now counts up once a second, which
+ * is the only thing on the page that shows at a glance whether the connection is alive
+ * between polls.
+ */
+let lastSyncMs = null;
+let tickTimer = null;
+
+function elapsedLabel(sinceMs) {
+  const secs = Math.max(0, Math.round((Date.now() - sinceMs) / 1000));
+  if (secs < 60) return secs + " dtk lalu";
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return mins + " mnt " + String(secs % 60).padStart(2, "0") + " dtk lalu";
+  const hours = Math.floor(mins / 60);
+  return hours + " jam " + String(mins % 60).padStart(2, "0") + " mnt lalu";
+}
+
+function tickStatus() {
+  if (lastSyncMs === null) return;
+  const el = document.getElementById("conn-detail");
+  if (el) el.textContent = " · " + elapsedLabel(lastSyncMs);
+}
+
+function startTicker() {
+  clearInterval(tickTimer);
+  tickTimer = setInterval(tickStatus, 1000);
 }
 
 /* ---------- fetch + render ---------- */
@@ -1137,12 +1715,14 @@ async function refresh(range, { silent = false } = {}) {
       src: "live",
     }));
     paint(range);
-    setStatus("live", "diperbarui " + new Date().toLocaleTimeString());
+    lastSyncMs = Date.now();
+    setStatus("live", elapsedLabel(lastSyncMs));
   } catch (err) {
     // Graceful fallback: the archive alone still renders a complete page. Never leave
     // the UI blank because an upstream is down.
     liveTrades = [];
     paint(range);
+    lastSyncMs = null;
     setStatus("archive", String(err && err.message ? err.message : err));
   }
 }
@@ -1181,6 +1761,7 @@ skeletonCards();
 refresh("all");
 refreshBrief();
 startPolling();
+startTicker();
 
 </script>
 </body>
