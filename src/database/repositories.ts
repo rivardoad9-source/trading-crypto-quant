@@ -6,6 +6,15 @@ import {
   POSITION_STATUS,
 } from "../config/constants.js";
 import { summarisePoolExits, type PoolExitRecord } from "../services/meteora.js";
+import {
+  currentZonedDay,
+  parseStoredUtc,
+  toSqlUtc,
+  zonedDayEndUtc,
+  zonedDayKey,
+  zonedDayStartUtc,
+  zonedHour,
+} from "../services/timezone.js";
 import type {
   ClosePositionInput,
   DailyPnlSnapshotRow,
@@ -57,10 +66,10 @@ function cohortSql(cohort: CohortFilter): { clause: string; params: string[] } {
     params.push(cohort.openedAtFrom);
   }
   if (cohort.closedOnOrAfter) {
-    // Same 'localtime' bucketing as aggregateClosedTradesByDate, so a trailing window
-    // and the heatmap can never disagree about which day a close belongs to.
-    clause += " AND date(closed_at, 'localtime') >= ?";
-    params.push(cohort.closedOnOrAfter);
+    // Converted to the UTC instant the local day begins, so SQL compares instants and
+    // never has to know what a timezone is. Same boundary the day keys use.
+    clause += " AND closed_at >= ?";
+    params.push(toSqlUtc(zonedDayStartUtc(cohort.closedOnOrAfter)));
   }
   return { clause, params };
 }
@@ -343,9 +352,9 @@ export function getStatsForDate(date: string, cohort: CohortFilter = ALL_TIME): 
          COALESCE(SUM(realized_pnl_usd), 0) AS realizedPnlUsd
        FROM simulated_positions
        WHERE status IN (${CLOSED_LIST})${clause}
-         AND date(closed_at, 'localtime') = ?`,
+         AND closed_at >= ? AND closed_at < ?`,
     )
-    .get(...params, date) as TradeStats;
+    .get(...params, toSqlUtc(zonedDayStartUtc(date)), toSqlUtc(zonedDayEndUtc(date))) as TradeStats;
 }
 
 export function getTotalFloatingPnlUsd(cohort: CohortFilter = ALL_TIME): number {
@@ -446,34 +455,55 @@ export function aggregateClosedTradesByDate(
   cohort: CohortFilter = ALL_TIME,
 ): DailyAggregateRow[] {
   const { clause, params } = cohortSql(cohort);
-  return db
+
+  /*
+   * Bucketed in JS, not by `date(closed_at,'localtime')`.
+   *
+   * SQL selects a UTC half-open window and the day key is resolved per row through the
+   * IANA database, so the result no longer depends on whether the host's C runtime can
+   * read a zone name — see src/services/timezone.ts. On a host where it can, this
+   * returns exactly what the old query returned.
+   */
+  const rows = db
     .prepare(
-      `SELECT
-         date(closed_at, 'localtime') AS date,
-         COUNT(*) AS trades,
-         COALESCE(SUM(CASE WHEN realized_pnl_usd > 0 THEN 1 ELSE 0 END), 0) AS wins,
-         COALESCE(SUM(CASE WHEN realized_pnl_usd <= 0 THEN 1 ELSE 0 END), 0) AS losses,
-         COALESCE(SUM(realized_pnl_usd), 0) AS netPnlUsd
-       FROM simulated_positions
-       WHERE status IN (${CLOSED_LIST})${clause}
-         AND date(closed_at, 'localtime') BETWEEN ? AND ?
-       GROUP BY date(closed_at, 'localtime')
-       ORDER BY date ASC`,
+      `SELECT closed_at AS closedAt, realized_pnl_usd AS pnl
+         FROM simulated_positions
+        WHERE status IN (${CLOSED_LIST})${clause}
+          AND closed_at >= ? AND closed_at < ?
+        ORDER BY closed_at ASC`,
     )
-    .all(...params, startDate, endDate) as DailyAggregateRow[];
+    .all(
+      ...params,
+      toSqlUtc(zonedDayStartUtc(startDate)),
+      toSqlUtc(zonedDayEndUtc(endDate)),
+    ) as Array<{ closedAt: string; pnl: number | null }>;
+
+  const buckets = new Map<string, DailyAggregateRow>();
+  for (const row of rows) {
+    const instant = parseStoredUtc(row.closedAt);
+    if (!instant) continue;
+    const date = zonedDayKey(instant);
+    const bucket = buckets.get(date) ?? { date, trades: 0, wins: 0, losses: 0, netPnlUsd: 0 };
+    const pnl = row.pnl ?? 0;
+    bucket.trades += 1;
+    if (pnl > 0) bucket.wins += 1;
+    else bucket.losses += 1;
+    bucket.netPnlUsd += pnl;
+    buckets.set(date, bucket);
+  }
+
+  return [...buckets.values()].sort((a, b) => a.date.localeCompare(b.date));
 }
 
 /**
- * Today's date in the same frame `aggregateClosedTradesByDate` buckets by.
+ * Today, in the same frame `aggregateClosedTradesByDate` buckets by.
  *
- * Callers that need to line a date range up with the day keys this file produces must
- * ask SQLite rather than compute one in JS: `'localtime'` resolves against the C
- * runtime's timezone, which is not always the same thing as `process.env.TZ` (a Windows
- * host cannot read an IANA name and silently lands on a different offset).
+ * Resolved through the IANA database rather than the C runtime, so a caller lining a
+ * date range up with the day keys this file produces gets the same answer on every
+ * host — see src/services/timezone.ts.
  */
 export function currentLocalDate(): string {
-  const row = db.prepare("SELECT date('now', 'localtime') AS d").get() as { d: string };
-  return row.d;
+  return currentZonedDay();
 }
 
 /** One pool's realised contribution, for the analytics "top pool" figure. */
@@ -511,7 +541,7 @@ export function getPoolPerformance(cohort: CohortFilter = ALL_TIME): PoolPerform
 
 /** Realised PnL bucketed by close hour, for the analytics "peak trading hour" figure. */
 export interface HourlyPerformanceRow {
-  /** 00-23, in the API's timezone — the same 'localtime' bucketing as the day keys. */
+  /** 00-23, in the API timezone, resolved through the IANA database. */
   hour: string;
   trades: number;
   netPnlUsd: number;
@@ -519,18 +549,29 @@ export interface HourlyPerformanceRow {
 
 export function getHourlyPerformance(cohort: CohortFilter = ALL_TIME): HourlyPerformanceRow[] {
   const { clause, params } = cohortSql(cohort);
-  return db
+
+  // Same reason as the daily buckets: the hour is resolved through the IANA database
+  // rather than through SQLite's 'localtime'.
+  const rows = db
     .prepare(
-      `SELECT
-         strftime('%H', closed_at, 'localtime') AS hour,
-         COUNT(*) AS trades,
-         COALESCE(SUM(realized_pnl_usd), 0) AS netPnlUsd
-       FROM simulated_positions
-       WHERE status IN (${CLOSED_LIST})${clause}
-       GROUP BY hour
-       ORDER BY netPnlUsd DESC`,
+      `SELECT closed_at AS closedAt, realized_pnl_usd AS pnl
+         FROM simulated_positions
+        WHERE status IN (${CLOSED_LIST})${clause}`,
     )
-    .all(...params) as HourlyPerformanceRow[];
+    .all(...params) as Array<{ closedAt: string; pnl: number | null }>;
+
+  const buckets = new Map<string, HourlyPerformanceRow>();
+  for (const row of rows) {
+    const instant = parseStoredUtc(row.closedAt);
+    if (!instant) continue;
+    const hour = zonedHour(instant);
+    const bucket = buckets.get(hour) ?? { hour, trades: 0, netPnlUsd: 0 };
+    bucket.trades += 1;
+    bucket.netPnlUsd += row.pnl ?? 0;
+    buckets.set(hour, bucket);
+  }
+
+  return [...buckets.values()].sort((a, b) => b.netPnlUsd - a.netPnlUsd);
 }
 
 /** One closed trade, reduced to what the analytics page needs to merge and recompute. */

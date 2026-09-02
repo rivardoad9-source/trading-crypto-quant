@@ -4,6 +4,7 @@ import { getTelegramBot, sanitize, chunk } from "./telegram.js";
 import { computeOverview } from "./overview.js";
 import { isEnginePaused, setEnginePaused } from "./engineControl.js";
 import { forceCloseAllPositions } from "../agents/dlmmTraderAgent.js";
+import { addDaysToDayKey, currentZonedDay } from "./timezone.js";
 import {
   aggregateClosedTradesByDate,
   countActivePositions,
@@ -158,11 +159,17 @@ export function buildTradesText(limit = 10): string {
 
 /** Pure /pnl report: net PnL per day for the last N days. */
 export function buildPnlText(days = 14): string {
-  const end = new Date();
-  const start = new Date();
-  start.setDate(start.getDate() - (days - 1));
-  const fmt = (d: Date) => d.toISOString().slice(0, 10);
-  const rows = aggregateClosedTradesByDate(fmt(start), fmt(end));
+  /*
+   * The window is expressed in the SAME zone the day keys are bucketed in.
+   *
+   * It used to be built from `toISOString()`, i.e. the UTC date, and handed to an
+   * aggregation that groups by the API's local day. Between 17:00 UTC and midnight the
+   * local date is already tomorrow, so the report silently dropped the current day —
+   * every evening, on the host the engine actually runs on.
+   */
+  const end = currentZonedDay();
+  const start = addDaysToDayKey(end, -(days - 1));
+  const rows = aggregateClosedTradesByDate(start, end);
 
   const lines: string[] = [`📅 **FlowMetrix PnL** (last ${days} days)`, ``];
 
