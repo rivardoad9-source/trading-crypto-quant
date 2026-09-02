@@ -21,11 +21,19 @@ npm run sweep            # grid-search the ENTRY guardrails against the cached d
 npm run sweep:exits      # grid-search TAKE_PROFIT_PCT / STOP_LOSS_PCT, split in/out-of-sample
 npm run audit:report     # backtest JSON -> reports/backtest-audit.html (print to PDF)
 npm run backtest         # 30-day replay of the live formula; --days --pools --refresh --tp etc.
+npm run backtest:annual  # 365-day replay of the LIVE V1.1 guardrails + daily returns export
+npm run report:quant     # Python: QuantStats-style tear sheet (HTML + PDF + PNG) from that export
 npm run dlmm:once        # one screen -> decide -> monitor cycle (monitor included)
 npm run research:once    # one macro research run
 npm run smoke            # probe every external API, print screener output + rejection counts
 npm run seed:demo        # demo positions marked [DEMO]; npm run db:reset clears everything
 ```
+
+`npm run report:quant` needs Python with `pandas numpy matplotlib scipy quantstats`
+(`python -m pip install pandas matplotlib quantstats`). It reads only the CSV the Node
+runner writes, so the backtest itself has no Python dependency. The PDF is printed from
+the generated HTML by whichever of Chrome or Edge is already installed; a missing browser
+degrades to a warning, never a failed run.
 
 `npm install` on npm 11+ blocks native install scripts. After installing, run
 `npm approve-scripts better-sqlite3 esbuild` or `better-sqlite3` won't build and `tsx` won't run.
@@ -55,7 +63,7 @@ read-only view and holds no trading logic.
 - `src/services/http.ts` — `getJson` retries 429/5xx and fails fast on 4xx; `getJsonSafe` never
   throws, so one dead upstream can't abort a whole cycle.
 - `src/index.ts` — cron schedulers wrapped in `withLock`. Two position-facing clocks: the 60s fast
-  monitor (`CRON.FAST_MONITOR`) marks open positions and fires exits; the 10m screener
+  monitor (`CRON.FAST_MONITOR`) marks open positions and fires exits; the 30m screener
   (`CRON.DLMM_LOOP`) does the 600-pool scan and the DeepSeek entry decision, and skips its own
   monitor stage while the fast monitor is enabled. `withLock` only stops a job overlapping itself —
   cross-job safety is `positionMutex` in `src/services/mutex.ts`. Overlapping ticks would
@@ -171,6 +179,22 @@ dollars three times over — invisible leverage that flatters every result. The 
 notional before sizing. With `maxConcurrentPositions = 1` nothing is open at that point, so
 single-position runs are unaffected.
 
+**Free historical OHLCV stops at about 208 days, so "1-year backtest" needs a key.**
+Measured against the live endpoint on 2026-09-01: GeckoTerminal's keyless tier yields about
+4,996 hourly bars per pool (~208 days, back to early February 2026) and answers **HTTP 401**
+on every deeper `before_timestamp`.
+That 401 is a plan boundary, not an auth fault — the same request without
+`before_timestamp` succeeds. Daily aggregation is capped at the same depth, so switching
+timeframe buys no history. `fetchHourlyBars` therefore classifies 401/403 as
+`HistoryDepthLimitError` and, when it already holds bars, stops paginating and keeps them;
+a refusal on the FIRST page still propagates, because nothing was granted at all. Losing a
+whole pool over a known plan limit would thin the universe for no reason. `runAnnual.ts`
+compares requested against achieved days and warns in the header, the terminal and the
+caveats when they differ — do not remove that warning, or a 208-day result gets quoted as
+an annual one. `COINGECKO_PRO_API_KEY` switches the base URL to CoinGecko Pro's `/onchain`
+routes for the full year; that path is the documented request shape and has NOT been
+exercised here, because no key is configured.
+
 **Modelled TVL is the load-bearing assumption of the whole harness.** No free provider serves
 historical TVL. `tvlModel.ts` fits `k = TVL/volume24h` on the live cross-section and applies
 `TVL_t = k x volume24h_t`. The fit is loose (report prints the IQR). Never present backtest output
@@ -207,7 +231,7 @@ box, enough for a 4-hour cooldown to expire before it started. Parse stored time
 cannot drift apart on the interpretation.
 
 **Every write to `simulated_positions` happens under `positionMutex`.** Three clocks now
-mutate positions: the 60s fast monitor, the 10m screener, and Telegram `/close_all`. Fee
+mutate positions: the 60s fast monitor, the 30m screener, and Telegram `/close_all`. Fee
 accrual is `rate x (now - last_checked_at)`, so two overlapping passes measure from the
 same stored timestamp and book the same interval twice; both could also read a row as
 ACTIVE and close it independently. The `withLock` wrappers in `index.ts` only stop a cron
@@ -296,6 +320,16 @@ justified by a single in-range check of a period nothing watched — three stale
 were worth $3.45-$13.80 of phantom fees against a dry run whose total realised PnL was
 -$25.46. Unobserved time is not evidence of earning; same fail-closed rule as the
 anti-rug and volatility gates.
+
+**The annual tear sheet's daily returns are REALISED-ONLY.** `buildDailyCurve` steps
+equity on a trade's EXIT day and never on open floating PnL, matching `computeMaxDrawdown`
+and keeping the curve reproducible from the trade log alone. The consequence is that a day
+with no close is a genuine 0.00%, not missing data — which deflates daily volatility and so
+FLATTERS every daily-sampled ratio (Sharpe, Sortino, Ulcer). With roughly 5-10% of days
+active, those ratios are indicative only; the trade-level statistics are the primary
+evidence. `activeDays` is reported next to them for exactly that reason, and the day key is
+built from UTC components so a local-clock box cannot slide a close into the wrong day,
+month or year. Do not "improve" the curve by adding floating PnL.
 
 **Undefined metrics stay null.** `profitFactor` is null when there are no losing trades; returning
 `Infinity` or `0` would render on the dashboard as a real measurement. Max drawdown runs over the

@@ -1,0 +1,1123 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FlowMetrix DLMM V1.1 — Engine Architecture</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    darkMode: "class",
+    theme: {
+      extend: {
+        colors: {
+          ground: "#0a0e14",
+          panel:  "#111923",
+          raised: "#17212d",
+          rule:   "#243140",
+          ink:    "#dde5ed",
+          muted:  "#7f92a4",
+          /* The two clocks are the spine of this architecture, so they get the two
+             accents. Amber = the 30-minute screener, cyan = the 60-second monitor.
+             Every element on the page inherits whichever clock owns it. */
+          slow:   "#e0a33e",
+          fast:   "#4cc9f0",
+          pos:    "#3ecf8e",
+          neg:    "#ef6461",
+        },
+        fontFamily: {
+          display: ['Archivo', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+          sans:    ['"IBM Plex Sans"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+          mono:    ['"IBM Plex Mono"', 'ui-monospace', 'SFMono-Regular', 'monospace'],
+        },
+      },
+    },
+  };
+</script>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.1/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+
+<style>
+  html { scroll-behavior: smooth; }
+  body { background: #0a0e14; color: #dde5ed; }
+
+  /* One shared focus treatment, so keyboard users get the same affordance on tabs,
+     stepper dots and links rather than the browser default on some and nothing on
+     others. */
+  :focus-visible { outline: 2px solid #4cc9f0; outline-offset: 3px; border-radius: 4px; }
+
+  ::-webkit-scrollbar { height: 9px; width: 9px; }
+  ::-webkit-scrollbar-track { background: #111923; }
+  ::-webkit-scrollbar-thumb { background: #2c3b4c; border-radius: 5px; }
+  ::-webkit-scrollbar-thumb:hover { background: #3a4c60; }
+
+  .hairline { border-top: 1px solid #243140; }
+  .grain {
+    background-image:
+      radial-gradient(circle at 12% 0%, rgba(224,163,62,.07), transparent 42%),
+      radial-gradient(circle at 88% 8%, rgba(76,201,240,.08), transparent 46%);
+  }
+
+  /* Mermaid injects its own SVG; these keep it on the page's palette instead of its
+     default theme, and let a wide graph scroll inside its panel rather than pushing
+     the page sideways. */
+  #flowDiagram svg { max-width: none; height: auto; }
+  #flowDiagram .edgeLabel { background: transparent !important; }
+  #flowDiagram .edgeLabel rect { fill: #0a0e14 !important; }
+
+  .step-rail::before {
+    content: ""; position: absolute; left: 0; right: 0; top: 19px;
+    height: 2px; background: #243140; z-index: 0;
+  }
+
+  .fade-in { animation: fade .28s ease-out; }
+  @keyframes fade { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .fade-in { animation: none; }
+    * { transition-duration: .01ms !important; }
+  }
+</style>
+</head>
+
+<body class="font-sans antialiased">
+
+<!-- ══════════════════ HEADER ══════════════════ -->
+<header class="grain border-b border-rule">
+  <div class="max-w-6xl mx-auto px-6 pt-14 pb-10">
+    <div class="flex items-center gap-2.5 mb-5">
+      <span class="font-mono text-[10px] tracking-[.18em] uppercase text-muted border border-rule rounded px-2 py-1">FlowMetrix</span>
+      <span class="font-mono text-[10px] tracking-[.18em] uppercase text-slow border border-slow/35 bg-slow/10 rounded px-2 py-1">Engine V1.1</span>
+      <span class="font-mono text-[10px] tracking-[.18em] uppercase text-muted border border-rule rounded px-2 py-1">Dry run · paper only</span>
+    </div>
+
+    <h1 class="font-display font-extrabold text-4xl sm:text-5xl tracking-[-.03em] leading-[1.05] text-balance">
+      How the DLMM engine<br>actually works
+    </h1>
+    <p class="mt-4 max-w-2xl text-[15px] leading-relaxed text-muted">
+      A Solana DLMM liquidity engine built on two independent clocks: a slow screener that
+      decides what to enter, and a fast monitor that decides when to leave. Everything below
+      is read from the running code — cron expressions, token budgets and guardrail
+      thresholds are quoted from source, and the performance figures come from the
+      212-day backtest of this exact configuration.
+    </p>
+
+    <div class="mt-9 grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div class="bg-panel border border-rule rounded-lg p-4">
+        <div class="font-mono text-[10px] uppercase tracking-[.13em] text-muted">Net return</div>
+        <div class="font-display font-bold text-2xl text-pos mt-1.5 tabular-nums">+19.39%</div>
+        <div class="text-[11px] text-muted mt-1">$100 → $119.39</div>
+      </div>
+      <div class="bg-panel border border-rule rounded-lg p-4">
+        <div class="font-mono text-[10px] uppercase tracking-[.13em] text-muted">Max drawdown</div>
+        <div class="font-display font-bold text-2xl text-neg mt-1.5 tabular-nums">−13.16%</div>
+        <div class="text-[11px] text-muted mt-1">worst peak-to-trough</div>
+      </div>
+      <div class="bg-panel border border-rule rounded-lg p-4">
+        <div class="font-mono text-[10px] uppercase tracking-[.13em] text-muted">Trades</div>
+        <div class="font-display font-bold text-2xl mt-1.5 tabular-nums">47</div>
+        <div class="text-[11px] text-muted mt-1">74.5% win · PF 1.35</div>
+      </div>
+      <div class="bg-panel border border-rule rounded-lg p-4">
+        <div class="font-mono text-[10px] uppercase tracking-[.13em] text-muted">Window</div>
+        <div class="font-display font-bold text-2xl mt-1.5 tabular-nums">212d</div>
+        <div class="text-[11px] text-muted mt-1">Feb – Sep 2026</div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<nav class="sticky top-0 z-30 bg-ground/92 backdrop-blur border-b border-rule">
+  <div class="max-w-6xl mx-auto px-6 flex gap-6 overflow-x-auto font-mono text-[11px] uppercase tracking-[.13em]">
+    <a href="#architecture" class="py-3.5 text-muted hover:text-ink whitespace-nowrap transition-colors">01 · Architecture</a>
+    <a href="#components"   class="py-3.5 text-muted hover:text-ink whitespace-nowrap transition-colors">02 · Components</a>
+    <a href="#lifecycle"    class="py-3.5 text-muted hover:text-ink whitespace-nowrap transition-colors">03 · Lifecycle</a>
+    <a href="#performance"  class="py-3.5 text-muted hover:text-ink whitespace-nowrap transition-colors">04 · Performance</a>
+  </div>
+</nav>
+
+<main class="max-w-6xl mx-auto px-6">
+
+<!-- ══════════════════ 01 · ARCHITECTURE ══════════════════ -->
+<section id="architecture" class="pt-16 pb-14 scroll-mt-14">
+  <div class="flex items-baseline gap-3 mb-2">
+    <span class="font-mono text-xs text-slow">01</span>
+    <h2 class="font-display font-bold text-2xl tracking-[-.02em]">High-level architecture</h2>
+  </div>
+  <p class="text-muted text-sm max-w-2xl mb-8">
+    Data flows one way: external APIs → agents → SQLite → REST API → dashboard. The dashboard
+    holds no trading logic; it is a read-only view. The two clocks below never block each
+    other — that separation is the single most important property of the design.
+  </p>
+
+  <div class="bg-panel border border-rule rounded-xl p-4 sm:p-6 overflow-x-auto">
+    <div id="flowDiagram" class="flex justify-center min-w-[720px]"></div>
+
+    <!-- Shown only if Mermaid fails to load (offline, blocked CDN). The page must still
+         explain itself without a network. -->
+    <div id="flowFallback" class="hidden min-w-[680px]">
+      <div class="flex items-stretch gap-2 text-[11px]">
+        <div class="flex-1 bg-raised border border-rule rounded-lg p-3">
+          <div class="font-mono text-[9px] uppercase tracking-wider text-muted mb-1.5">Sources</div>
+          <div class="space-y-1 font-mono">
+            <div>Meteora <span class="text-muted">/pools</span></div>
+            <div>DexScreener</div>
+            <div>Solana RPC</div>
+            <div>CoinGecko · Jupiter</div>
+          </div>
+        </div>
+        <div class="flex items-center text-muted">→</div>
+        <div class="flex-1 bg-raised border border-slow/40 rounded-lg p-3">
+          <div class="font-mono text-[9px] uppercase tracking-wider text-slow mb-1.5">Screener · 30m</div>
+          <div class="font-mono">600-pool scan<br>local filters<br>anti-rug screen</div>
+        </div>
+        <div class="flex items-center text-muted">→</div>
+        <div class="flex-1 bg-raised border border-slow/40 rounded-lg p-3">
+          <div class="font-mono text-[9px] uppercase tracking-wider text-slow mb-1.5">Reasoner</div>
+          <div class="font-mono">deepseek-reasoner<br>16k token cap<br>graceful skip</div>
+        </div>
+        <div class="flex items-center text-muted">→</div>
+        <div class="flex-1 bg-raised border border-rule rounded-lg p-3">
+          <div class="font-mono text-[9px] uppercase tracking-wider text-muted mb-1.5">Guardrails</div>
+          <div class="font-mono">cooldown 4h<br>lockout 2×/24h<br>breakeven gate</div>
+        </div>
+        <div class="flex items-center text-muted">→</div>
+        <div class="flex-1 bg-raised border border-fast/40 rounded-lg p-3">
+          <div class="font-mono text-[9px] uppercase tracking-wider text-fast mb-1.5">Monitor · 60s</div>
+          <div class="font-mono">mark to market<br>accrue fees<br>fire exits</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="mt-4 grid sm:grid-cols-3 gap-3 text-[13px]">
+    <div class="bg-panel border-l-2 border-slow border-y border-r border-rule rounded-r-lg p-3.5">
+      <div class="font-mono text-[10px] uppercase tracking-[.12em] text-slow mb-1">Slow path · entries</div>
+      <p class="text-muted leading-relaxed">Rate-limited upstreams and one LLM call per tick. Expensive, so it runs rarely.</p>
+    </div>
+    <div class="bg-panel border-l-2 border-fast border-y border-r border-rule rounded-r-lg p-3.5">
+      <div class="font-mono text-[10px] uppercase tracking-[.12em] text-fast mb-1">Fast path · exits</div>
+      <p class="text-muted leading-relaxed">Touches only open positions. No LLM, no rate-limited APIs, so it can run every minute.</p>
+    </div>
+    <div class="bg-panel border-l-2 border-rule border-y border-r border-rule rounded-r-lg p-3.5">
+      <div class="font-mono text-[10px] uppercase tracking-[.12em] text-muted mb-1">Shared state</div>
+      <p class="text-muted leading-relaxed">Every write to <span class="font-mono text-ink">simulated_positions</span> is serialised by <span class="font-mono text-ink">positionMutex</span>.</p>
+    </div>
+  </div>
+</section>
+
+<div class="hairline"></div>
+
+<!-- ══════════════════ 02 · COMPONENTS ══════════════════ -->
+<section id="components" class="pt-14 pb-14 scroll-mt-14">
+  <div class="flex items-baseline gap-3 mb-2">
+    <span class="font-mono text-xs text-slow">02</span>
+    <h2 class="font-display font-bold text-2xl tracking-[-.02em]">Core components</h2>
+  </div>
+  <p class="text-muted text-sm max-w-2xl mb-7">
+    Three decisions carry most of the engine's behaviour. Each one exists because a
+    cheaper design was tried first and measured.
+  </p>
+
+  <div role="tablist" aria-label="Core components" class="flex flex-wrap gap-2 mb-5">
+    <button role="tab" data-tab="clocks" aria-selected="true"
+      class="tab-btn font-mono text-[11px] uppercase tracking-[.11em] px-3.5 py-2 rounded-md border transition-colors">
+      Dual-clock engine
+    </button>
+    <button role="tab" data-tab="reasoner" aria-selected="false"
+      class="tab-btn font-mono text-[11px] uppercase tracking-[.11em] px-3.5 py-2 rounded-md border transition-colors">
+      Reasoner economy
+    </button>
+    <button role="tab" data-tab="guardrails" aria-selected="false"
+      class="tab-btn font-mono text-[11px] uppercase tracking-[.11em] px-3.5 py-2 rounded-md border transition-colors">
+      Risk guardrails
+    </button>
+  </div>
+
+  <!-- ── Dual clock ── -->
+  <div class="tab-panel" data-panel="clocks" role="tabpanel">
+    <div class="grid md:grid-cols-2 gap-4">
+      <article class="bg-panel border border-slow/30 rounded-xl overflow-hidden">
+        <div class="bg-slow/10 border-b border-slow/25 px-5 py-3 flex items-center justify-between">
+          <div>
+            <div class="font-mono text-[10px] uppercase tracking-[.13em] text-slow">Slow clock</div>
+            <h3 class="font-display font-bold text-lg mt-0.5">DLMM_LOOP</h3>
+          </div>
+          <code class="font-mono text-sm text-slow bg-ground/60 px-2.5 py-1 rounded border border-slow/25">*/30 * * * *</code>
+        </div>
+        <div class="p-5 space-y-4 text-[13px] leading-relaxed">
+          <p class="text-muted">
+            Scans 600 pools, runs the anti-rug screen, and spends one
+            <span class="font-mono text-ink">deepseek-reasoner</span> call to pick an entry.
+            This clock governs <em class="text-ink not-italic font-medium">only</em> whether a new
+            position may be opened.
+          </p>
+          <div class="bg-raised border border-rule rounded-lg p-3.5">
+            <div class="font-mono text-[10px] uppercase tracking-[.12em] text-muted mb-2">Why 30 minutes, not 10</div>
+            <p class="text-muted">
+              Chain-of-thought dominates the token bill. At 10 minutes the screener burned
+              <span class="text-slow font-medium">three times the tokens</span> for entries the
+              anti-churn gates mostly refuse anyway — the pool cooldown is measured in
+              <em class="not-italic text-ink">hours</em>, so a 10-minute cadence was re-asking a
+              question whose answer could not have changed.
+            </p>
+          </div>
+          <ul class="space-y-1.5 text-muted">
+            <li class="flex gap-2"><span class="text-slow">·</span> Rate-limited upstreams live here</li>
+            <li class="flex gap-2"><span class="text-slow">·</span> The only LLM cost in the system</li>
+            <li class="flex gap-2"><span class="text-slow">·</span> Skips its own monitor stage while the fast monitor is on</li>
+          </ul>
+        </div>
+      </article>
+
+      <article class="bg-panel border border-fast/30 rounded-xl overflow-hidden">
+        <div class="bg-fast/10 border-b border-fast/25 px-5 py-3 flex items-center justify-between">
+          <div>
+            <div class="font-mono text-[10px] uppercase tracking-[.13em] text-fast">Fast clock</div>
+            <h3 class="font-display font-bold text-lg mt-0.5">FAST_MONITOR</h3>
+          </div>
+          <code class="font-mono text-sm text-fast bg-ground/60 px-2.5 py-1 rounded border border-fast/25">* * * * *</code>
+        </div>
+        <div class="p-5 space-y-4 text-[13px] leading-relaxed">
+          <p class="text-muted">
+            Marks every open position against the live Meteora price, accrues fees, and fires
+            exits. It carries none of the screener's rate-limited upstreams and none of its
+            LLM cost, which is exactly why it can run every 60 seconds.
+          </p>
+          <div class="bg-raised border border-rule rounded-lg p-3.5">
+            <div class="font-mono text-[10px] uppercase tracking-[.12em] text-muted mb-2">Why a stop-loss needs its own clock</div>
+            <p class="text-muted">
+              An exit threshold is only as tight as the interval that tests it. On the 10-minute
+              clock the dry run overshot a −8% stop all the way to
+              <span class="text-neg font-medium tabular-nums">−13.84%</span>. Slowing the
+              screener must never slow this loop.
+            </p>
+          </div>
+          <ul class="space-y-1.5 text-muted">
+            <li class="flex gap-2"><span class="text-fast">·</span> Uses <span class="font-mono text-ink">tryRun</span> — skips when the mutex is contended</li>
+            <li class="flex gap-2"><span class="text-fast">·</span> Prices from Meteora, never DexScreener</li>
+            <li class="flex gap-2"><span class="text-fast">·</span> Fee accrual clamped to 1h after downtime</li>
+          </ul>
+        </div>
+      </article>
+    </div>
+
+    <div class="mt-4 bg-panel border border-rule rounded-xl p-5">
+      <h4 class="font-display font-semibold text-[15px] mb-2">The one rule that ties them together</h4>
+      <p class="text-[13px] text-muted leading-relaxed max-w-3xl">
+        Fee accrual is <span class="font-mono text-ink">rate × (now − last_checked_at)</span>. Two
+        overlapping passes would measure from the same stored timestamp and book the same interval
+        twice, and both could read a row as ACTIVE and close it independently. The per-job
+        <span class="font-mono text-ink">withLock</span> wrappers only stop a job overlapping
+        <em class="not-italic text-ink">itself</em>; cross-clock safety is
+        <span class="font-mono text-ink">positionMutex</span>. Nothing that does I/O may hold it —
+        Telegram sends and post-mortem LLM calls are queued and settled after release, or a
+        DeepSeek round-trip would silently void the 60-second exit guarantee.
+      </p>
+    </div>
+  </div>
+
+  <!-- ── Reasoner ── -->
+  <div class="tab-panel hidden" data-panel="reasoner" role="tabpanel">
+    <div class="grid lg:grid-cols-[1.15fr_.85fr] gap-4">
+      <article class="bg-panel border border-rule rounded-xl p-5">
+        <h3 class="font-display font-bold text-lg mb-1">Token budget: a fixed ceiling, not a retry ladder</h3>
+        <p class="text-[13px] text-muted leading-relaxed mb-4">
+          <span class="font-mono text-ink">deepseek-reasoner</span> writes its chain-of-thought
+          before it writes the answer, so <span class="font-mono text-ink">max_tokens</span> covers
+          both. A chat-sized budget is spent thinking, and the answer never begins.
+        </p>
+
+        <div class="bg-raised border border-rule rounded-lg p-4 mb-4">
+          <div class="flex items-baseline justify-between mb-3">
+            <span class="font-mono text-[10px] uppercase tracking-[.12em] text-muted">REASONER_MAX_TOKENS</span>
+            <span class="font-display font-bold text-2xl text-slow tabular-nums">16,000</span>
+          </div>
+          <div class="h-2 rounded-full bg-ground overflow-hidden flex">
+            <div class="bg-slow/80 h-full" style="width:55%"></div>
+            <div class="bg-slow/35 h-full" style="width:25%"></div>
+            <div class="bg-rule h-full" style="width:20%"></div>
+          </div>
+          <div class="flex justify-between mt-2 font-mono text-[10px] text-muted">
+            <span>chain-of-thought (&gt;8,000 observed)</span>
+            <span>answer</span>
+            <span>headroom</span>
+          </div>
+        </div>
+
+        <div class="space-y-3 text-[13px] leading-relaxed">
+          <div class="border-l-2 border-neg/60 pl-3">
+            <div class="font-medium text-ink mb-0.5">The bug it replaced</div>
+            <p class="text-muted">
+              The budget used to <span class="text-neg">double</span> on a truncated attempt
+              (16k → 32k), so a single tick could pay 48,000 reasoning tokens and still return
+              nothing. The failure mode billed twice over.
+            </p>
+          </div>
+          <div class="border-l-2 border-slow/60 pl-3">
+            <div class="font-medium text-ink mb-0.5">Why not lower it</div>
+            <p class="text-muted">
+              16,000 is measured, not round. At 4k/8k every cycle burned a wasted first attempt and
+              long CoT still hit the cap. Since truncation now means a skipped cycle rather than a
+              bigger retry, cutting this would simply stop the engine opening positions.
+            </p>
+          </div>
+        </div>
+      </article>
+
+      <div class="space-y-4">
+        <article class="bg-panel border border-rule rounded-xl p-5">
+          <h3 class="font-display font-bold text-[15px] mb-2">Graceful skip</h3>
+          <p class="text-[13px] text-muted leading-relaxed mb-3">
+            A reasoner that burns its budget on thinking and returns nothing is an
+            <em class="not-italic text-ink">expected outcome, not a fault</em>. There is no decision
+            to act on, and no amount of retrying inside one tick produces one.
+          </p>
+          <div class="font-mono text-[11px] bg-raised border border-rule rounded-lg p-3 space-y-1.5">
+            <div class="text-neg">DeepSeekTruncatedError</div>
+            <div class="text-muted">↳ skip this cycle</div>
+            <div class="text-muted">↳ open positions unaffected</div>
+            <div class="text-fast">↳ fast monitor still exits them</div>
+          </div>
+          <p class="text-[12px] text-muted mt-3 leading-relaxed">
+            Only truncation is swallowed. Any other DeepSeek failure propagates, because it means
+            something is genuinely wrong.
+          </p>
+        </article>
+
+        <article class="bg-panel border border-rule rounded-xl p-5">
+          <h3 class="font-display font-bold text-[15px] mb-2">What goes into the prompt</h3>
+          <ul class="text-[13px] text-muted space-y-2">
+            <li class="flex gap-2"><span class="text-slow font-mono text-[11px] mt-0.5">01</span><span>Top candidate pools that survived every local gate</span></li>
+            <li class="flex gap-2"><span class="text-slow font-mono text-[11px] mt-0.5">02</span><span>SOL/USD price and the current priority fee</span></li>
+            <li class="flex gap-2"><span class="text-slow font-mono text-[11px] mt-0.5">03</span><span>Recent <em class="not-italic text-ink">losing</em> closes with written post-mortems</span></li>
+            <li class="flex gap-2"><span class="text-slow font-mono text-[11px] mt-0.5">04</span><span>Macro metrics, with absent ones named <span class="font-mono text-ink">UNAVAILABLE</span></span></li>
+          </ul>
+          <p class="text-[12px] text-muted mt-3 leading-relaxed">
+            The loss history is reconstructed from the bin prices the position
+            <em class="not-italic text-ink">actually ran</em>, after the range floors were applied —
+            quoting what the model originally asked for would teach it from a range that never existed.
+          </p>
+        </article>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Guardrails ── -->
+  <div class="tab-panel hidden" data-panel="guardrails" role="tabpanel">
+    <div class="bg-panel border border-rule rounded-xl p-5 mb-4">
+      <div class="grid md:grid-cols-[1fr_auto] gap-6 items-center">
+        <div>
+          <h3 class="font-display font-bold text-lg mb-1.5">The gates are the edge</h3>
+          <p class="text-[13px] text-muted leading-relaxed">
+            Re-running the identical 212-day window with the anti-churn gates switched off is the
+            cleanest evidence in the whole harness. Same pools, same prices, same exit rules —
+            only the gates change. Without them the engine trades
+            <span class="text-ink font-medium">2.5× more often</span> and turns a profit into a loss.
+          </p>
+        </div>
+        <div class="flex gap-3">
+          <div class="text-center bg-raised border border-pos/30 rounded-lg px-5 py-3.5">
+            <div class="font-mono text-[9px] uppercase tracking-[.12em] text-muted">Gates on</div>
+            <div class="font-display font-bold text-3xl text-pos tabular-nums mt-1">1.35</div>
+            <div class="text-[10px] text-muted mt-0.5">profit factor</div>
+          </div>
+          <div class="text-center bg-raised border border-neg/30 rounded-lg px-5 py-3.5">
+            <div class="font-mono text-[9px] uppercase tracking-[.12em] text-muted">Gates off</div>
+            <div class="font-display font-bold text-3xl text-neg tabular-nums mt-1">0.92</div>
+            <div class="text-[10px] text-muted mt-0.5">profit factor</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="mt-5 overflow-x-auto">
+        <table class="w-full text-[13px] tabular-nums">
+          <thead>
+            <tr class="font-mono text-[10px] uppercase tracking-[.11em] text-muted border-b border-rule">
+              <th class="text-left font-normal py-2 pr-4">Configuration</th>
+              <th class="text-right font-normal py-2 px-3">Trades</th>
+              <th class="text-right font-normal py-2 px-3">Win rate</th>
+              <th class="text-right font-normal py-2 px-3">Profit factor</th>
+              <th class="text-right font-normal py-2 px-3">Net PnL</th>
+              <th class="text-right font-normal py-2 px-3">Max DD</th>
+              <th class="text-right font-normal py-2 pl-3">Friction</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="border-b border-rule/60">
+              <td class="py-2.5 pr-4">V1.1 — all guardrails on</td>
+              <td class="text-right px-3">47</td>
+              <td class="text-right px-3">74.5%</td>
+              <td class="text-right px-3 text-pos font-medium">1.35</td>
+              <td class="text-right px-3 text-pos">+$19.39</td>
+              <td class="text-right px-3">13.2%</td>
+              <td class="text-right pl-3">$32.74</td>
+            </tr>
+            <tr>
+              <td class="py-2.5 pr-4 text-muted">Anti-churn removed</td>
+              <td class="text-right px-3 text-muted">117</td>
+              <td class="text-right px-3 text-muted">65.8%</td>
+              <td class="text-right px-3 text-neg font-medium">0.92</td>
+              <td class="text-right px-3 text-neg">−$13.86</td>
+              <td class="text-right px-3 text-neg">43.6%</td>
+              <td class="text-right pl-3 text-muted">$84.08</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
+      <article class="bg-panel border border-rule rounded-xl p-4">
+        <div class="font-mono text-[10px] uppercase tracking-[.12em] text-slow mb-1.5">Cooldown</div>
+        <div class="font-display font-bold text-xl mb-2">4 hours</div>
+        <p class="text-[12px] text-muted leading-relaxed">
+          A pool is benched after <em class="not-italic text-ink">any</em> close, win or lose.
+          Blocked 144 candidate entries over the window.
+        </p>
+        <p class="text-[11px] text-muted/80 mt-2 leading-relaxed border-t border-rule pt-2">
+          Fails <span class="text-ink">open</span>: an unreadable timestamp is an expired bench, not
+          a ban. A broken clock must not freeze the screener.
+        </p>
+      </article>
+
+      <article class="bg-panel border border-rule rounded-xl p-4">
+        <div class="font-mono text-[10px] uppercase tracking-[.12em] text-slow mb-1.5">Lockout</div>
+        <div class="font-display font-bold text-xl mb-2">2× / 24h</div>
+        <p class="text-[12px] text-muted leading-relaxed">
+          Two consecutive failing closes on one pool trip a 24-hour breaker. Blocked 263 entries —
+          the single busiest gate of the two.
+        </p>
+        <p class="text-[11px] text-muted/80 mt-2 leading-relaxed border-t border-rule pt-2">
+          A timeout is neutral and resets the run. A manual <span class="font-mono">/close_all</span>
+          is invisible to it — the breaker measures the pool, not the operator.
+        </p>
+      </article>
+
+      <article class="bg-panel border border-rule rounded-xl p-4">
+        <div class="font-mono text-[10px] uppercase tracking-[.12em] text-slow mb-1.5">Breakeven gate</div>
+        <div class="font-display font-bold text-xl mb-2">2.5× cost</div>
+        <p class="text-[12px] text-muted leading-relaxed">
+          Projected 24h fees must clear 2.5× the round-trip gas and slippage, or the pool is
+          skipped. 8.3% of all rejections.
+        </p>
+        <p class="text-[11px] text-muted/80 mt-2 leading-relaxed border-t border-rule pt-2">
+          When the gas estimate is unavailable it assumes a conservative cost, never zero —
+          treating the trip as free is what allowed the churn.
+        </p>
+      </article>
+
+      <article class="bg-panel border border-rule rounded-xl p-4">
+        <div class="font-mono text-[10px] uppercase tracking-[.12em] text-slow mb-1.5">Universe bounds</div>
+        <div class="font-display font-bold text-xl mb-2">$50k–$500k</div>
+        <p class="text-[12px] text-muted leading-relaxed">
+          TVL band plus a 48-hour minimum pool age and a 10% 1h surge cap. Together, 41% of all
+          rejections.
+        </p>
+        <p class="text-[11px] text-muted/80 mt-2 leading-relaxed border-t border-rule pt-2">
+          Age is evaluated at the simulated bar, not today — a pool 200 days old now was three
+          hours old in June.
+        </p>
+      </article>
+    </div>
+
+    <div class="mt-4 bg-panel border-l-2 border-neg border-y border-r border-rule rounded-r-xl p-4">
+      <div class="font-mono text-[10px] uppercase tracking-[.12em] text-neg mb-1.5">The screen that fails closed</div>
+      <p class="text-[13px] text-muted leading-relaxed max-w-3xl">
+        Unlike the cooldown, the anti-rug screen returns <span class="font-mono text-ink">UNKNOWN</span>
+        — never <span class="font-mono text-ink">PASS</span> — when a check could not run, and an
+        UNKNOWN is rejected. Mint and freeze authority are stored as
+        <span class="font-mono text-ink">1 / 0 / null</span>, where null means the check never ran;
+        collapsing null to false would claim an authority is live when it was simply never checked.
+        On the public Solana RPC, <span class="font-mono text-ink">getTokenLargestAccounts</span> is
+        blocked, so every candidate is rejected and nothing opens. That is correct behaviour, not a bug.
+      </p>
+    </div>
+  </div>
+</section>
+
+<div class="hairline"></div>
+
+<!-- ══════════════════ 03 · LIFECYCLE ══════════════════ -->
+<section id="lifecycle" class="pt-14 pb-14 scroll-mt-14">
+  <div class="flex items-baseline gap-3 mb-2">
+    <span class="font-mono text-xs text-slow">03</span>
+    <h2 class="font-display font-bold text-2xl tracking-[-.02em]">Trade lifecycle</h2>
+  </div>
+  <p class="text-muted text-sm max-w-2xl mb-7">
+    One real position, start to finish — <span class="font-mono text-ink">MENSA-SOL</span>, opened
+    09:00 and closed 11:00 on 2 Aug 2026, the best single trade of the run. Step through it.
+  </p>
+
+  <!-- Stepper -->
+  <div class="relative step-rail mb-6">
+    <div class="relative z-10 grid grid-cols-5 gap-2">
+      <button class="step-dot group flex flex-col items-center gap-2" data-step="1" aria-label="Step 1: Screen">
+        <span class="dot w-10 h-10 rounded-full border-2 flex items-center justify-center font-mono text-[13px] font-medium transition-all">1</span>
+        <span class="label font-mono text-[9px] uppercase tracking-[.1em] text-center leading-tight transition-colors">Screen</span>
+      </button>
+      <button class="step-dot group flex flex-col items-center gap-2" data-step="2" aria-label="Step 2: Gate">
+        <span class="dot w-10 h-10 rounded-full border-2 flex items-center justify-center font-mono text-[13px] font-medium transition-all">2</span>
+        <span class="label font-mono text-[9px] uppercase tracking-[.1em] text-center leading-tight transition-colors">Gate</span>
+      </button>
+      <button class="step-dot group flex flex-col items-center gap-2" data-step="3" aria-label="Step 3: Reason">
+        <span class="dot w-10 h-10 rounded-full border-2 flex items-center justify-center font-mono text-[13px] font-medium transition-all">3</span>
+        <span class="label font-mono text-[9px] uppercase tracking-[.1em] text-center leading-tight transition-colors">Reason</span>
+      </button>
+      <button class="step-dot group flex flex-col items-center gap-2" data-step="4" aria-label="Step 4: Open">
+        <span class="dot w-10 h-10 rounded-full border-2 flex items-center justify-center font-mono text-[13px] font-medium transition-all">4</span>
+        <span class="label font-mono text-[9px] uppercase tracking-[.1em] text-center leading-tight transition-colors">Open</span>
+      </button>
+      <button class="step-dot group flex flex-col items-center gap-2" data-step="5" aria-label="Step 5: Monitor and exit">
+        <span class="dot w-10 h-10 rounded-full border-2 flex items-center justify-center font-mono text-[13px] font-medium transition-all">5</span>
+        <span class="label font-mono text-[9px] uppercase tracking-[.1em] text-center leading-tight transition-colors">Monitor → exit</span>
+      </button>
+    </div>
+  </div>
+
+  <div class="bg-panel border border-rule rounded-xl overflow-hidden">
+    <div class="border-b border-rule px-5 py-3 flex items-center justify-between gap-4 flex-wrap">
+      <div class="flex items-center gap-3">
+        <span id="stepClock" class="font-mono text-[10px] uppercase tracking-[.12em] px-2 py-1 rounded border"></span>
+        <h3 id="stepTitle" class="font-display font-bold text-lg"></h3>
+      </div>
+      <div class="flex items-center gap-2">
+        <button id="prevStep" class="font-mono text-[11px] uppercase tracking-[.1em] px-3 py-1.5 rounded border border-rule text-muted hover:text-ink hover:border-muted disabled:opacity-35 disabled:cursor-not-allowed transition-colors">← Prev</button>
+        <button id="nextStep" class="font-mono text-[11px] uppercase tracking-[.1em] px-3 py-1.5 rounded border border-rule text-muted hover:text-ink hover:border-muted disabled:opacity-35 disabled:cursor-not-allowed transition-colors">Next →</button>
+      </div>
+    </div>
+    <div id="stepBody" class="p-5 min-h-[290px]"></div>
+  </div>
+
+  <p class="text-[11px] text-muted mt-3">
+    Use <kbd class="font-mono border border-rule rounded px-1.5 py-0.5 text-[10px]">←</kbd>
+    <kbd class="font-mono border border-rule rounded px-1.5 py-0.5 text-[10px]">→</kbd> to step through.
+  </p>
+</section>
+
+<div class="hairline"></div>
+
+<!-- ══════════════════ 04 · PERFORMANCE ══════════════════ -->
+<section id="performance" class="pt-14 pb-14 scroll-mt-14">
+  <div class="flex items-baseline gap-3 mb-2">
+    <span class="font-mono text-xs text-slow">04</span>
+    <h2 class="font-display font-bold text-2xl tracking-[-.02em]">Performance &amp; risk</h2>
+  </div>
+  <p class="text-muted text-sm max-w-2xl mb-7">
+    212-day survivorship-controlled backtest of this exact configuration, $100 account.
+    Read the caveats at the foot of the page before quoting any of it.
+  </p>
+
+  <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+    <div class="bg-panel border border-rule rounded-lg p-4">
+      <div class="font-mono text-[10px] uppercase tracking-[.12em] text-muted">Profit factor</div>
+      <div class="font-display font-bold text-2xl mt-1.5 tabular-nums text-pos">1.35</div>
+    </div>
+    <div class="bg-panel border border-rule rounded-lg p-4">
+      <div class="font-mono text-[10px] uppercase tracking-[.12em] text-muted">Win rate</div>
+      <div class="font-display font-bold text-2xl mt-1.5 tabular-nums">74.5%</div>
+      <div class="text-[11px] text-muted mt-1">35 W / 12 L</div>
+    </div>
+    <div class="bg-panel border border-rule rounded-lg p-4">
+      <div class="font-mono text-[10px] uppercase tracking-[.12em] text-muted">Avg hold</div>
+      <div class="font-display font-bold text-2xl mt-1.5 tabular-nums">6.1h</div>
+    </div>
+    <div class="bg-panel border border-rule rounded-lg p-4">
+      <div class="font-mono text-[10px] uppercase tracking-[.12em] text-muted">Friction paid</div>
+      <div class="font-display font-bold text-2xl mt-1.5 tabular-nums text-neg">$32.74</div>
+      <div class="text-[11px] text-muted mt-1">0.70× gross fees</div>
+    </div>
+  </div>
+
+  <div class="grid lg:grid-cols-[1.6fr_1fr] gap-4">
+    <div class="bg-panel border border-rule rounded-xl p-5">
+      <h3 class="font-display font-semibold text-[15px] mb-1">Realised equity curve</h3>
+      <p class="text-[12px] text-muted mb-4">
+        Steps only when a position closes — never on open floating PnL. The flat first five
+        months are days on which nothing closed.
+      </p>
+      <div class="h-[260px]"><canvas id="equityChart"></canvas></div>
+    </div>
+
+    <div class="bg-panel border border-rule rounded-xl p-5">
+      <h3 class="font-display font-semibold text-[15px] mb-1">How positions ended</h3>
+      <p class="text-[12px] text-muted mb-4">47 closes, by trigger.</p>
+      <div class="h-[260px]"><canvas id="exitChart"></canvas></div>
+    </div>
+  </div>
+
+  <div class="mt-4 bg-panel border-l-2 border-slow border-y border-r border-rule rounded-r-xl p-5">
+    <div class="font-mono text-[10px] uppercase tracking-[.12em] text-slow mb-2">Read this before quoting the numbers</div>
+    <div class="grid md:grid-cols-3 gap-4 text-[12.5px] leading-relaxed text-muted">
+      <div>
+        <div class="text-ink font-medium mb-1">The window is 212 days, not a year</div>
+        The free data tier serves ~208 days of hourly OHLCV and answers HTTP 401 beyond it.
+        A full year needs a paid key.
+      </div>
+      <div>
+        <div class="text-ink font-medium mb-1">Every trade came from one cohort</div>
+        All 47 landed on dying pools; the survivor cohort was offered 14 pools and took none.
+        That is a selection artefact, not a property of the strategy.
+      </div>
+      <div>
+        <div class="text-ink font-medium mb-1">The TVL assumption flips the sign</div>
+        Fee income scales as 1/k. At the fitted p25 the same run loses
+        <span class="text-neg">−$23.91</span>; at p75 it never trades. +19.39% is one draw from
+        a range that crosses zero.
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="hairline">
+  <div class="max-w-6xl mx-auto px-6 py-8 flex flex-wrap gap-x-8 gap-y-2 font-mono text-[11px] text-muted">
+    <span>Cadences, budgets and thresholds read from <span class="text-ink">src/config/constants.ts</span>, <span class="text-ink">src/config/env.ts</span>, <span class="text-ink">src/services/deepseek.ts</span></span>
+    <span>Performance from <span class="text-ink">reports/annual/backtest_annual.json</span></span>
+    <span class="text-slow">Paper simulation — zero capital deployed, nothing signed on-chain</span>
+  </div>
+</footer>
+
+<script>
+/* ────────────────────────────────────────────────────────────
+   Data — the equity series is injected verbatim from
+   reports/annual/daily_returns.csv so the chart cannot drift
+   from the run it claims to plot.
+   ──────────────────────────────────────────────────────────── */
+const EQUITY = [100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 104.44, 110.05, 105.45, 107.45, 108.72, 110.1, 110.56, 110.56, 110.56, 110.56, 110.56, 110.56, 105.94, 102.33, 98.43, 98.43, 107.53, 103.9, 105.33, 105.33, 106.43, 107.52, 112.18, 119.85, 123.81, 123.81, 123.81, 123.81, 131.01, 131.01, 133.86, 133.86, 133.86, 133.86, 132.0, 132.0, 134.16, 131.09, 134.39, 135.86, 137.48, 137.48, 137.48, 125.81, 130.69, 125.65, 119.39, 119.39, 119.39, 119.39, 119.39, 119.39, 119.39, 119.39, 119.39, 119.39, 119.39, 119.39, 119.39];
+const DATES = ["2026-02-02", "2026-02-03", "2026-02-04", "2026-02-05", "2026-02-06", "2026-02-07", "2026-02-08", "2026-02-09", "2026-02-10", "2026-02-11", "2026-02-12", "2026-02-13", "2026-02-14", "2026-02-15", "2026-02-16", "2026-02-17", "2026-02-18", "2026-02-19", "2026-02-20", "2026-02-21", "2026-02-22", "2026-02-23", "2026-02-24", "2026-02-25", "2026-02-26", "2026-02-27", "2026-02-28", "2026-03-01", "2026-03-02", "2026-03-03", "2026-03-04", "2026-03-05", "2026-03-06", "2026-03-07", "2026-03-08", "2026-03-09", "2026-03-10", "2026-03-11", "2026-03-12", "2026-03-13", "2026-03-14", "2026-03-15", "2026-03-16", "2026-03-17", "2026-03-18", "2026-03-19", "2026-03-20", "2026-03-21", "2026-03-22", "2026-03-23", "2026-03-24", "2026-03-25", "2026-03-26", "2026-03-27", "2026-03-28", "2026-03-29", "2026-03-30", "2026-03-31", "2026-04-01", "2026-04-02", "2026-04-03", "2026-04-04", "2026-04-05", "2026-04-06", "2026-04-07", "2026-04-08", "2026-04-09", "2026-04-10", "2026-04-11", "2026-04-12", "2026-04-13", "2026-04-14", "2026-04-15", "2026-04-16", "2026-04-17", "2026-04-18", "2026-04-19", "2026-04-20", "2026-04-21", "2026-04-22", "2026-04-23", "2026-04-24", "2026-04-25", "2026-04-26", "2026-04-27", "2026-04-28", "2026-04-29", "2026-04-30", "2026-05-01", "2026-05-02", "2026-05-03", "2026-05-04", "2026-05-05", "2026-05-06", "2026-05-07", "2026-05-08", "2026-05-09", "2026-05-10", "2026-05-11", "2026-05-12", "2026-05-13", "2026-05-14", "2026-05-15", "2026-05-16", "2026-05-17", "2026-05-18", "2026-05-19", "2026-05-20", "2026-05-21", "2026-05-22", "2026-05-23", "2026-05-24", "2026-05-25", "2026-05-26", "2026-05-27", "2026-05-28", "2026-05-29", "2026-05-30", "2026-05-31", "2026-06-01", "2026-06-02", "2026-06-03", "2026-06-04", "2026-06-05", "2026-06-06", "2026-06-07", "2026-06-08", "2026-06-09", "2026-06-10", "2026-06-11", "2026-06-12", "2026-06-13", "2026-06-14", "2026-06-15", "2026-06-16", "2026-06-17", "2026-06-18", "2026-06-19", "2026-06-20", "2026-06-21", "2026-06-22", "2026-06-23", "2026-06-24", "2026-06-25", "2026-06-26", "2026-06-27", "2026-06-28", "2026-06-29", "2026-06-30", "2026-07-01", "2026-07-02", "2026-07-03", "2026-07-04", "2026-07-05", "2026-07-06", "2026-07-07", "2026-07-08", "2026-07-09", "2026-07-10", "2026-07-11", "2026-07-12", "2026-07-13", "2026-07-14", "2026-07-15", "2026-07-16", "2026-07-17", "2026-07-18", "2026-07-19", "2026-07-20", "2026-07-21", "2026-07-22", "2026-07-23", "2026-07-24", "2026-07-25", "2026-07-26", "2026-07-27", "2026-07-28", "2026-07-29", "2026-07-30", "2026-07-31", "2026-08-01", "2026-08-02", "2026-08-03", "2026-08-04", "2026-08-05", "2026-08-06", "2026-08-07", "2026-08-08", "2026-08-09", "2026-08-10", "2026-08-11", "2026-08-12", "2026-08-13", "2026-08-14", "2026-08-15", "2026-08-16", "2026-08-17", "2026-08-18", "2026-08-19", "2026-08-20", "2026-08-21", "2026-08-22", "2026-08-23", "2026-08-24", "2026-08-25", "2026-08-26", "2026-08-27", "2026-08-28", "2026-08-29", "2026-08-30", "2026-08-31", "2026-09-01"];
+
+const PALETTE = {
+  ink: "#dde5ed", muted: "#7f92a4", rule: "#243140",
+  slow: "#e0a33e", fast: "#4cc9f0", pos: "#3ecf8e", neg: "#ef6461",
+  ground: "#0a0e14", panel: "#111923",
+};
+
+/* ── Mermaid flowchart ───────────────────────────────────── */
+const GRAPH = `
+flowchart LR
+  subgraph SRC["EXTERNAL SOURCES"]
+    direction TB
+    M["Meteora /pools<br/>~123k pools"]
+    D["DexScreener<br/>pairs · boosts"]
+    R["Solana RPC<br/>mint · freeze · holders"]
+    P["CoinGecko → Jupiter<br/>→ DexScreener<br/>SOL/USD chain"]
+  end
+
+  subgraph SLOW["SLOW CLOCK · DLMM_LOOP · every 30 min"]
+    direction TB
+    S1["Screener<br/>600-pool scan"]
+    S2["Local filters<br/>TVL · fee/TVL · volume · age"]
+    S3["Anti-rug screen<br/>fails CLOSED on UNKNOWN"]
+    S4["Anti-churn gates<br/>cooldown 4h · lockout 2x/24h"]
+    S5["deepseek-reasoner<br/>16k token cap"]
+    S1 --> S2 --> S3 --> S4 --> S5
+  end
+
+  subgraph FAST["FAST CLOCK · FAST_MONITOR · every 60 s"]
+    direction TB
+    F1["Mark to market<br/>Meteora price only"]
+    F2["Accrue fees<br/>clamped to 1h gap"]
+    F3["evaluateExit<br/>TP +5% · SL -8%<br/>out-of-range · 24h"]
+    F1 --> F2 --> F3
+  end
+
+  DB[("SQLite<br/>simulated_positions")]
+  API["Fastify REST :4000"]
+  UI["Next.js dashboard<br/>read-only"]
+  TG["Telegram<br/>/status /pause /close_all"]
+
+  M --> S1
+  D --> S1
+  R --> S3
+  P --> S1
+  S5 -->|"open position"| DB
+  S5 -.->|"truncated → skip cycle"| S1
+  DB --> F1
+  F3 -->|"close"| DB
+  DB --> API --> UI
+  DB --> TG
+
+  classDef src fill:#17212d,stroke:#243140,color:#7f92a4
+  classDef slowN fill:#1c1a12,stroke:#e0a33e,color:#e8d5b0
+  classDef fastN fill:#0f1f27,stroke:#4cc9f0,color:#bfe6f5
+  classDef store fill:#17212d,stroke:#3ecf8e,color:#a8e6c8
+  classDef out fill:#17212d,stroke:#243140,color:#dde5ed
+
+  class M,D,R,P src
+  class S1,S2,S3,S4,S5 slowN
+  class F1,F2,F3 fastN
+  class DB store
+  class API,UI,TG out
+`;
+
+function renderGraph() {
+  const host = document.getElementById("flowDiagram");
+  const fallback = document.getElementById("flowFallback");
+  if (typeof mermaid === "undefined") { host.classList.add("hidden"); fallback.classList.remove("hidden"); return; }
+
+  mermaid.initialize({
+    startOnLoad: false,
+    theme: "base",
+    securityLevel: "loose",
+    fontFamily: '"IBM Plex Sans", ui-sans-serif, sans-serif',
+    themeVariables: {
+      background: PALETTE.ground,
+      primaryColor: "#17212d",
+      primaryTextColor: PALETTE.ink,
+      primaryBorderColor: PALETTE.rule,
+      lineColor: "#4a5c70",
+      secondaryColor: "#17212d",
+      tertiaryColor: "#0f1620",
+      clusterBkg: "#0d141c",
+      clusterBorder: PALETTE.rule,
+      fontSize: "13px",
+    },
+    flowchart: { curve: "basis", nodeSpacing: 34, rankSpacing: 58, padding: 14 },
+  });
+
+  mermaid.render("flowSvg", GRAPH)
+    .then(({ svg }) => { host.innerHTML = svg; })
+    .catch(() => { host.classList.add("hidden"); fallback.classList.remove("hidden"); });
+}
+
+/* ── Component tabs ──────────────────────────────────────── */
+const TAB_ON  = "bg-slow/12 border-slow/45 text-slow";
+const TAB_OFF = "bg-panel border-rule text-muted hover:text-ink hover:border-muted";
+
+function selectTab(name) {
+  document.querySelectorAll(".tab-btn").forEach((btn) => {
+    const on = btn.dataset.tab === name;
+    btn.setAttribute("aria-selected", String(on));
+    btn.className = "tab-btn font-mono text-[11px] uppercase tracking-[.11em] px-3.5 py-2 rounded-md border transition-colors " + (on ? TAB_ON : TAB_OFF);
+  });
+  document.querySelectorAll(".tab-panel").forEach((panel) => {
+    const on = panel.dataset.panel === name;
+    panel.classList.toggle("hidden", !on);
+    if (on) { panel.classList.remove("fade-in"); void panel.offsetWidth; panel.classList.add("fade-in"); }
+  });
+}
+
+/* ── Trade lifecycle simulator ───────────────────────────── */
+const row = (label, value, tone = "") =>
+  `<div class="flex justify-between gap-4 py-1.5 border-b border-rule/50 last:border-0">
+     <span class="text-muted">${label}</span>
+     <span class="font-mono tabular-nums ${tone}">${value}</span>
+   </div>`;
+
+const STEPS = [
+  {
+    clock: "Slow clock · T+0",
+    tone: "slow",
+    title: "Screen 600 pools",
+    body: `
+      <div class="grid md:grid-cols-2 gap-5">
+        <div class="text-[13px] leading-relaxed text-muted space-y-3">
+          <p>The screener pulls Meteora's pool listing sorted by <span class="font-mono text-ink">volume_24h:desc</span> — never by fee/TVL, which returns garbage because the listing is full of <span class="font-mono text-ink">tvl: 0</span> rows that divide into ratios in the billions.</p>
+          <p>Fee/TVL is computed locally as <span class="font-mono text-ink">fees.24h / tvl</span>. The upstream field is in percent while the threshold is a ratio, so using it directly would be off by 100×.</p>
+          <p class="text-ink">Of 5,052 simulated bars, 5,005 produced no eligible candidate at all. Refusing to trade is the common case.</p>
+        </div>
+        <div class="bg-raised border border-rule rounded-lg p-4">
+          <div class="font-mono text-[10px] uppercase tracking-[.12em] text-muted mb-3">Why entries were refused</div>
+          <div class="space-y-2 text-[12px]">
+            ${[["fee/TVL too low",42.4],["TVL below $50k",30.8],["TVL above $500k",8.4],["below breakeven",8.3],["volume too low",7.2],["pool younger than 48h",1.6],["lockout / cooldown",0.6],["price surged / pumped",0.5]]
+              .map(([label, share]) => `
+                <div>
+                  <div class="flex justify-between mb-1"><span class="text-muted">${label}</span><span class="font-mono tabular-nums text-ink">${share}%</span></div>
+                  <div class="h-1.5 rounded-full bg-ground overflow-hidden"><div class="h-full bg-slow/70 rounded-full" style="width:${Math.min(share * 2.2, 100)}%"></div></div>
+                </div>`).join("")}
+          </div>
+        </div>
+      </div>`,
+  },
+  {
+    clock: "Slow clock · T+0",
+    tone: "slow",
+    title: "Safety and anti-churn gates",
+    body: `
+      <div class="grid md:grid-cols-2 gap-5">
+        <div class="text-[13px] leading-relaxed text-muted space-y-3">
+          <p>Two gates with deliberately <em class="not-italic text-ink">opposite</em> failure modes run here, and the asymmetry is the point.</p>
+          <div class="bg-raised border-l-2 border-neg border-y border-r border-rule rounded-r-lg p-3">
+            <div class="text-ink font-medium mb-1 text-[12px]">Anti-rug — fails CLOSED</div>
+            <p class="text-[12px]">Mint authority, freeze authority, holder concentration. A check that could not run returns <span class="font-mono text-ink">UNKNOWN</span> and is rejected. It protects capital, so silence means no.</p>
+          </div>
+          <div class="bg-raised border-l-2 border-pos border-y border-r border-rule rounded-r-lg p-3">
+            <div class="text-ink font-medium mb-1 text-[12px]">Cooldown — fails OPEN</div>
+            <p class="text-[12px]">An unparseable timestamp is treated as an expired bench, not an indefinite ban. It protects returns, and a broken clock must not freeze the engine.</p>
+          </div>
+        </div>
+        <div class="bg-raised border border-rule rounded-lg p-4">
+          <div class="font-mono text-[10px] uppercase tracking-[.12em] text-muted mb-3">MENSA-SOL · gate check</div>
+          <div class="text-[13px]">
+            ${row("Pool age", "&gt; 48h", "text-pos")}
+            ${row("Modelled TVL", "$50,558", "text-pos")}
+            ${row("1h surge", "&lt; 10%", "text-pos")}
+            ${row("Mint authority", "revoked", "text-pos")}
+            ${row("Last close on pool", "none in 4h", "text-pos")}
+            ${row("Consecutive failures", "0 of 2", "text-pos")}
+          </div>
+          <div class="mt-3 pt-3 border-t border-rule font-mono text-[11px] text-pos">→ passed to the reasoner</div>
+        </div>
+      </div>`,
+  },
+  {
+    clock: "Slow clock · T+0",
+    tone: "slow",
+    title: "The reasoner decides",
+    body: `
+      <div class="grid md:grid-cols-2 gap-5">
+        <div class="text-[13px] leading-relaxed text-muted space-y-3">
+          <p>One <span class="font-mono text-ink">deepseek-reasoner</span> call, capped at 16,000 tokens covering chain-of-thought <em class="not-italic text-ink">and</em> the answer.</p>
+          <p>The prompt carries the surviving candidates, SOL/USD, the live priority fee, and the reconstructed ranges of recent losing trades — so the model sizes this range against how its own recent ranges actually behaved.</p>
+          <p>It returns a direction, a conviction and a requested bin range. <span class="text-ink">The range it asks for is not the range it gets:</span> <span class="font-mono text-ink">computeBinRange</span> still clamps to the −45% / +15% floors.</p>
+        </div>
+        <div class="bg-raised border border-rule rounded-lg p-4">
+          <div class="font-mono text-[10px] uppercase tracking-[.12em] text-muted mb-3">Two possible outcomes</div>
+          <div class="space-y-3">
+            <div class="border border-pos/30 bg-pos/5 rounded-lg p-3">
+              <div class="font-mono text-[11px] text-pos mb-1">ANSWER RETURNED</div>
+              <p class="text-[12px] text-muted">Range and conviction parsed → position opens under <span class="font-mono text-ink">positionMutex</span>.</p>
+            </div>
+            <div class="border border-neg/30 bg-neg/5 rounded-lg p-3">
+              <div class="font-mono text-[11px] text-neg mb-1">DeepSeekTruncatedError</div>
+              <p class="text-[12px] text-muted">Budget spent thinking, no answer written. The cycle is <em class="not-italic text-ink">skipped</em>, not retried at a bigger budget. Open positions are untouched; the next tick tries again in 30 minutes.</p>
+            </div>
+          </div>
+        </div>
+      </div>`,
+  },
+  {
+    clock: "Slow clock · T+0 · 09:00Z",
+    tone: "slow",
+    title: "Position opens",
+    body: `
+      <div class="grid md:grid-cols-2 gap-5">
+        <div class="text-[13px] leading-relaxed text-muted space-y-3">
+          <p>Notional is fixed at entry as <span class="font-mono text-ink">virtualSol × entrySolPriceUsd</span> and never re-marked. Fee accrual quotes against it deliberately — the LP value change is a separate term, so re-marking the notional would double-count the price move.</p>
+          <p>Sizing comes out of <em class="not-italic text-ink">free</em> capital, not equity. With three concurrent positions allowed, sizing each off equity would deploy the same dollars three times over — invisible leverage.</p>
+          <p>Gas is <span class="text-ink">recorded, not deducted</span> from realised PnL. Folding it in would silently redefine every historical figure.</p>
+        </div>
+        <div class="bg-raised border border-rule rounded-lg p-4">
+          <div class="font-mono text-[10px] uppercase tracking-[.12em] text-muted mb-3">MENSA-SOL · entry</div>
+          <div class="text-[13px]">
+            ${row("Opened", "2026-08-02 09:00Z")}
+            ${row("Notional", "$34.05")}
+            ${row("Modelled pool TVL", "$50,558")}
+            ${row("Share of pool", "0.067%")}
+            ${row("Range floor", "−45% / +15%")}
+            ${row("Gas (2 tx)", "$0.51", "text-neg")}
+          </div>
+        </div>
+      </div>`,
+  },
+  {
+    clock: "Fast clock · every 60 s",
+    tone: "fast",
+    title: "Monitor, then exit",
+    body: `
+      <div class="grid md:grid-cols-2 gap-5">
+        <div class="text-[13px] leading-relaxed text-muted space-y-3">
+          <p>From here the slow clock is irrelevant. Every 60 seconds the fast monitor re-prices the position <em class="not-italic text-ink">from Meteora</em> — never DexScreener, because entry and bin prices were persisted from Meteora and comparing two differently-derived prices can fire a stop on a unit mismatch rather than a real move.</p>
+          <p>Fees accrue as <span class="font-mono text-ink">rate × elapsed</span>, clamped to one hour so a restart cannot credit days of unobserved earning.</p>
+          <p>This position left the range after two hourly bars. The forced exit paid 2% slippage.</p>
+        </div>
+        <div class="bg-raised border border-rule rounded-lg p-4">
+          <div class="font-mono text-[10px] uppercase tracking-[.12em] text-muted mb-3">MENSA-SOL · close 11:00Z</div>
+          <div class="text-[13px]">
+            ${row("Exit trigger", "OUT_OF_RANGE", "text-slow")}
+            ${row("Held", "2.0 h")}
+            ${row("Fees earned", "+$0.15", "text-pos")}
+            ${row("LP value change", "+$7.99", "text-pos")}
+            ${row("Gas", "−$0.51", "text-neg")}
+            ${row("Slippage", "−$0.43", "text-neg")}
+          </div>
+          <div class="mt-3 pt-3 border-t border-rule flex justify-between items-baseline">
+            <span class="font-mono text-[11px] uppercase tracking-[.12em] text-muted">Net PnL</span>
+            <span class="font-display font-bold text-xl text-pos tabular-nums">+$7.20 · +21.2%</span>
+          </div>
+          <div class="mt-3 pt-3 border-t border-rule font-mono text-[11px] text-slow">→ pool benched 4h · post-mortem queued after the lock releases</div>
+        </div>
+      </div>`,
+  },
+];
+
+let current = 1;
+
+/*
+ * Every Tailwind class the stepper can apply is written out in full here.
+ *
+ * Building them as `border-${accent}` would leave no literal for Tailwind to find.
+ * The Play CDN happens to re-scan DOM mutations and would cover it today, but a
+ * compiled build scans source text only — the classes would silently vanish and the
+ * stepper would render grey with no error anywhere. Static strings cost a few lines
+ * and remove the failure mode.
+ */
+const DOT_BASE = "dot w-10 h-10 rounded-full border-2 flex items-center justify-center font-mono text-[13px] font-medium transition-all ";
+const LABEL_BASE = "label font-mono text-[9px] uppercase tracking-[.1em] text-center leading-tight transition-colors ";
+
+const DOT_STYLES = {
+  slow: {
+    active: "bg-slow/15 border-slow text-slow scale-110",
+    done:   "bg-panel border-slow/50 text-slow/70",
+  },
+  fast: {
+    active: "bg-fast/15 border-fast text-fast scale-110",
+    done:   "bg-panel border-fast/50 text-fast/70",
+  },
+};
+const DOT_IDLE = "bg-panel border-rule text-muted";
+const LABEL_ACTIVE = { slow: "text-slow", fast: "text-fast" };
+
+function paintStep(n) {
+  current = Math.min(Math.max(n, 1), STEPS.length);
+  const step = STEPS[current - 1];
+
+  document.querySelectorAll(".step-dot").forEach((btn) => {
+    const i = Number(btn.dataset.step);
+    const dot = btn.querySelector(".dot");
+    const label = btn.querySelector(".label");
+    const done = i < current, now = i === current;
+    const accent = STEPS[i - 1].tone === "fast" ? "fast" : "slow";
+
+    dot.className = DOT_BASE +
+      (now ? DOT_STYLES[accent].active : done ? DOT_STYLES[accent].done : DOT_IDLE);
+    label.className = LABEL_BASE + (now ? LABEL_ACTIVE[accent] : "text-muted");
+  });
+
+  const clock = document.getElementById("stepClock");
+  clock.textContent = step.clock;
+  clock.className = "font-mono text-[10px] uppercase tracking-[.12em] px-2 py-1 rounded border " +
+    (step.tone === "fast" ? "text-fast border-fast/35 bg-fast/10" : "text-slow border-slow/35 bg-slow/10");
+
+  document.getElementById("stepTitle").textContent = step.title;
+
+  const body = document.getElementById("stepBody");
+  body.innerHTML = step.body;
+  body.classList.remove("fade-in"); void body.offsetWidth; body.classList.add("fade-in");
+
+  document.getElementById("prevStep").disabled = current === 1;
+  document.getElementById("nextStep").disabled = current === STEPS.length;
+}
+
+/* ── Charts ──────────────────────────────────────────────── */
+function drawCharts() {
+  if (typeof Chart === "undefined") return;
+
+  Chart.defaults.font.family = '"IBM Plex Sans", ui-sans-serif, sans-serif';
+  Chart.defaults.font.size = 11;
+  Chart.defaults.color = PALETTE.muted;
+
+  const eq = document.getElementById("equityChart");
+  if (eq) {
+    const gradient = eq.getContext("2d").createLinearGradient(0, 0, 0, 260);
+    gradient.addColorStop(0, "rgba(76,201,240,.28)");
+    gradient.addColorStop(1, "rgba(76,201,240,0)");
+
+    new Chart(eq, {
+      type: "line",
+      data: {
+        labels: DATES,
+        datasets: [{
+          data: EQUITY,
+          borderColor: PALETTE.fast,
+          backgroundColor: gradient,
+          borderWidth: 1.8,
+          fill: true,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          pointHoverBackgroundColor: PALETTE.fast,
+          tension: 0.06,
+        }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { intersect: false, mode: "index" },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: "#0d141c", borderColor: PALETTE.rule, borderWidth: 1,
+            titleColor: PALETTE.muted, bodyColor: PALETTE.ink, padding: 10, displayColors: false,
+            callbacks: { label: (c) => "Equity  $" + c.parsed.y.toFixed(2) },
+          },
+        },
+        scales: {
+          x: {
+            grid: { display: false },
+            border: { color: PALETTE.rule },
+            ticks: { maxTicksLimit: 7, maxRotation: 0, callback(v) {
+              const d = this.getLabelForValue(v);
+              return d ? d.slice(0, 7) : "";
+            } },
+          },
+          y: {
+            grid: { color: "rgba(36,49,64,.6)" },
+            border: { display: false },
+            ticks: { callback: (v) => "$" + v },
+            suggestedMin: 95,
+          },
+        },
+      },
+    });
+  }
+
+  const ex = document.getElementById("exitChart");
+  if (ex) {
+    new Chart(ex, {
+      type: "doughnut",
+      data: {
+        labels: ["Take profit", "Stop loss", "Out of range", "Timeout"],
+        datasets: [{
+          data: [23, 12, 11, 1],
+          backgroundColor: [PALETTE.pos, PALETTE.neg, PALETTE.slow, "#4a5c70"],
+          borderColor: PALETTE.panel,
+          borderWidth: 2,
+          hoverOffset: 6,
+        }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, cutout: "58%",
+        plugins: {
+          legend: { position: "bottom", labels: { boxWidth: 9, boxHeight: 9, padding: 12, usePointStyle: true, pointStyle: "circle" } },
+          tooltip: {
+            backgroundColor: "#0d141c", borderColor: PALETTE.rule, borderWidth: 1,
+            titleColor: PALETTE.muted, bodyColor: PALETTE.ink, padding: 10, displayColors: false,
+            callbacks: { label: (c) => `${c.label}: ${c.parsed} of 47 (${(c.parsed / 47 * 100).toFixed(0)}%)` },
+          },
+        },
+      },
+    });
+  }
+}
+
+/* ── Wire up ─────────────────────────────────────────────── */
+document.addEventListener("DOMContentLoaded", () => {
+  renderGraph();
+  selectTab("clocks");
+  paintStep(1);
+  drawCharts();
+
+  document.querySelectorAll(".tab-btn").forEach((b) =>
+    b.addEventListener("click", () => selectTab(b.dataset.tab)));
+  document.querySelectorAll(".step-dot").forEach((b) =>
+    b.addEventListener("click", () => paintStep(Number(b.dataset.step))));
+  document.getElementById("prevStep").addEventListener("click", () => paintStep(current - 1));
+  document.getElementById("nextStep").addEventListener("click", () => paintStep(current + 1));
+
+  document.addEventListener("keydown", (e) => {
+    if (e.target.matches("input, textarea")) return;
+    if (e.key === "ArrowLeft")  paintStep(current - 1);
+    if (e.key === "ArrowRight") paintStep(current + 1);
+  });
+});
+</script>
+</body>
+</html>
