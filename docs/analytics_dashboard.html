@@ -22,9 +22,10 @@
   :root{
     color-scheme: dark;
     --bg: #07080b;
-    --wash-emerald: rgba(16,185,129,.10);
-    --wash-indigo:  rgba(99,102,241,.11);
-    --wash-sky:     rgba(56,189,248,.06);
+    --wash-emerald: rgba(16,185,129,.20);
+    --wash-indigo:  rgba(99,102,241,.24);
+    --wash-sky:     rgba(56,189,248,.13);
+    --wash-violet:  rgba(168,85,247,.12);
   }
 
   /*
@@ -41,9 +42,10 @@
   html{ background:var(--bg); }
   body{
     background:
-      radial-gradient(900px 520px at 12% -8%,  var(--wash-emerald), transparent 62%),
-      radial-gradient(760px 460px at 88% -4%,  var(--wash-indigo),  transparent 60%),
-      radial-gradient(1200px 760px at 50% 106%, var(--wash-sky),    transparent 66%),
+      radial-gradient(880px 500px at 10% -6%,   var(--wash-emerald), transparent 60%),
+      radial-gradient(820px 480px at 90% -2%,   var(--wash-indigo),  transparent 58%),
+      radial-gradient(700px 520px at 96% 46%,   var(--wash-violet),  transparent 62%),
+      radial-gradient(1200px 760px at 50% 104%, var(--wash-sky),     transparent 64%),
       var(--bg);
     /* Fixed, so the wash stays put instead of sliding away on a long page. */
     background-attachment: fixed;
@@ -58,8 +60,8 @@
   .page-glow::before{
     content:""; position:fixed; inset:0; pointer-events:none;
     background-image:
-      linear-gradient(rgba(255,255,255,.021) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(255,255,255,.021) 1px, transparent 1px);
+      linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px);
     background-size:56px 56px;
     -webkit-mask-image:radial-gradient(1150px 720px at 50% -5%, #000 15%, transparent 80%);
     mask-image:radial-gradient(1150px 720px at 50% -5%, #000 15%, transparent 80%);
@@ -80,6 +82,40 @@
     -webkit-backdrop-filter:blur(6px);
   }
   .card:hover{ border-color:#2c2f34; }
+
+  /* ---- header ---- */
+  .brand-mark{
+    display:inline-flex; align-items:center; justify-content:center;
+    height:30px; width:30px; border-radius:9px;
+    font-size:14px; font-weight:700; color:#06070a;
+    background:linear-gradient(135deg,#5eead4 0%,#60a5fa 52%,#a78bfa 100%);
+    box-shadow:0 0 0 1px rgba(255,255,255,.10), 0 6px 22px -6px rgba(96,165,250,.65);
+  }
+  /* Gradient wordmark. -webkit-* first: the unprefixed pair is still not universal. */
+  .hero-title{
+    background:linear-gradient(100deg,#ffffff 0%,#e7e9ee 38%,#9aa4b8 100%);
+    -webkit-background-clip:text; background-clip:text;
+    -webkit-text-fill-color:transparent; color:transparent;
+  }
+  .eyebrow{ font-size:11px; letter-spacing:.16em; text-transform:uppercase; color:#8b8f9a; }
+  .chip{
+    display:inline-flex; align-items:center; gap:6px;
+    border-radius:8px; padding:5px 10px;
+    font-size:11.5px; font-weight:500;
+    border:1px solid rgba(255,255,255,.07);
+    background:rgba(255,255,255,.035);
+    color:#a1a1aa;
+  }
+  .chip-accent{
+    border-color:rgba(16,185,129,.28);
+    background:rgba(16,185,129,.10);
+    color:#6ee7b7;
+  }
+  /* Hairline that fades at both ends, so the header ends without a hard rule. */
+  .header-rule{
+    height:1px;
+    background:linear-gradient(90deg, transparent, rgba(255,255,255,.13) 22%, rgba(255,255,255,.13) 78%, transparent);
+  }
   .cell{ border-radius:3px; outline:1px solid rgba(255,255,255,.035); outline-offset:-1px; }
 
   /* Heatmap: two columns (weekday gutter, grid) x two rows (month labels, cells). */
@@ -139,35 +175,43 @@
 <div class="relative mx-auto max-w-[1180px] px-5 py-8 sm:px-8 sm:py-12">
 
   <!-- Header -->
-  <header class="mb-9 flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
-    <div>
-      <div class="mb-2 flex items-center gap-2.5">
-        <div class="flex h-7 w-7 items-center justify-center rounded-md bg-gradient-to-br from-sky-400 to-indigo-500 text-[13px] font-bold text-zinc-950">F</div>
-        <span class="text-[13px] font-medium tracking-tight text-zinc-400">FlowMetrix DLMM Engine</span>
+  <header class="mb-9">
+    <div class="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
+      <div class="min-w-0">
+        <div class="mb-3.5 flex items-center gap-2.5">
+          <span class="brand-mark">F</span>
+          <span class="eyebrow">FlowMetrix DLMM Engine</span>
+        </div>
+
+        <h1 class="hero-title text-[30px] font-semibold leading-[1.08] tracking-[-.02em] sm:text-[38px]">
+          Performance &amp; Analytics
+        </h1>
+
+        <p class="mt-2.5 max-w-[46ch] text-[13.5px] leading-relaxed text-zinc-400">
+          Simulasi di Meteora DLMM
+        </p>
+
+        <div class="mt-4 flex flex-wrap items-center gap-2">
+          <span class="chip chip-accent">
+            <span class="inline-flex h-1.5 w-1.5 rounded-full bg-emerald-400"></span>Engine V1.1
+          </span>
+          <span class="chip">Saldo awal $1.000 — bukan saldo akun</span>
+          <span class="chip">DRY RUN · zero capital</span>
+        </div>
       </div>
-      <h1 class="text-2xl font-semibold tracking-tight text-zinc-50 sm:text-[28px]">Performance &amp; Analytics</h1>
-      <p class="mt-1.5 text-[13.5px] leading-relaxed text-zinc-500">
-        Paper-trading simulation — Meteora DLMM. Realised PnL saja, tanpa floating PnL.
-      </p>
-      <div class="mt-2.5 inline-flex flex-wrap items-center gap-2">
-        <span class="rounded-md bg-emerald-500/10 px-2 py-1 text-[11px] font-medium text-emerald-400">Engine V1.1 saja</span>
-        <span class="text-[11.5px] text-zinc-500">dihitung dari saldo awal $1.000 — bukan saldo akun</span>
+
+      <div class="flex shrink-0 flex-col items-start gap-2.5 sm:items-end">
+        <!-- Filled by setStatus(). Distinguishes a live figure from a frozen one. -->
+        <div id="conn-status" class="inline-flex items-center gap-2 rounded-full border border-zinc-800 bg-zinc-900/60 px-3 py-1.5"></div>
+        <!-- zinc-600 measured 2.0:1 over the strengthened wash — unreadable. -->
+        <p class="font-mono text-[11px] leading-relaxed text-zinc-500 sm:text-right">
+          <span id="src-label" class="text-zinc-400">…</span><br class="hidden sm:inline">
+          <span id="src-meta"></span>
+        </p>
       </div>
     </div>
 
-    <div class="flex flex-col items-start gap-2 sm:items-end">
-      <div class="flex flex-wrap items-center gap-2">
-        <div class="inline-flex items-center gap-2 rounded-full border border-zinc-800 bg-zinc-900/60 px-3 py-1.5">
-          <span class="inline-flex h-1.5 w-1.5 rounded-full bg-zinc-500"></span>
-          <span class="text-[11.5px] font-medium text-zinc-400">DRY RUN · zero capital</span>
-        </div>
-        <!-- Filled by setStatus(). Distinguishes a live figure from a frozen one. -->
-        <div id="conn-status" class="inline-flex items-center gap-2 rounded-full border border-zinc-800 bg-zinc-900/60 px-3 py-1.5"></div>
-      </div>
-      <p class="font-mono text-[11px] text-zinc-600">
-        source: <span id="src-label" class="text-zinc-500">…</span> · <span id="src-meta"></span>
-      </p>
-    </div>
+    <div class="header-rule mt-7"></div>
   </header>
 
   <!-- Filter tabs -->
@@ -288,7 +332,7 @@
       <div class="min-w-0 flex-1">
         <p class="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Insight</p>
         <p id="fun-fact" class="text-[14px] leading-relaxed text-zinc-300"></p>
-        <p id="fun-fact-src" class="mt-2 font-mono text-[11px] text-zinc-600"></p>
+        <p id="fun-fact-src" class="mt-2 font-mono text-[11px] text-zinc-500"></p>
       </div>
       <button id="fact-next" class="shrink-0 rounded-md border border-zinc-800 px-2.5 py-1 text-[11.5px] text-zinc-500 transition hover:border-zinc-700 hover:text-zinc-300">Next →</button>
     </div>
@@ -809,7 +853,7 @@ function renderTrades(v) {
     const tone = t.p > 0 ? "text-emerald-400" : t.p < 0 ? "text-red-400" : "text-zinc-300";
     const src = t.src === "live"
       ? '<span class="text-emerald-500/80">live</span>'
-      : '<span class="text-zinc-600">arsip</span>';
+      : '<span class="text-zinc-500">arsip</span>';
     return '<tr class="border-t border-zinc-800/50 hover:bg-zinc-800/20">'
       + '<td class="whitespace-nowrap px-4 py-2 font-mono text-[11.5px] text-zinc-400">' + esc(stamp) + " UTC</td>"
       + '<td class="max-w-[220px] truncate px-4 py-2 text-zinc-300" title="' + esc(t.pool) + '">' + esc(t.pool) + "</td>"
