@@ -1,0 +1,547 @@
+<!doctype html>
+<html lang="id" class="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FlowMetrix — Performance &amp; Analytics</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    darkMode: "class",
+    theme: {
+      extend: {
+        fontFamily: {
+          sans: ["Inter", "ui-sans-serif", "-apple-system", "Segoe UI", "Roboto", "Helvetica Neue", "Arial", "sans-serif"],
+          mono: ["ui-monospace", "SFMono-Regular", "Menlo", "Consolas", "monospace"]
+        }
+      }
+    }
+  };
+</script>
+<style>
+  :root { color-scheme: dark; }
+  body { background:#08090a; -webkit-font-smoothing:antialiased; }
+  /* Subtle top glow — the Vercel/Anthropic dark-surface cue. */
+  .page-glow::before{
+    content:""; position:fixed; inset:0 0 auto 0; height:340px; pointer-events:none;
+    background:radial-gradient(60% 100% at 50% 0%, rgba(56,189,248,.07), transparent 70%);
+  }
+  .card{
+    background:linear-gradient(180deg,#121316 0%,#0e0f11 100%);
+    border:1px solid #1f2125;
+  }
+  .card:hover{ border-color:#2c2f34; }
+  .cell{ border-radius:3px; outline:1px solid rgba(255,255,255,.035); outline-offset:-1px; }
+  .cell:hover{ outline:1px solid rgba(255,255,255,.45); }
+  .tab-active{ background:#26282d; color:#fafafa; }
+  ::-webkit-scrollbar{height:8px;width:8px}
+  ::-webkit-scrollbar-thumb{background:#2a2d33;border-radius:8px}
+  ::-webkit-scrollbar-track{background:transparent}
+</style>
+</head>
+<body class="page-glow font-sans text-zinc-200 antialiased">
+
+<div class="relative mx-auto max-w-[1180px] px-5 py-8 sm:px-8 sm:py-12">
+
+  <!-- Header -->
+  <header class="mb-9 flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
+    <div>
+      <div class="mb-2 flex items-center gap-2.5">
+        <div class="flex h-7 w-7 items-center justify-center rounded-md bg-gradient-to-br from-sky-400 to-indigo-500 text-[13px] font-bold text-zinc-950">F</div>
+        <span class="text-[13px] font-medium tracking-tight text-zinc-400">FlowMetrix DLMM Engine</span>
+      </div>
+      <h1 class="text-2xl font-semibold tracking-tight text-zinc-50 sm:text-[28px]">Performance &amp; Analytics</h1>
+      <p class="mt-1.5 text-[13.5px] leading-relaxed text-zinc-500">
+        Paper-trading simulation — Meteora DLMM. Realised PnL saja, tanpa floating PnL.
+      </p>
+    </div>
+
+    <div class="flex flex-col items-start gap-2 sm:items-end">
+      <div class="inline-flex items-center gap-2 rounded-full border border-zinc-800 bg-zinc-900/60 px-3 py-1.5">
+        <span class="relative flex h-1.5 w-1.5">
+          <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60"></span>
+          <span class="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-400"></span>
+        </span>
+        <span class="text-[11.5px] font-medium text-zinc-400">DRY RUN · zero capital</span>
+      </div>
+      <p class="font-mono text-[11px] text-zinc-600">
+        source: <span class="text-zinc-500">exports/trades.csv</span> · <span id="src-meta"></span>
+      </p>
+    </div>
+  </header>
+
+  <!-- Filter tabs -->
+  <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+    <h2 class="text-[13px] font-semibold uppercase tracking-wider text-zinc-500">Overview</h2>
+    <div class="flex items-center gap-2">
+      <span id="window-note" class="hidden text-[11.5px] text-amber-500/80 sm:inline"></span>
+      <div role="tablist" aria-label="Rentang waktu" class="inline-flex rounded-lg border border-zinc-800 bg-zinc-900/60 p-0.5">
+        <button role="tab" data-range="all" class="range-tab tab-active rounded-[6px] px-3 py-1.5 text-[12.5px] font-medium text-zinc-400 transition hover:text-zinc-200">All</button>
+        <button role="tab" data-range="30d" class="range-tab rounded-[6px] px-3 py-1.5 text-[12.5px] font-medium text-zinc-400 transition hover:text-zinc-200">30d</button>
+        <button role="tab" data-range="7d"  class="range-tab rounded-[6px] px-3 py-1.5 text-[12.5px] font-medium text-zinc-400 transition hover:text-zinc-200">7d</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 8 metric cards -->
+  <section id="metric-grid" class="mb-10 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4"></section>
+
+  <!-- Heatmap -->
+  <section class="card mb-5 rounded-xl p-5 sm:p-6">
+    <div class="mb-5 flex flex-col gap-1.5 sm:flex-row sm:items-end sm:justify-between">
+      <div>
+        <h2 class="text-[15px] font-semibold tracking-tight text-zinc-100">Daily PnL &amp; Activity</h2>
+        <p id="heatmap-sub" class="mt-1 text-[12.5px] text-zinc-500"></p>
+      </div>
+      <div class="flex items-center gap-2 text-[11px] text-zinc-500">
+        <span>Loss</span>
+        <div class="flex gap-[3px]">
+          <span class="cell h-[11px] w-[11px]" style="background:#f87171"></span>
+          <span class="cell h-[11px] w-[11px]" style="background:#dc2626"></span>
+          <span class="cell h-[11px] w-[11px]" style="background:#991b1b"></span>
+        </div>
+        <span class="cell h-[11px] w-[11px]" style="background:#1b1e24"></span>
+        <div class="flex gap-[3px]">
+          <span class="cell h-[11px] w-[11px]" style="background:#065f46"></span>
+          <span class="cell h-[11px] w-[11px]" style="background:#10b981"></span>
+          <span class="cell h-[11px] w-[11px]" style="background:#4ade80"></span>
+        </div>
+        <span>Profit</span>
+      </div>
+    </div>
+
+    <div class="overflow-x-auto pb-1">
+      <div class="inline-block min-w-full">
+        <div id="month-labels" class="relative mb-1.5 ml-[31px] h-[13px] text-[10.5px] text-zinc-500"></div>
+        <div class="flex gap-[3px]">
+          <div class="flex w-[28px] flex-col gap-[3px] pr-1 text-right text-[10.5px] leading-[13px] text-zinc-600">
+            <span>&nbsp;</span><span>Mon</span><span>&nbsp;</span><span>Wed</span><span>&nbsp;</span><span>Fri</span><span>&nbsp;</span>
+          </div>
+          <div id="heatmap" class="grid grid-flow-col gap-[3px]" style="grid-template-rows:repeat(7,13px)"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="mt-4 flex flex-wrap items-center gap-x-5 gap-y-1.5 border-t border-zinc-800/70 pt-3.5 text-[11.5px] text-zinc-500">
+      <span class="inline-flex items-center gap-1.5"><span class="cell h-[9px] w-[9px]" style="background:#0d0e10"></span>Sebelum engine start</span>
+      <span class="inline-flex items-center gap-1.5"><span class="cell h-[9px] w-[9px]" style="background:#1b1e24"></span>Idle — tidak ada posisi ditutup</span>
+      <span class="inline-flex items-center gap-1.5"><span class="cell h-[9px] w-[9px]" style="background:#10b981"></span>Profit day</span>
+      <span class="inline-flex items-center gap-1.5"><span class="cell h-[9px] w-[9px]" style="background:#dc2626"></span>Loss day</span>
+    </div>
+  </section>
+
+  <!-- Fun fact -->
+  <section class="card mb-6 rounded-xl p-5 sm:p-6">
+    <div class="flex items-start gap-4">
+      <div class="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-zinc-800 bg-zinc-900 text-[15px]">💡</div>
+      <div class="min-w-0 flex-1">
+        <p class="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Insight</p>
+        <p id="fun-fact" class="text-[14px] leading-relaxed text-zinc-300"></p>
+        <p id="fun-fact-src" class="mt-2 font-mono text-[11px] text-zinc-600"></p>
+      </div>
+      <button id="fact-next" class="shrink-0 rounded-md border border-zinc-800 px-2.5 py-1 text-[11.5px] text-zinc-500 transition hover:border-zinc-700 hover:text-zinc-300">Next →</button>
+    </div>
+  </section>
+
+  <!-- Caveats -->
+  <footer class="rounded-xl border border-zinc-800/60 bg-zinc-900/25 p-5 text-[12px] leading-relaxed text-zinc-500">
+    <p class="mb-2 font-semibold text-zinc-400">Cara baca angka di halaman ini</p>
+    <ul class="list-disc space-y-1.5 pl-4">
+      <li><span class="text-zinc-400">Realised-only.</span> Equity bergerak saat posisi <em>ditutup</em>, bukan dari floating PnL — sama seperti <code class="font-mono text-zinc-400">computeMaxDrawdown</code>. Hari tanpa penutupan adalah 0.00% yang asli, bukan data hilang.</li>
+      <li><span class="text-zinc-400">Sampel masih kecil.</span> <span id="caveat-span"></span> Statistik level-trade adalah bukti utama; rasio harian hanya indikatif.</li>
+      <li><span class="text-zinc-400">Tanggal memakai komponen UTC</span> dari <code class="font-mono text-zinc-400">closed_at</code>, supaya jam lokal tidak menggeser penutupan ke hari yang salah.</li>
+      <li><span class="text-zinc-400">Nama pool.</span> Field <code class="font-mono text-zinc-400">pair_name</code> dari upstream kadang rusak (mis. <code class="font-mono text-zinc-400">"-SOL"</code>); baris seperti itu dilabeli dengan potongan pool address, bukan ditebak.</li>
+      <li><span class="text-zinc-400">Sumbernya bukan <code class="font-mono">daily_pnl.csv</code>.</span> Angka diturunkan dari <code class="font-mono text-zinc-400">trades.csv</code> dan totalnya cocok persis dengan <code class="font-mono text-zinc-400">summary.json</code>. Tabel snapshot harian di DB memakai potongan waktu berbeda sehingga totalnya lebih rendah.</li>
+    </ul>
+  </footer>
+</div>
+
+<!-- Tooltip -->
+<div id="tip" class="pointer-events-none fixed z-50 hidden rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-[12px] shadow-xl shadow-black/60"></div>
+
+<script>
+/* ------------------------------------------------------------------ *
+ * Data — derived from exports/trades.csv (37 closed trades).
+ * Each row: t = closed_at, p = realized_pnl_usd, pool = label, v = engine_version.
+ *
+ * Stored timestamps are UTC without a zone marker, so the trailing "Z" is added
+ * here explicitly. Parsing them as local time would slide a close into the wrong
+ * day on any non-UTC box — the same trap parseDbTimestamp exists to avoid.
+ * ------------------------------------------------------------------ */
+const TRADES = [
+  {"t": "2026-08-27T13:40:00Z", "p": 9.845631, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
+  {"t": "2026-08-27T17:50:00Z", "p": 9.935617, "pool": "CMLq…BwZz (unnamed)", "v": "v1.0"},
+  {"t": "2026-08-27T18:00:00Z", "p": 5.350542, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
+  {"t": "2026-08-27T19:20:01Z", "p": -9.063948, "pool": "CMLq…BwZz (unnamed)", "v": "v1.0"},
+  {"t": "2026-08-27T19:30:00Z", "p": -9.068871, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
+  {"t": "2026-08-27T19:50:01Z", "p": 11.793903, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
+  {"t": "2026-08-27T19:50:04Z", "p": 11.71, "pool": "CMLq…BwZz (unnamed)", "v": "v1.0"},
+  {"t": "2026-08-27T21:50:00Z", "p": -10.684627, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
+  {"t": "2026-08-27T21:50:03Z", "p": -15.144074, "pool": "CMLq…BwZz (unnamed)", "v": "v1.0"},
+  {"t": "2026-08-28T02:30:00Z", "p": -11.121834, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
+  {"t": "2026-08-28T02:30:03Z", "p": -11.860714, "pool": "CMLq…BwZz (unnamed)", "v": "v1.0"},
+  {"t": "2026-08-28T04:10:01Z", "p": 5.38724, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
+  {"t": "2026-08-28T06:20:00Z", "p": 6.312218, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
+  {"t": "2026-08-28T19:40:00Z", "p": -14.696853, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
+  {"t": "2026-08-29T00:50:00Z", "p": 14.982229, "pool": "fone-SOL", "v": "v1.0"},
+  {"t": "2026-08-29T01:30:00Z", "p": 8.047353, "pool": "fone-SOL", "v": "v1.0"},
+  {"t": "2026-08-29T03:20:00Z", "p": 7.94016, "pool": "fone-SOL", "v": "v1.0"},
+  {"t": "2026-08-29T03:20:02Z", "p": 5.550063, "pool": "fone-SOL", "v": "v1.0"},
+  {"t": "2026-08-29T04:20:00Z", "p": -10.295146, "pool": "fone-SOL", "v": "v1.0"},
+  {"t": "2026-08-29T05:50:01Z", "p": -8.952888, "pool": "fone-SOL", "v": "v1.0"},
+  {"t": "2026-08-29T09:10:00Z", "p": 8.249413, "pool": "fone-USDC", "v": "v1.0"},
+  {"t": "2026-08-29T10:30:00Z", "p": -9.115586, "pool": "fone-SOL", "v": "v1.0"},
+  {"t": "2026-08-29T12:10:00Z", "p": -11.559318, "pool": "Pistacio-SOL", "v": "v1.0"},
+  {"t": "2026-08-29T12:20:00Z", "p": -8.997137, "pool": "fone-SOL", "v": "v1.0"},
+  {"t": "2026-08-29T13:30:00Z", "p": 10.015058, "pool": "fone-SOL", "v": "v1.0"},
+  {"t": "2026-08-29T13:40:00Z", "p": 6.709816, "pool": "fone-SOL", "v": "v1.0"},
+  {"t": "2026-08-29T14:50:00Z", "p": 5.394618, "pool": "Pistacio-SOL", "v": "v1.0"},
+  {"t": "2026-08-29T15:07:17Z", "p": 7.065966, "pool": "fone-SOL", "v": "v1.1"},
+  {"t": "2026-08-29T15:07:17Z", "p": 5.851585, "pool": "fone-SOL", "v": "v1.1"},
+  {"t": "2026-08-29T16:45:00Z", "p": 5.701928, "pool": "Pistacio-SOL", "v": "v1.1"},
+  {"t": "2026-08-29T18:20:00Z", "p": 7.617165, "pool": "fone-SOL", "v": "v1.1"},
+  {"t": "2026-08-29T20:14:00Z", "p": -8.672687, "pool": "fone-SOL", "v": "v1.1"},
+  {"t": "2026-08-30T01:14:00Z", "p": 5.306668, "pool": "Pistacio-SOL", "v": "v1.1"},
+  {"t": "2026-08-31T05:17:00Z", "p": 5.62864, "pool": "fone-USDC", "v": "v1.1"},
+  {"t": "2026-08-31T16:12:00Z", "p": 5.232607, "pool": "fone-USDC", "v": "v1.1"},
+  {"t": "2026-09-01T01:51:00Z", "p": 5.186293, "pool": "fone-USDC", "v": "v1.1"},
+  {"t": "2026-09-01T11:29:01Z", "p": 5.398871, "pool": "DOGE-1-SOL", "v": "v1.1"}
+];
+const STARTING_BALANCE = 1000;
+
+/* ---------- helpers ---------- */
+const MS_DAY = 86400000;
+const usd = n => (n < 0 ? "−$" : "+$") + Math.abs(n).toFixed(2);
+const usdPlain = n => "$" + Math.abs(n).toFixed(2);
+const dayKey = d => d.toISOString().slice(0, 10);
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const prettyDate = key => {
+  const [y, m, d] = key.split("-").map(Number);
+  return MONTHS[m - 1] + " " + d + ", " + y;
+};
+const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+const parsed = TRADES.map(t => ({ ...t, ms: Date.parse(t.t) })).sort((a, b) => a.ms - b.ms);
+const ANCHOR = parsed.length ? parsed[parsed.length - 1].ms : Date.now();
+const FIRST = parsed.length ? parsed[0].ms : Date.now();
+
+/* Windows anchor to the LAST CLOSE in the dataset, not to the wall clock — an export
+   opened months later would otherwise render every narrow tab empty. */
+const windowStart = range => range === "all" ? -Infinity : ANCHOR - (range === "7d" ? 7 : 30) * MS_DAY;
+
+/** Max drawdown over the realised curve — the same walk as src/services/metrics.ts. */
+function maxDrawdown(pnls, start) {
+  let eq = start, peak = start, ddPct = 0, ddUsd = 0;
+  for (const p of pnls) {
+    eq += p;
+    if (eq > peak) { peak = eq; continue; }
+    const du = peak - eq;
+    const dp = peak > 0 ? (du / peak) * 100 : 0;
+    if (dp > ddPct) { ddPct = dp; ddUsd = du; }
+  }
+  return { pct: ddPct, usd: ddUsd };
+}
+
+function compute(range) {
+  const from = windowStart(range);
+  const rows = parsed.filter(t => t.ms >= from);
+  if (!rows.length) return null;
+
+  const pnls = rows.map(t => t.p);
+  const wins = pnls.filter(p => p > 0);
+  const losses = pnls.filter(p => p <= 0);
+
+  const days = new Map();
+  for (const t of rows) {
+    const k = dayKey(new Date(t.ms));
+    const cur = days.get(k) || { pnl: 0, n: 0 };
+    cur.pnl += t.p; cur.n += 1;
+    days.set(k, cur);
+  }
+
+  let streak = 0;
+  for (let i = rows.length - 1; i >= 0 && rows[i].p > 0; i--) streak++;
+
+  const byHour = new Map();
+  for (const t of rows) {
+    const h = new Date(t.ms).getUTCHours();
+    byHour.set(h, (byHour.get(h) || 0) + t.p);
+  }
+  const peakHour = [...byHour.entries()].sort((a, b) => b[1] - a[1])[0];
+
+  const byPool = new Map();
+  for (const t of rows) {
+    const cur = byPool.get(t.pool) || { pnl: 0, n: 0 };
+    cur.pnl += t.p; cur.n += 1;
+    byPool.set(t.pool, cur);
+  }
+  const topPool = [...byPool.entries()].sort((a, b) => b[1].pnl - a[1].pnl)[0];
+
+  const net = pnls.reduce((a, b) => a + b, 0);
+  const grossWin = wins.reduce((a, b) => a + b, 0);
+  const grossLoss = Math.abs(losses.reduce((a, b) => a + b, 0));
+
+  return {
+    rows, days,
+    trades: rows.length,
+    wins: wins.length,
+    losses: losses.length,
+    winRate: (wins.length / rows.length) * 100,
+    net,
+    netPct: (net / STARTING_BALANCE) * 100,
+    activeDays: days.size,
+    streak,
+    dd: maxDrawdown(pnls, STARTING_BALANCE),
+    peakHour: peakHour[0],
+    peakHourPnl: peakHour[1],
+    topPool: topPool[0],
+    topPoolPnl: topPool[1].pnl,
+    topPoolTrades: topPool[1].n,
+    // Undefined metrics stay null — Infinity would render as a real measurement.
+    profitFactor: grossLoss > 0 ? grossWin / grossLoss : null
+  };
+}
+
+/* ---------- metric cards ---------- */
+function card(label, value, sub, tone) {
+  const toneClass = tone === "pos" ? "text-emerald-400" : tone === "neg" ? "text-red-400" : "text-zinc-50";
+  return '<div class="card rounded-xl p-4 transition-colors">'
+    + '<p class="mb-2 text-[11.5px] font-medium uppercase tracking-wider text-zinc-500">' + esc(label) + '</p>'
+    + '<p class="truncate text-[26px] font-semibold leading-none tracking-tight ' + toneClass + '" title="' + esc(value) + '">' + esc(value) + '</p>'
+    + '<p class="mt-2 truncate text-[12px] text-zinc-500" title="' + esc(sub) + '">' + esc(sub) + '</p>'
+    + '</div>';
+}
+
+function renderCards(s) {
+  const pf = s.profitFactor === null
+    ? "profit factor: n/a (belum ada loss)"
+    : "profit factor " + s.profitFactor.toFixed(2);
+  const signedPct = (s.netPct >= 0 ? "+" : "−") + Math.abs(s.netPct).toFixed(2) + "%";
+
+  document.getElementById("metric-grid").innerHTML = [
+    card("Total Trades", s.trades, s.wins + " menang · " + s.losses + " kalah", "neutral"),
+    card("Win Rate", s.winRate.toFixed(1) + "%", s.wins + " dari " + s.trades + " · " + pf, s.winRate >= 50 ? "pos" : "neg"),
+    card("Net Realized PnL", usd(s.net), signedPct + " dari modal $" + STARTING_BALANCE.toLocaleString("en-US"), s.net >= 0 ? "pos" : "neg"),
+    card("Active Days", s.activeDays, "hari dengan minimal 1 posisi ditutup", "neutral"),
+    card("Current Win Streak", s.streak, s.streak ? "penutupan profit beruntun terakhir" : "penutupan terakhir merugi", s.streak > 0 ? "pos" : "neutral"),
+    card("Max Drawdown", "−" + s.dd.pct.toFixed(2) + "%", "−" + usdPlain(s.dd.usd) + " puncak ke lembah (realised)", s.dd.pct > 0 ? "neg" : "neutral"),
+    card("Peak Trading Hour", String(s.peakHour).padStart(2, "0") + ":00 UTC", usd(s.peakHourPnl) + " dibukukan pada jam ini", s.peakHourPnl >= 0 ? "pos" : "neg"),
+    card("Top Pool", s.topPool, usd(s.topPoolPnl) + " dari " + s.topPoolTrades + " trades", s.topPoolPnl >= 0 ? "pos" : "neg")
+  ].join("");
+}
+
+/* ---------- heatmap ---------- */
+const WEEKS = 13;
+const GREEN = ["#064e3b", "#047857", "#10b981", "#4ade80"];
+const RED = ["#7f1d1d", "#b91c1c", "#ef4444", "#f87171"];
+
+function level(pnl, maxAbs) {
+  const r = Math.min(Math.abs(pnl) / maxAbs, 1);
+  if (r <= 0.25) return 1;
+  if (r <= 0.5) return 2;
+  if (r <= 0.75) return 3;
+  return 4;
+}
+
+function renderHeatmap(s, range) {
+  const grid = document.getElementById("heatmap");
+  const labels = document.getElementById("month-labels");
+  grid.innerHTML = "";
+  labels.innerHTML = "";
+
+  // End on the Saturday of the anchor week so the final column is complete.
+  const end = new Date(ANCHOR);
+  end.setUTCHours(0, 0, 0, 0);
+  end.setUTCDate(end.getUTCDate() + (6 - end.getUTCDay()));
+  const start = new Date(end.getTime() - (WEEKS * 7 - 1) * MS_DAY);
+
+  const magnitudes = [...s.days.values()].map(d => Math.abs(d.pnl));
+  const maxAbs = Math.max(...magnitudes, 1);
+  const from = windowStart(range);
+
+  let lastMonth = -1;
+  for (let i = 0; i < WEEKS * 7; i++) {
+    const d = new Date(start.getTime() + i * MS_DAY);
+    const key = dayKey(d);
+    const col = Math.floor(i / 7);
+
+    if (i % 7 === 0) {
+      const m = d.getUTCMonth();
+      if (m !== lastMonth && d.getUTCDate() <= 7) {
+        const el = document.createElement("span");
+        el.className = "absolute";
+        el.style.left = (col * 16) + "px";
+        el.textContent = MONTHS[m];
+        labels.appendChild(el);
+        lastMonth = m;
+      }
+    }
+
+    const cell = document.createElement("div");
+    cell.className = "cell h-[13px] w-[13px] transition-colors";
+
+    const rec = s.days.get(key);
+    const dayStart = Date.parse(key + "T00:00:00Z");
+    const inWindow = dayStart + MS_DAY > from;
+    const beforeEngine = dayStart < Date.parse(dayKey(new Date(FIRST)) + "T00:00:00Z");
+    const afterData = dayStart > ANCHOR;
+
+    let tip;
+    if (rec && inWindow) {
+      cell.style.background = (rec.pnl >= 0 ? GREEN : RED)[level(rec.pnl, maxAbs) - 1];
+      tip = '<div class="font-medium text-zinc-100">' + prettyDate(key) + '</div>'
+        + '<div class="mt-1 font-mono text-[12px] ' + (rec.pnl >= 0 ? "text-emerald-400" : "text-red-400") + '">' + usd(rec.pnl) + '</div>'
+        + '<div class="text-[11.5px] text-zinc-400">' + rec.n + " trade" + (rec.n === 1 ? "" : "s") + " ditutup</div>";
+    } else if (beforeEngine || afterData || !inWindow) {
+      cell.style.background = "#0d0e10";
+      const why = beforeEngine ? "sebelum engine mulai" : afterData ? "di luar data export" : "di luar rentang filter";
+      tip = '<div class="font-medium text-zinc-100">' + prettyDate(key) + '</div>'
+        + '<div class="mt-1 text-[11.5px] text-zinc-500">Tidak ada data — ' + why + "</div>";
+    } else {
+      cell.style.background = "#1b1e24";
+      tip = '<div class="font-medium text-zinc-100">' + prettyDate(key) + '</div>'
+        + '<div class="mt-1 text-[11.5px] text-zinc-400">Idle — tidak ada posisi ditutup</div>';
+    }
+
+    cell.dataset.tip = tip;
+    grid.appendChild(cell);
+  }
+
+  const span = Math.round((ANCHOR - FIRST) / MS_DAY) + 1;
+  document.getElementById("heatmap-sub").textContent =
+    s.trades + " trades ditutup dalam " + s.activeDays + " hari aktif · rentang data "
+    + prettyDate(dayKey(new Date(FIRST))) + " → " + prettyDate(dayKey(new Date(ANCHOR)))
+    + " (" + span + " hari)";
+}
+
+/* ---------- tooltip ---------- */
+const tip = document.getElementById("tip");
+document.addEventListener("mouseover", e => {
+  const cell = e.target.closest("[data-tip]");
+  if (!cell) return;
+  tip.innerHTML = cell.dataset.tip;
+  tip.classList.remove("hidden");
+});
+document.addEventListener("mousemove", e => {
+  if (tip.classList.contains("hidden")) return;
+  const pad = 14;
+  const r = tip.getBoundingClientRect();
+  let x = e.clientX + pad;
+  let y = e.clientY + pad;
+  if (x + r.width > window.innerWidth - 8) x = e.clientX - r.width - pad;
+  if (y + r.height > window.innerHeight - 8) y = e.clientY - r.height - pad;
+  tip.style.left = x + "px";
+  tip.style.top = y + "px";
+});
+document.addEventListener("mouseout", e => {
+  if (e.target.closest("[data-tip]")) tip.classList.add("hidden");
+});
+
+/* ---------- insights ----------
+ * Every line is derived from the repo or from the trade log — none are invented.
+ */
+function buildFacts(s) {
+  const sum = a => a.reduce((x, t) => x + t.p, 0);
+  const v10 = parsed.filter(t => t.v === "v1.0");
+  const v11 = parsed.filter(t => t.v === "v1.1");
+  const byDay = [...s.days.entries()];
+  const best = byDay.slice().sort((a, b) => b[1].pnl - a[1].pnl)[0];
+  const worst = byDay.slice().sort((a, b) => a[1].pnl - b[1].pnl)[0];
+  const wins = s.rows.filter(t => t.p > 0).map(t => t.p);
+  const losses = s.rows.filter(t => t.p <= 0).map(t => t.p);
+  const avgWin = wins.length ? wins.reduce((a, b) => a + b, 0) / wins.length : 0;
+  const avgLoss = losses.length ? losses.reduce((a, b) => a + b, 0) / losses.length : 0;
+
+  const facts = [
+    {
+      t: 'Screener turun dari tiap 10 menit ke tiap 30 menit — <strong class="text-zinc-100">144 → 48 siklus per hari</strong>, sekitar <strong class="text-emerald-400">66% lebih sedikit</strong> panggilan DeepSeek Reasoner untuk cakupan pasar yang sama.',
+      s: "CRON.DLMM_LOOP = */30 * * * * — src/config/constants.ts"
+    },
+    {
+      t: 'Budget reasoner tidak lagi berlipat saat jawabannya terpotong. Worst-case per tick turun dari <strong class="text-zinc-100">48.000 → 32.000</strong> token reasoning, sehingga biaya terburuk satu tick bisa dihitung di muka.',
+      s: "REASONER_MAX_TOKENS = 16000, dikunci — src/services/deepseek.ts"
+    },
+    {
+      t: 'Guardrail v1.1 mengubah bentuk hasil: <strong class="text-zinc-100">v1.0 ' + v10.length + " trades → " + usd(sum(v10)) + '</strong> lawan <strong class="text-emerald-400">v1.1 ' + v11.length + " trades → " + usd(sum(v11)) + "</strong>. Sampel v1.1 baru " + v11.length + " trade, jadi ini arah, belum bukti.",
+      s: "kolom engine_version pada exports/trades.csv · cutoff 2026-08-29T13:20:40Z"
+    },
+    {
+      t: 'Rata-rata menang <strong class="text-emerald-400">' + usd(avgWin) + '</strong> lawan rata-rata kalah <strong class="text-red-400">' + usd(avgLoss) + '</strong> — payoff di bawah 1. Yang menahan hasil tetap positif adalah <strong class="text-zinc-100">win rate ' + s.winRate.toFixed(1) + "%</strong>, bukan besarnya kemenangan.",
+      s: "TAKE_PROFIT_PCT / STOP_LOSS_PCT sudah disweep dan sengaja tidak diubah — CLAUDE.md"
+    },
+    {
+      t: 'Stop-loss menembus levelnya. Dipatok −8% tapi realisasinya kerap lebih dalam karena harga bergerak di antara dua tick monitor — itu granularitas 60 detik, <strong class="text-zinc-100">bukan lantai yang dijamin</strong>.',
+      s: "CRON.FAST_MONITOR = * * * * * · known behaviour, CLAUDE.md"
+    }
+  ];
+
+  if (best && worst && best[0] !== worst[0]) {
+    facts.splice(3, 0, {
+      t: 'Hari terbaik <strong class="text-emerald-400">' + prettyDate(best[0]) + " (" + usd(best[1].pnl) + ", " + best[1].n + ' closes)</strong> lebih besar dari hari terburuk <strong class="text-red-400">' + prettyDate(worst[0]) + " (" + usd(worst[1].pnl) + ", " + worst[1].n + " closes)</strong> — seluruh net profit ditentukan oleh satu hari itu.",
+      s: "diturunkan dari closed_at (UTC) pada exports/trades.csv"
+    });
+  }
+  return facts;
+}
+
+let facts = [];
+let factIdx = 0;
+let factTimer = null;
+
+function showFact(i) {
+  if (!facts.length) return;
+  const f = facts[((i % facts.length) + facts.length) % facts.length];
+  document.getElementById("fun-fact").innerHTML = f.t;
+  document.getElementById("fun-fact-src").textContent = f.s;
+}
+function cycleFacts() {
+  clearInterval(factTimer);
+  factTimer = setInterval(() => showFact(++factIdx), 9000);
+}
+document.getElementById("fact-next").addEventListener("click", () => {
+  showFact(++factIdx);
+  cycleFacts();
+});
+
+/* ---------- render ---------- */
+function render(range) {
+  const s = compute(range);
+  if (!s) return;
+
+  renderCards(s);
+  renderHeatmap(s, range);
+
+  facts = buildFacts(s);
+  factIdx = 0;
+  showFact(0);
+  cycleFacts();
+
+  // The whole trade history is shorter than 30 days, so a narrower tab can return the
+  // identical set. Saying so plainly beats three tabs that look broken.
+  const spanDays = Math.round((ANCHOR - FIRST) / MS_DAY) + 1;
+  const note = document.getElementById("window-note");
+  if (range !== "all" && s.trades === parsed.length) {
+    note.textContent = "riwayat baru " + spanDays + " hari — filter ini memuat semua trade";
+    note.classList.remove("hidden");
+  } else {
+    note.classList.add("hidden");
+  }
+
+  document.getElementById("caveat-span").textContent =
+    parsed.length + " trades dalam " + spanDays + " hari kalender (" + s.activeDays + " hari aktif).";
+  document.getElementById("src-meta").textContent =
+    parsed.length + " closed trades · last close " + dayKey(new Date(ANCHOR));
+}
+
+document.querySelectorAll(".range-tab").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".range-tab").forEach(b => b.classList.remove("tab-active"));
+    btn.classList.add("tab-active");
+    render(btn.dataset.range);
+  });
+});
+
+render("all");
+</script>
+</body>
+</html>
