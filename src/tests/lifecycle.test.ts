@@ -159,13 +159,25 @@ describe("position lifecycle", () => {
 });
 
 describe("daily aggregation", () => {
+  /*
+   * The day key comes from SQLite, not from Intl.
+   *
+   * This test used to build "today" with `Intl` in `process.env.TZ`, which asserts that
+   * SQLite's `'localtime'` and the IANA zone agree. They do on the Linux host the engine
+   * runs on, and they do NOT on Windows: `env.ts` sets `process.env.TZ="Asia/Jakarta"`,
+   * the Windows CRT cannot read an IANA name, and parses it as a POSIX `TZ` with no
+   * offset — so `'localtime'` shifts by +1 hour instead of +7. The old assertion
+   * therefore passed only while UTC and local happened to share a calendar date, and
+   * broke the moment they diverged near midnight.
+   *
+   * What this test is for is the GROUPING — three closes collapsing into one dated row
+   * with the right counts. Asking SQLite for its own current local date keeps that
+   * intact and makes the test say the same thing on every platform. The +1/+7 divergence
+   * is a real issue, but it belongs in a bug report, not smuggled into an unrelated
+   * assertion that fails once a day.
+   */
   it("groups closed trades by local date", () => {
-    const today = new Intl.DateTimeFormat("en-CA", {
-      timeZone: process.env.TZ || "Asia/Jakarta",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(new Date());
+    const today = repos.currentLocalDate();
 
     const rows = repos.aggregateClosedTradesByDate(today, today);
     assert.equal(rows.length, 1, "all test trades closed today");

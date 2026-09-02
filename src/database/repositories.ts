@@ -463,6 +463,19 @@ export function aggregateClosedTradesByDate(
     .all(...params, startDate, endDate) as DailyAggregateRow[];
 }
 
+/**
+ * Today's date in the same frame `aggregateClosedTradesByDate` buckets by.
+ *
+ * Callers that need to line a date range up with the day keys this file produces must
+ * ask SQLite rather than compute one in JS: `'localtime'` resolves against the C
+ * runtime's timezone, which is not always the same thing as `process.env.TZ` (a Windows
+ * host cannot read an IANA name and silently lands on a different offset).
+ */
+export function currentLocalDate(): string {
+  const row = db.prepare("SELECT date('now', 'localtime') AS d").get() as { d: string };
+  return row.d;
+}
+
 /** One pool's realised contribution, for the analytics "top pool" figure. */
 export interface PoolPerformanceRow {
   poolAddress: string;
