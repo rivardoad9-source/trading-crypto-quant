@@ -93,24 +93,70 @@
   }
   /* Gradient wordmark. -webkit-* first: the unprefixed pair is still not universal. */
   .hero-title{
-    background:linear-gradient(100deg,#ffffff 0%,#e7e9ee 38%,#9aa4b8 100%);
+    background:linear-gradient(103deg,#f1f5f9 0%,#e2e8f0 45%,#cbd5e1 100%);
     -webkit-background-clip:text; background-clip:text;
     -webkit-text-fill-color:transparent; color:transparent;
   }
-  .eyebrow{ font-size:11px; letter-spacing:.16em; text-transform:uppercase; color:#8b8f9a; }
-  .chip{
-    display:inline-flex; align-items:center; gap:6px;
-    border-radius:8px; padding:5px 10px;
+
+  /* ---- integrated system status bar ---- */
+  .sysbar{
+    display:inline-flex; flex-wrap:wrap; align-items:center;
+    gap:0;
+    border:1px solid #1e293b;                 /* slate-800 */
+    background:rgba(15,23,42,.50);            /* slate-900/50 */
+    border-radius:10px;
+    padding:2px 4px;
+    backdrop-filter:blur(4px);
+    -webkit-backdrop-filter:blur(4px);
+  }
+  .sysitem{
+    display:inline-flex; align-items:center; gap:7px;
+    padding:7px 12px;
     font-size:11.5px; font-weight:500;
-    border:1px solid rgba(255,255,255,.07);
-    background:rgba(255,255,255,.035);
-    color:#a1a1aa;
+    color:#94a3b8;                            /* slate-400 */
+    white-space:nowrap;
   }
-  .chip-accent{
-    border-color:rgba(16,185,129,.28);
-    background:rgba(16,185,129,.10);
-    color:#6ee7b7;
+  .sysitem + .sysitem{ box-shadow:inset 1px 0 0 #1e293b; }
+  .sysitem-accent{ color:#6ee7b7; }
+  .sysdot{ height:6px; width:6px; border-radius:999px; flex:none; }
+
+  /* ---- live indicator ---- */
+  .livebar{
+    display:inline-flex; align-items:center; gap:9px;
+    border:1px solid #1e293b;
+    background:rgba(15,23,42,.50);
+    border-radius:999px;
+    padding:7px 14px;
+    backdrop-filter:blur(4px);
+    -webkit-backdrop-filter:blur(4px);
   }
+  .livedot{
+    position:relative; height:7px; width:7px; border-radius:999px; flex:none;
+    background:#10b981;
+    animation:pulse-glow 2s ease-in-out infinite;
+  }
+  @keyframes pulse-glow{
+    0%,100%{ box-shadow:0 0 0 0 rgba(16,185,129,.55), 0 0 6px 1px rgba(16,185,129,.55); opacity:1; }
+    50%    { box-shadow:0 0 0 5px rgba(16,185,129,0),  0 0 12px 3px rgba(16,185,129,.85); opacity:.72; }
+  }
+  .livedot-idle{ background:#38bdf8; animation-name:pulse-glow-sky; }
+  @keyframes pulse-glow-sky{
+    0%,100%{ box-shadow:0 0 0 0 rgba(56,189,248,.55), 0 0 6px 1px rgba(56,189,248,.55); opacity:1; }
+    50%    { box-shadow:0 0 0 5px rgba(56,189,248,0),  0 0 12px 3px rgba(56,189,248,.85); opacity:.72; }
+  }
+  /* Stalled, not live: a steady amber dot, deliberately NOT pulsing. A page whose
+     upstream is down must not animate as though it were healthy. */
+  .livedot-down{ background:#f59e0b; animation:none; box-shadow:0 0 6px 1px rgba(245,158,11,.45); }
+  .livelabel{ font-size:10.5px; font-weight:600; letter-spacing:.12em; text-transform:uppercase; }
+  .liveclock{
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    font-size:12px; color:#e2e8f0; font-variant-numeric:tabular-nums;
+  }
+
+  @media (prefers-reduced-motion: reduce){
+    .livedot{ animation:none; }
+  }
+  .eyebrow{ font-size:11px; letter-spacing:.16em; text-transform:uppercase; color:#8b8f9a; }
   /* ---- trade detail ---- */
   .trow{ cursor:pointer; }
   .trow:hover{ background:rgba(255,255,255,.028); }
@@ -232,22 +278,28 @@
           Performance &amp; Analytics
         </h1>
 
-        <p class="mt-2.5 max-w-[46ch] text-[13.5px] leading-relaxed text-zinc-400">
+        <p class="mt-2.5 max-w-[46ch] text-[13.5px] leading-relaxed text-slate-400">
           Simulasi di Meteora DLMM
         </p>
 
-        <div class="mt-4 flex flex-wrap items-center gap-2">
-          <span class="chip chip-accent">
-            <span class="inline-flex h-1.5 w-1.5 rounded-full bg-emerald-400"></span>Engine V1.1
+        <!-- System status bar: the three standing qualifiers as one unit, so they read
+             as the rig's configuration rather than three loose tags. -->
+        <div class="sysbar mt-4">
+          <span class="sysitem sysitem-accent">
+            <span class="sysdot bg-emerald-400"></span>Engine V1.1
           </span>
-          <span class="chip">Saldo awal $1.000 — bukan saldo akun</span>
-          <span class="chip">DRY RUN · zero capital</span>
+          <span class="sysitem">
+            <span class="sysdot bg-slate-500"></span>Saldo awal $1.000
+          </span>
+          <span class="sysitem">
+            <span class="sysdot bg-slate-500"></span>DRY RUN · zero capital
+          </span>
         </div>
       </div>
 
       <div class="flex shrink-0 flex-col items-start gap-2.5 sm:items-end">
         <!-- Filled by setStatus(). Distinguishes a live figure from a frozen one. -->
-        <div id="conn-status" class="inline-flex items-center gap-2 rounded-full border border-zinc-800 bg-zinc-900/60 px-3 py-1.5"></div>
+        <div id="conn-status" class="livebar"></div>
       </div>
     </div>
 
@@ -1598,19 +1650,19 @@ const statusEl = document.getElementById("conn-status");
  */
 function setStatus(state, detail) {
   const map = {
-    loading: ["bg-sky-400", "text-zinc-400", "Live syncing…"],
-    live: ["bg-emerald-400", "text-zinc-400", "Live"],
-    archive: ["bg-amber-400", "text-amber-400/90", "Arsip — engine tak terjangkau"],
+    loading: ["livedot livedot-idle", "text-sky-300/90", "Connecting"],
+    live: ["livedot", "text-emerald-300", "Live Monitoring"],
+    // Amber and STILL, not pulsing: an animated dot on a dead connection reads as
+    // healthy, which is the one thing this indicator must never do.
+    archive: ["livedot livedot-down", "text-amber-400/90", "Archive · offline"],
   };
-  const [dot, text, label] = map[state];
-  // The detail half is its own span so the ticker can rewrite the elapsed time every
-  // second without rebuilding the pill (which would restart the ping animation).
+  const [dotClass, textClass, label] = map[state];
+  // The detail half is its own span so the clock can rewrite the seconds without
+  // rebuilding the pill, which would restart the pulse animation every tick.
   statusEl.innerHTML =
-    '<span class="relative flex h-1.5 w-1.5">'
-    + (state === "loading" ? '<span class="absolute inline-flex h-full w-full animate-ping rounded-full ' + dot + ' opacity-60"></span>' : "")
-    + '<span class="relative inline-flex h-1.5 w-1.5 rounded-full ' + dot + '"></span></span>'
-    + '<span class="text-[11.5px] font-medium ' + text + '">' + esc(label) + "</span>"
-    + '<span id="conn-detail" class="text-[11.5px] ' + text + '">' + (detail ? " · " + esc(detail) : "") + "</span>";
+    '<span class="' + dotClass + '"></span>'
+    + '<span class="livelabel ' + textClass + '">' + esc(label) + "</span>"
+    + '<span id="conn-detail" class="liveclock">' + (detail ? esc(detail) : "") + "</span>";
 }
 
 /* ---------- elapsed-time ticker ---------- */
@@ -1629,20 +1681,19 @@ function setStatus(state, detail) {
 let lastSyncMs = null;
 let tickTimer = null;
 
-const clockLabel = () =>
-  new Date().toLocaleTimeString([], {
-    hour12: false,
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
+/*
+ * UTC, not the viewer's local time, and said so on screen. Every date on this page —
+ * heatmap keys, monthly buckets, the trade table — is bucketed in UTC, so a header
+ * clock in some other zone would be the one element quietly disagreeing with the rest.
+ */
+const clockLabel = () => new Date().toISOString().slice(11, 19) + " UTC";
 
 function tickStatus() {
   // Null while showing the archive: that pill carries the reason the engine could not
   // be reached, and overwriting it with a clock would hide the failure.
   if (lastSyncMs === null) return;
   const el = document.getElementById("conn-detail");
-  if (el) el.textContent = " · " + clockLabel();
+  if (el) el.textContent = clockLabel();
 }
 
 function startTicker() {
