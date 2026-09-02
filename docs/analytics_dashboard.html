@@ -74,11 +74,14 @@
   <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
     <h2 class="text-[13px] font-semibold uppercase tracking-wider text-zinc-500">Overview</h2>
     <div class="flex items-center gap-2">
-      <span id="window-note" class="hidden text-[11.5px] text-amber-500/80 sm:inline"></span>
+      <!-- No responsive display utility here: `sm:inline` sits in a later media query
+           than `.hidden`, so it would win and classList.add("hidden") could never
+           hide this note on a desktop viewport. -->
+      <span id="window-note" class="hidden max-w-[15rem] text-right text-[11.5px] leading-tight text-amber-500/80"></span>
       <div role="tablist" aria-label="Rentang waktu" class="inline-flex rounded-lg border border-zinc-800 bg-zinc-900/60 p-0.5">
-        <button role="tab" data-range="all" class="range-tab tab-active rounded-[6px] px-3 py-1.5 text-[12.5px] font-medium text-zinc-400 transition hover:text-zinc-200">All</button>
-        <button role="tab" data-range="30d" class="range-tab rounded-[6px] px-3 py-1.5 text-[12.5px] font-medium text-zinc-400 transition hover:text-zinc-200">30d</button>
-        <button role="tab" data-range="7d"  class="range-tab rounded-[6px] px-3 py-1.5 text-[12.5px] font-medium text-zinc-400 transition hover:text-zinc-200">7d</button>
+        <button role="tab" aria-selected="true" data-range="all" class="range-tab tab-active rounded-[6px] px-3 py-1.5 text-[12.5px] font-medium text-zinc-400 transition hover:text-zinc-200">All</button>
+        <button role="tab" aria-selected="false" data-range="30d" class="range-tab rounded-[6px] px-3 py-1.5 text-[12.5px] font-medium text-zinc-400 transition hover:text-zinc-200">30d</button>
+        <button role="tab" aria-selected="false" data-range="7d"  class="range-tab rounded-[6px] px-3 py-1.5 text-[12.5px] font-medium text-zinc-400 transition hover:text-zinc-200">7d</button>
       </div>
     </div>
   </div>
@@ -127,6 +130,7 @@
       <span class="inline-flex items-center gap-1.5"><span class="cell h-[9px] w-[9px]" style="background:#1b1e24"></span>Idle — tidak ada posisi ditutup</span>
       <span class="inline-flex items-center gap-1.5"><span class="cell h-[9px] w-[9px]" style="background:#10b981"></span>Profit day</span>
       <span class="inline-flex items-center gap-1.5"><span class="cell h-[9px] w-[9px]" style="background:#dc2626"></span>Loss day</span>
+      <span class="inline-flex items-center gap-1.5"><span class="cell h-[9px] w-[9px]" style="background:#3f4650"></span>Impas — net $0.00</span>
     </div>
   </section>
 
@@ -334,6 +338,8 @@ function renderCards(s) {
 const WEEKS = 13;
 const GREEN = ["#064e3b", "#047857", "#10b981", "#4ade80"];
 const RED = ["#7f1d1d", "#b91c1c", "#ef4444", "#f87171"];
+/** Traded, but netted exactly $0.00 — neither a profit nor a loss day. */
+const FLAT = "#3f4650";
 
 function level(pnl, maxAbs) {
   const r = Math.min(Math.abs(pnl) / maxAbs, 1);
@@ -366,8 +372,13 @@ function renderHeatmap(s, range) {
     const col = Math.floor(i / 7);
 
     if (i % 7 === 0) {
-      const m = d.getUTCMonth();
-      if (m !== lastMonth && d.getUTCDate() <= 7) {
+      // Label a column by the month at its MIDPOINT (Wednesday), so the column is
+      // named after the month that owns most of it. Keying off the Sunday instead
+      // dropped the final month whenever the last column started in the previous
+      // one — with data ending Sep 1 in a week beginning Aug 30, "Sep" never
+      // appeared at all.
+      const m = new Date(d.getTime() + 3 * MS_DAY).getUTCMonth();
+      if (m !== lastMonth) {
         const el = document.createElement("span");
         el.className = "absolute";
         el.style.left = (col * 16) + "px";
@@ -388,10 +399,22 @@ function renderHeatmap(s, range) {
 
     let tip;
     if (rec && inWindow) {
-      cell.style.background = (rec.pnl >= 0 ? GREEN : RED)[level(rec.pnl, maxAbs) - 1];
-      tip = '<div class="font-medium text-zinc-100">' + prettyDate(key) + '</div>'
-        + '<div class="mt-1 font-mono text-[12px] ' + (rec.pnl >= 0 ? "text-emerald-400" : "text-red-400") + '">' + usd(rec.pnl) + '</div>'
-        + '<div class="text-[11.5px] text-zinc-400">' + rec.n + " trade" + (rec.n === 1 ? "" : "s") + " ditutup</div>";
+      // A day that traded and netted exactly $0.00 is flat, not a profit day. Testing
+      // `pnl >= 0` would paint it green and overstate the win count by eye.
+      const flat = Math.abs(rec.pnl) < 0.005;
+      const trades = rec.n + " trade" + (rec.n === 1 ? "" : "s") + " ditutup";
+
+      if (flat) {
+        cell.style.background = FLAT;
+        tip = '<div class="font-medium text-zinc-100">' + prettyDate(key) + '</div>'
+          + '<div class="mt-1 font-mono text-[12px] text-zinc-300">$0.00 — impas</div>'
+          + '<div class="text-[11.5px] text-zinc-400">' + trades + "</div>";
+      } else {
+        cell.style.background = (rec.pnl > 0 ? GREEN : RED)[level(rec.pnl, maxAbs) - 1];
+        tip = '<div class="font-medium text-zinc-100">' + prettyDate(key) + '</div>'
+          + '<div class="mt-1 font-mono text-[12px] ' + (rec.pnl > 0 ? "text-emerald-400" : "text-red-400") + '">' + usd(rec.pnl) + '</div>'
+          + '<div class="text-[11.5px] text-zinc-400">' + trades + "</div>";
+      }
     } else if (beforeEngine || afterData || !inWindow) {
       cell.style.background = "#0d0e10";
       const why = beforeEngine ? "sebelum engine mulai" : afterData ? "di luar data export" : "di luar rentang filter";
@@ -416,22 +439,36 @@ function renderHeatmap(s, range) {
 
 /* ---------- tooltip ---------- */
 const tip = document.getElementById("tip");
+
+/** Places the tooltip near the cursor, flipped and then clamped inside the viewport. */
+function positionTip(clientX, clientY) {
+  const pad = 14;
+  const edge = 8;
+  const r = tip.getBoundingClientRect();
+  let x = clientX + pad;
+  let y = clientY + pad;
+  if (x + r.width > window.innerWidth - edge) x = clientX - r.width - pad;
+  if (y + r.height > window.innerHeight - edge) y = clientY - r.height - pad;
+  // Flipping can push a wide tooltip off the LEFT edge on a narrow viewport, so clamp
+  // both axes afterwards rather than trusting the flip to land inside.
+  x = Math.min(Math.max(x, edge), Math.max(edge, window.innerWidth - r.width - edge));
+  y = Math.min(Math.max(y, edge), Math.max(edge, window.innerHeight - r.height - edge));
+  tip.style.left = x + "px";
+  tip.style.top = y + "px";
+}
+
 document.addEventListener("mouseover", e => {
   const cell = e.target.closest("[data-tip]");
   if (!cell) return;
   tip.innerHTML = cell.dataset.tip;
   tip.classList.remove("hidden");
+  // Position on the same event that reveals it. Waiting for the first mousemove made
+  // the tooltip flash at its previous location — or at 0,0 on the very first hover.
+  positionTip(e.clientX, e.clientY);
 });
 document.addEventListener("mousemove", e => {
   if (tip.classList.contains("hidden")) return;
-  const pad = 14;
-  const r = tip.getBoundingClientRect();
-  let x = e.clientX + pad;
-  let y = e.clientY + pad;
-  if (x + r.width > window.innerWidth - 8) x = e.clientX - r.width - pad;
-  if (y + r.height > window.innerHeight - 8) y = e.clientY - r.height - pad;
-  tip.style.left = x + "px";
-  tip.style.top = y + "px";
+  positionTip(e.clientX, e.clientY);
 });
 document.addEventListener("mouseout", e => {
   if (e.target.closest("[data-tip]")) tip.classList.add("hidden");
@@ -524,6 +561,9 @@ function render(range) {
     note.textContent = "riwayat baru " + spanDays + " hari — filter ini memuat semua trade";
     note.classList.remove("hidden");
   } else {
+    // Clear the text too: a stale sentence behind a display:none is one CSS change
+    // away from reappearing on a tab it does not describe.
+    note.textContent = "";
     note.classList.add("hidden");
   }
 
@@ -535,8 +575,12 @@ function render(range) {
 
 document.querySelectorAll(".range-tab").forEach(btn => {
   btn.addEventListener("click", () => {
-    document.querySelectorAll(".range-tab").forEach(b => b.classList.remove("tab-active"));
+    document.querySelectorAll(".range-tab").forEach(b => {
+      b.classList.remove("tab-active");
+      b.setAttribute("aria-selected", "false");
+    });
     btn.classList.add("tab-active");
+    btn.setAttribute("aria-selected", "true");
     render(btn.dataset.range);
   });
 });
