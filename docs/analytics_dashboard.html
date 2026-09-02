@@ -1616,27 +1616,33 @@ function setStatus(state, detail) {
 /* ---------- elapsed-time ticker ---------- */
 
 /**
- * The pill used to print a fixed clock time from the moment of the last poll, so it sat
- * unchanged for a whole minute and read as frozen. It now counts up once a second, which
- * is the only thing on the page that shows at a glance whether the connection is alive
- * between polls.
+ * A running clock, ticked once a second.
+ *
+ * The pill used to print the wall time captured at the last poll, which then sat
+ * unchanged for a whole minute — the connection looked dead between refreshes. Showing
+ * the CURRENT time instead means the seconds visibly move, which is the only thing on
+ * the page that says at a glance that the client is still alive.
+ *
+ * 24-hour, zero-padded, so the text is a fixed width and the pill does not jitter as
+ * the digits change.
  */
 let lastSyncMs = null;
 let tickTimer = null;
 
-function elapsedLabel(sinceMs) {
-  const secs = Math.max(0, Math.round((Date.now() - sinceMs) / 1000));
-  if (secs < 60) return secs + " dtk lalu";
-  const mins = Math.floor(secs / 60);
-  if (mins < 60) return mins + " mnt " + String(secs % 60).padStart(2, "0") + " dtk lalu";
-  const hours = Math.floor(mins / 60);
-  return hours + " jam " + String(mins % 60).padStart(2, "0") + " mnt lalu";
-}
+const clockLabel = () =>
+  new Date().toLocaleTimeString([], {
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
 
 function tickStatus() {
+  // Null while showing the archive: that pill carries the reason the engine could not
+  // be reached, and overwriting it with a clock would hide the failure.
   if (lastSyncMs === null) return;
   const el = document.getElementById("conn-detail");
-  if (el) el.textContent = " · " + elapsedLabel(lastSyncMs);
+  if (el) el.textContent = " · " + clockLabel();
 }
 
 function startTicker() {
@@ -1716,7 +1722,7 @@ async function refresh(range, { silent = false } = {}) {
     }));
     paint(range);
     lastSyncMs = Date.now();
-    setStatus("live", elapsedLabel(lastSyncMs));
+    setStatus("live", clockLabel());
   } catch (err) {
     // Graceful fallback: the archive alone still renders a complete page. Never leave
     // the UI blank because an upstream is down.
