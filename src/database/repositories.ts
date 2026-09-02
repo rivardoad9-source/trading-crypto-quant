@@ -484,11 +484,21 @@ export function aggregateClosedTradesByDate(
     if (!instant) continue;
     const date = zonedDayKey(instant);
     const bucket = buckets.get(date) ?? { date, trades: 0, wins: 0, losses: 0, netPnlUsd: 0 };
-    const pnl = row.pnl ?? 0;
     bucket.trades += 1;
-    if (pnl > 0) bucket.wins += 1;
-    else bucket.losses += 1;
-    bucket.netPnlUsd += pnl;
+    /*
+     * A null PnL is counted as neither a win nor a loss, matching the CASE expressions
+     * in getStatsForDate and getLifetimeStats — `CASE WHEN x > 0` and `CASE WHEN x <= 0`
+     * are both false for NULL. Folding it into losses (which `pnl ?? 0` would do) makes
+     * this function disagree with the two it is routinely summed against. Unreachable
+     * today, since the column is REAL DEFAULT 0.0 and closePosition always binds a
+     * number, but the two paths must not drift on a case either of them can meet.
+     */
+    if (row.pnl !== null && row.pnl !== undefined) {
+      if (row.pnl > 0) bucket.wins += 1;
+      else bucket.losses += 1;
+    }
+    // SUM() skips nulls; so does this.
+    bucket.netPnlUsd += row.pnl ?? 0;
     buckets.set(date, bucket);
   }
 
