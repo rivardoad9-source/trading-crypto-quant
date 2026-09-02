@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import { env } from "../config/env.js";
@@ -11,6 +12,7 @@ import {
   getResearchHistory,
 } from "../database/repositories.js";
 import { computeOverview } from "../services/overview.js";
+import { computeLiveAnalytics } from "../services/analytics.js";
 import { DEFAULT_COHORT_ID, isCohortId, resolveCohort } from "../services/cohort.js";
 import { localDateString } from "../agents/researcherAgent.js";
 import type { SimulatedPositionRow } from "../database/types.js";
@@ -267,6 +269,50 @@ export function buildServer(): FastifyInstance {
         createdAt: r.created_at,
       })),
     };
+  });
+
+  /*
+   * Feeds docs/analytics_dashboard.html.
+   *
+   * Cohort defaults to `all`, like every other route here: an unparameterised caller
+   * must never silently receive a subset. The page asks for what it wants explicitly.
+   */
+  app.get<{ Querystring: { cohort?: string; days?: string } }>(
+    "/api/analytics/live",
+    async (req, reply) => {
+      const cohort = readCohort(req.query.cohort);
+      if (!cohort) return reply.code(400).send(COHORT_ERROR);
+
+      // Absent `days` means the whole history. Present, it goes through intParam like
+      // every other numeric query string here — Number("1e999") is Infinity and
+      // better-sqlite3 rejects it as a bare 500.
+      const days = req.query.days === undefined ? null : intParam(req.query.days, 30, 1, 3650);
+
+      // No caching: the page polls this to see a close the fast monitor booked seconds ago.
+      void reply.header("cache-control", "no-store");
+      return computeLiveAnalytics(cohort, days);
+    },
+  );
+
+  /*
+   * Serves the analytics page from the API's own origin.
+   *
+   * Opened straight off disk the page is a `file://` document, where a relative
+   * fetch("/api/...") resolves to file:///api/... and never reaches the engine. Serving
+   * it here makes the fetch same-origin. The file is read per request rather than at
+   * boot so editing it does not require restarting the engine; it is a handful of KB
+   * and this route is hit by a human, not by the schedulers.
+   */
+  app.get("/analytics", async (_req, reply) => {
+    // Resolves from this module, so it works both as src/api (tsx) and dist/api (built).
+    const page = new URL("../../docs/analytics_dashboard.html", import.meta.url);
+    try {
+      const html = await readFile(page, "utf8");
+      return await reply.type("text/html; charset=utf-8").header("cache-control", "no-store").send(html);
+    } catch {
+      // A missing page is a deployment problem, not a server fault worth a 500 stack.
+      return reply.code(404).send({ error: "analytics dashboard is not present in this build" });
+    }
   });
 
   return app;

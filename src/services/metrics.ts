@@ -112,3 +112,24 @@ export function computeProfitFactor(realisedPnls: number[]): ProfitFactorResult 
 
   return { profitFactor, grossProfitUsd, grossLossUsd, winningTrades, losingTrades };
 }
+
+/**
+ * Consecutive profitable closes at the END of the series.
+ *
+ * The input is ordered oldest close first, the same order `computeMaxDrawdown` walks,
+ * so "current" means the most recent trades. A break-even close (exactly 0) ends the
+ * streak rather than extending it: it is not a win, and counting it as one would let a
+ * flat trade inflate a run of genuine winners.
+ *
+ * Non-finite entries end the streak too. They cannot be judged either way, and
+ * treating an unknown as a win would overstate the figure the dashboard shows.
+ */
+export function computeCurrentWinStreak(realisedPnls: number[]): number {
+  let streak = 0;
+  for (let i = realisedPnls.length - 1; i >= 0; i--) {
+    const pnl = realisedPnls[i];
+    if (!Number.isFinite(pnl as number) || (pnl as number) <= 0) break;
+    streak++;
+  }
+  return streak;
+}

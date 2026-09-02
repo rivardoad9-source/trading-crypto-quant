@@ -37,14 +37,32 @@ const COOLDOWN_LIST = COOLDOWN_STATUSES.map((s) => `'${s}'`).join(", ");
  */
 export interface CohortFilter {
   openedAtFrom: string | null;
+  /**
+   * Optional trailing window on the CLOSE date (YYYY-MM-DD, API-local like every other
+   * date in this file). Independent of `openedAtFrom`: cohort membership is decided by
+   * the entry, a trailing window by the exit, and the analytics view needs both at once
+   * ("the last 30 days of the v1.1 engine"). Undefined means no window at all.
+   */
+  closedOnOrAfter?: string | null;
 }
 
 export const ALL_TIME: CohortFilter = { openedAtFrom: null };
 
 /** SQL fragment plus its bound parameters, in the order they must be appended. */
 function cohortSql(cohort: CohortFilter): { clause: string; params: string[] } {
-  if (!cohort.openedAtFrom) return { clause: "", params: [] };
-  return { clause: " AND opened_at >= datetime(?)", params: [cohort.openedAtFrom] };
+  let clause = "";
+  const params: string[] = [];
+  if (cohort.openedAtFrom) {
+    clause += " AND opened_at >= datetime(?)";
+    params.push(cohort.openedAtFrom);
+  }
+  if (cohort.closedOnOrAfter) {
+    // Same 'localtime' bucketing as aggregateClosedTradesByDate, so a trailing window
+    // and the heatmap can never disagree about which day a close belongs to.
+    clause += " AND date(closed_at, 'localtime') >= ?";
+    params.push(cohort.closedOnOrAfter);
+  }
+  return { clause, params };
 }
 /* ------------------------------------------------------------------ */
 /* Positions                                                           */
@@ -443,6 +461,102 @@ export function aggregateClosedTradesByDate(
        ORDER BY date ASC`,
     )
     .all(...params, startDate, endDate) as DailyAggregateRow[];
+}
+
+/** One pool's realised contribution, for the analytics "top pool" figure. */
+export interface PoolPerformanceRow {
+  poolAddress: string;
+  pairName: string;
+  trades: number;
+  netPnlUsd: number;
+}
+
+/**
+ * Realised PnL grouped by pool, best first.
+ *
+ * Grouped by `pool_address`, not by `pair_name`: the upstream name is unreliable — a
+ * number of rows carry a broken label such as "-SOL" — so grouping by name would merge
+ * unrelated pools into one bogus row. The name is carried along for display only, and
+ * the caller is expected to fall back to the address when it is empty or malformed.
+ */
+export function getPoolPerformance(cohort: CohortFilter = ALL_TIME): PoolPerformanceRow[] {
+  const { clause, params } = cohortSql(cohort);
+  return db
+    .prepare(
+      `SELECT
+         pool_address AS poolAddress,
+         MAX(pair_name) AS pairName,
+         COUNT(*) AS trades,
+         COALESCE(SUM(realized_pnl_usd), 0) AS netPnlUsd
+       FROM simulated_positions
+       WHERE status IN (${CLOSED_LIST})${clause}
+       GROUP BY pool_address
+       ORDER BY netPnlUsd DESC`,
+    )
+    .all(...params) as PoolPerformanceRow[];
+}
+
+/** Realised PnL bucketed by close hour, for the analytics "peak trading hour" figure. */
+export interface HourlyPerformanceRow {
+  /** 00-23, in the API's timezone — the same 'localtime' bucketing as the day keys. */
+  hour: string;
+  trades: number;
+  netPnlUsd: number;
+}
+
+export function getHourlyPerformance(cohort: CohortFilter = ALL_TIME): HourlyPerformanceRow[] {
+  const { clause, params } = cohortSql(cohort);
+  return db
+    .prepare(
+      `SELECT
+         strftime('%H', closed_at, 'localtime') AS hour,
+         COUNT(*) AS trades,
+         COALESCE(SUM(realized_pnl_usd), 0) AS netPnlUsd
+       FROM simulated_positions
+       WHERE status IN (${CLOSED_LIST})${clause}
+       GROUP BY hour
+       ORDER BY netPnlUsd DESC`,
+    )
+    .all(...params) as HourlyPerformanceRow[];
+}
+
+/** One closed trade, reduced to what the analytics page needs to merge and recompute. */
+export interface ClosedTradeLogRow {
+  positionId: string;
+  poolAddress: string;
+  pairName: string | null;
+  openedAt: string;
+  closedAt: string;
+  realizedPnlUsd: number | null;
+}
+
+/**
+ * The closed-trade log, oldest close first.
+ *
+ * Lean on purpose: the analytics page merges this with a frozen archive and recomputes
+ * every figure client-side, so it needs identity, timing and PnL — not the forty other
+ * columns `getClosedPositions` carries for the position table.
+ *
+ * `position_id` is included because it is the only stable dedup key. Merging on
+ * (date, pnl) would silently drop two genuinely different trades that happened to
+ * close on the same day for the same amount.
+ */
+export function getClosedTradeLog(cohort: CohortFilter = ALL_TIME): ClosedTradeLogRow[] {
+  const { clause, params } = cohortSql(cohort);
+  return db
+    .prepare(
+      `SELECT
+         position_id      AS positionId,
+         pool_address     AS poolAddress,
+         pair_name        AS pairName,
+         opened_at        AS openedAt,
+         closed_at        AS closedAt,
+         realized_pnl_usd AS realizedPnlUsd
+       FROM simulated_positions
+       WHERE status IN (${CLOSED_LIST})${clause}
+       ORDER BY closed_at ASC, id ASC`,
+    )
+    .all(...params) as ClosedTradeLogRow[];
 }
 
 /* ------------------------------------------------------------------ */

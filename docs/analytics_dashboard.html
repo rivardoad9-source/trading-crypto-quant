@@ -32,6 +32,43 @@
   }
   .card:hover{ border-color:#2c2f34; }
   .cell{ border-radius:3px; outline:1px solid rgba(255,255,255,.035); outline-offset:-1px; }
+
+  /* Heatmap: two columns (weekday gutter, grid) x two rows (month labels, cells). */
+  .heat-wrap{
+    display:grid;
+    grid-template-columns:auto minmax(0,1fr);
+    grid-template-rows:auto auto;
+    column-gap:6px; row-gap:6px;
+    width:100%;
+  }
+  .heat-months{
+    display:grid;
+    grid-auto-flow:column;
+    grid-auto-columns:minmax(0,1fr);
+    gap:var(--cell-gap,3px);
+    font-size:10.5px; line-height:1;
+    color:#71717a;
+  }
+  .heat-months span{ overflow:hidden; white-space:nowrap; }
+  .heat-dows{
+    display:grid;
+    grid-template-rows:repeat(7,minmax(0,1fr));
+    gap:var(--cell-gap,3px);
+    font-size:10.5px;
+    color:#52525b;
+    text-align:right;
+    align-items:center;
+  }
+  .heat-grid{
+    display:grid;
+    grid-auto-flow:column;
+    grid-auto-columns:minmax(0,1fr);
+    grid-template-rows:repeat(7,minmax(0,1fr));
+    gap:var(--cell-gap,3px);
+    width:100%;
+  }
+  /* Square cells that shrink with the column width rather than overflowing it. */
+  .heat-grid > div{ aspect-ratio:1/1; width:100%; }
   .cell:hover{ outline:1px solid rgba(255,255,255,.45); }
   .tab-active{ background:#26282d; color:#fafafa; }
   ::-webkit-scrollbar{height:8px;width:8px}
@@ -57,15 +94,16 @@
     </div>
 
     <div class="flex flex-col items-start gap-2 sm:items-end">
-      <div class="inline-flex items-center gap-2 rounded-full border border-zinc-800 bg-zinc-900/60 px-3 py-1.5">
-        <span class="relative flex h-1.5 w-1.5">
-          <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60"></span>
-          <span class="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-400"></span>
-        </span>
-        <span class="text-[11.5px] font-medium text-zinc-400">DRY RUN · zero capital</span>
+      <div class="flex flex-wrap items-center gap-2">
+        <div class="inline-flex items-center gap-2 rounded-full border border-zinc-800 bg-zinc-900/60 px-3 py-1.5">
+          <span class="inline-flex h-1.5 w-1.5 rounded-full bg-zinc-500"></span>
+          <span class="text-[11.5px] font-medium text-zinc-400">DRY RUN · zero capital</span>
+        </div>
+        <!-- Filled by setStatus(). Distinguishes a live figure from a frozen one. -->
+        <div id="conn-status" class="inline-flex items-center gap-2 rounded-full border border-zinc-800 bg-zinc-900/60 px-3 py-1.5"></div>
       </div>
       <p class="font-mono text-[11px] text-zinc-600">
-        source: <span class="text-zinc-500">exports/trades.csv</span> · <span id="src-meta"></span>
+        source: <span id="src-label" class="text-zinc-500">…</span> · <span id="src-meta"></span>
       </p>
     </div>
   </header>
@@ -99,38 +137,38 @@
       <div class="flex items-center gap-2 text-[11px] text-zinc-500">
         <span>Loss</span>
         <div class="flex gap-[3px]">
-          <span class="cell h-[11px] w-[11px]" style="background:#f87171"></span>
-          <span class="cell h-[11px] w-[11px]" style="background:#dc2626"></span>
-          <span class="cell h-[11px] w-[11px]" style="background:#991b1b"></span>
+          <span class="cell inline-block h-[11px] w-[11px] shrink-0" style="background:#f87171"></span>
+          <span class="cell inline-block h-[11px] w-[11px] shrink-0" style="background:#dc2626"></span>
+          <span class="cell inline-block h-[11px] w-[11px] shrink-0" style="background:#991b1b"></span>
         </div>
-        <span class="cell h-[11px] w-[11px]" style="background:#1b1e24"></span>
+        <span class="cell inline-block h-[11px] w-[11px] shrink-0" style="background:#1b1e24"></span>
         <div class="flex gap-[3px]">
-          <span class="cell h-[11px] w-[11px]" style="background:#065f46"></span>
-          <span class="cell h-[11px] w-[11px]" style="background:#10b981"></span>
-          <span class="cell h-[11px] w-[11px]" style="background:#4ade80"></span>
+          <span class="cell inline-block h-[11px] w-[11px] shrink-0" style="background:#065f46"></span>
+          <span class="cell inline-block h-[11px] w-[11px] shrink-0" style="background:#10b981"></span>
+          <span class="cell inline-block h-[11px] w-[11px] shrink-0" style="background:#4ade80"></span>
         </div>
         <span>Profit</span>
       </div>
     </div>
 
-    <div class="overflow-x-auto pb-1">
-      <div class="inline-block min-w-full">
-        <div id="month-labels" class="relative mb-1.5 ml-[31px] h-[13px] text-[10.5px] text-zinc-500"></div>
-        <div class="flex gap-[3px]">
-          <div class="flex w-[28px] flex-col gap-[3px] pr-1 text-right text-[10.5px] leading-[13px] text-zinc-600">
-            <span>&nbsp;</span><span>Mon</span><span>&nbsp;</span><span>Wed</span><span>&nbsp;</span><span>Fri</span><span>&nbsp;</span>
-          </div>
-          <div id="heatmap" class="grid grid-flow-col gap-[3px]" style="grid-template-rows:repeat(7,13px)"></div>
-        </div>
+    <!-- Fills the available width instead of a fixed 13x13px block: the column count is
+         recomputed from the measured width, so the grid ends flush with the card edge
+         at any viewport and the cells stay square. -->
+    <div id="heat-wrap" class="heat-wrap">
+      <div></div>
+      <div id="month-labels" class="heat-months"></div>
+      <div class="heat-dows">
+        <span>&nbsp;</span><span>Mon</span><span>&nbsp;</span><span>Wed</span><span>&nbsp;</span><span>Fri</span><span>&nbsp;</span>
       </div>
+      <div id="heatmap" class="heat-grid"></div>
     </div>
 
     <div class="mt-4 flex flex-wrap items-center gap-x-5 gap-y-1.5 border-t border-zinc-800/70 pt-3.5 text-[11.5px] text-zinc-500">
-      <span class="inline-flex items-center gap-1.5"><span class="cell h-[9px] w-[9px]" style="background:#0d0e10"></span>Sebelum engine start</span>
-      <span class="inline-flex items-center gap-1.5"><span class="cell h-[9px] w-[9px]" style="background:#1b1e24"></span>Idle — tidak ada posisi ditutup</span>
-      <span class="inline-flex items-center gap-1.5"><span class="cell h-[9px] w-[9px]" style="background:#10b981"></span>Profit day</span>
-      <span class="inline-flex items-center gap-1.5"><span class="cell h-[9px] w-[9px]" style="background:#dc2626"></span>Loss day</span>
-      <span class="inline-flex items-center gap-1.5"><span class="cell h-[9px] w-[9px]" style="background:#3f4650"></span>Impas — net $0.00</span>
+      <span class="inline-flex items-center gap-1.5"><span class="cell inline-block h-[9px] w-[9px] shrink-0" style="background:#0d0e10"></span>Sebelum engine start</span>
+      <span class="inline-flex items-center gap-1.5"><span class="cell inline-block h-[9px] w-[9px] shrink-0" style="background:#1b1e24"></span>Idle — tidak ada posisi ditutup</span>
+      <span class="inline-flex items-center gap-1.5"><span class="cell inline-block h-[9px] w-[9px] shrink-0" style="background:#10b981"></span>Profit day</span>
+      <span class="inline-flex items-center gap-1.5"><span class="cell inline-block h-[9px] w-[9px] shrink-0" style="background:#dc2626"></span>Loss day</span>
+      <span class="inline-flex items-center gap-1.5"><span class="cell inline-block h-[9px] w-[9px] shrink-0" style="background:#3f4650"></span>Impas — net $0.00</span>
     </div>
   </section>
 
@@ -153,9 +191,10 @@
     <ul class="list-disc space-y-1.5 pl-4">
       <li><span class="text-zinc-400">Realised-only.</span> Equity bergerak saat posisi <em>ditutup</em>, bukan dari floating PnL — sama seperti <code class="font-mono text-zinc-400">computeMaxDrawdown</code>. Hari tanpa penutupan adalah 0.00% yang asli, bukan data hilang.</li>
       <li><span class="text-zinc-400">Sampel masih kecil.</span> <span id="caveat-span"></span> Statistik level-trade adalah bukti utama; rasio harian hanya indikatif.</li>
-      <li><span class="text-zinc-400">Tanggal memakai komponen UTC</span> dari <code class="font-mono text-zinc-400">closed_at</code>, supaya jam lokal tidak menggeser penutupan ke hari yang salah.</li>
+      <li><span class="text-zinc-400">Zona tanggal.</span> Saat live, hari dikelompokkan oleh engine dengan <code class="font-mono text-zinc-400">date(closed_at,'localtime')</code> — zona aktifnya dicetak di bawah judul heatmap, sama seperti <code class="font-mono text-zinc-400">/api/pnl-calendar</code>. Snapshot beku memakai UTC dan diberi label UTC.</li>
       <li><span class="text-zinc-400">Nama pool.</span> Field <code class="font-mono text-zinc-400">pair_name</code> dari upstream kadang rusak (mis. <code class="font-mono text-zinc-400">"-SOL"</code>); baris seperti itu dilabeli dengan potongan pool address, bukan ditebak.</li>
-      <li><span class="text-zinc-400">Sumbernya bukan <code class="font-mono">daily_pnl.csv</code>.</span> Angka diturunkan dari <code class="font-mono text-zinc-400">trades.csv</code> dan totalnya cocok persis dengan <code class="font-mono text-zinc-400">summary.json</code>. Tabel snapshot harian di DB memakai potongan waktu berbeda sehingga totalnya lebih rendah.</li>
+      <li><span class="text-zinc-400">Sumber data.</span> Pil status di kanan atas menyebut mana yang sedang tampil: <strong class="text-zinc-400">Live</strong> berarti angka datang dari <code class="font-mono text-zinc-400">GET /api/analytics/live</code> yang membaca <code class="font-mono text-zinc-400">flowmetrix.db</code> langsung; <strong class="text-amber-500/90">Snapshot</strong> berarti engine tidak terjangkau dan halaman jatuh ke export beku <code class="font-mono text-zinc-400">exports/trades.csv</code>. Angka snapshot tidak bergerak.</li>
+      <li><span class="text-zinc-400">Refresh.</span> Halaman melakukan polling tiap 60 detik, sejajar dengan siklus <code class="font-mono text-zinc-400">FAST_MONITOR</code> yang membukukan penutupan.</li>
     </ul>
   </footer>
 </div>
@@ -165,7 +204,7 @@
 
 <script>
 /* ------------------------------------------------------------------ *
- * Data — derived from exports/trades.csv (39 closed trades).
+ * Data — derived from exports/trades.csv (37 closed trades).
  * Each row: t = closed_at, p = realized_pnl_usd, pool = label, v = engine_version.
  *
  * Stored timestamps are UTC without a zone marker, so the trailing "Z" is added
@@ -173,47 +212,83 @@
  * day on any non-UTC box — the same trap parseDbTimestamp exists to avoid.
  * ------------------------------------------------------------------ */
 const TRADES = [
-  {"t": "2026-08-27T13:40:00Z", "p": 9.845631, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
-  {"t": "2026-08-27T17:50:00Z", "p": 9.935617, "pool": "-SOL", "v": "v1.0"},
-  {"t": "2026-08-27T18:00:00Z", "p": 5.350542, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
-  {"t": "2026-08-27T19:20:01Z", "p": -9.063948, "pool": "-SOL", "v": "v1.0"},
-  {"t": "2026-08-27T19:30:00Z", "p": -9.068871, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
-  {"t": "2026-08-27T19:50:01Z", "p": 11.793903, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
-  {"t": "2026-08-27T19:50:04Z", "p": 11.71, "pool": "-SOL", "v": "v1.0"},
-  {"t": "2026-08-27T21:50:00Z", "p": -10.684627, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
-  {"t": "2026-08-27T21:50:03Z", "p": -15.144074, "pool": "-SOL", "v": "v1.0"},
-  {"t": "2026-08-28T02:30:00Z", "p": -11.121834, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
-  {"t": "2026-08-28T02:30:03Z", "p": -11.860714, "pool": "-SOL", "v": "v1.0"},
-  {"t": "2026-08-28T04:10:01Z", "p": 5.38724, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
-  {"t": "2026-08-28T06:20:00Z", "p": 6.312218, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
-  {"t": "2026-08-28T19:40:00Z", "p": -14.696853, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
-  {"t": "2026-08-29T00:50:00Z", "p": 14.982229, "pool": "fone-SOL", "v": "v1.0"},
-  {"t": "2026-08-29T01:30:00Z", "p": 8.047353, "pool": "fone-SOL", "v": "v1.0"},
-  {"t": "2026-08-29T03:20:00Z", "p": 7.94016, "pool": "fone-SOL", "v": "v1.0"},
-  {"t": "2026-08-29T03:20:02Z", "p": 5.550063, "pool": "fone-SOL", "v": "v1.0"},
-  {"t": "2026-08-29T04:20:00Z", "p": -10.295146, "pool": "fone-SOL", "v": "v1.0"},
-  {"t": "2026-08-29T05:50:01Z", "p": -8.952888, "pool": "fone-SOL", "v": "v1.0"},
-  {"t": "2026-08-29T09:10:00Z", "p": 8.249413, "pool": "fone-USDC", "v": "v1.0"},
-  {"t": "2026-08-29T10:30:00Z", "p": -9.115586, "pool": "fone-SOL", "v": "v1.0"},
-  {"t": "2026-08-29T12:10:00Z", "p": -11.559318, "pool": "Pistacio-SOL", "v": "v1.0"},
-  {"t": "2026-08-29T12:20:00Z", "p": -8.997137, "pool": "fone-SOL", "v": "v1.0"},
-  {"t": "2026-08-29T13:30:00Z", "p": 10.015058, "pool": "fone-SOL", "v": "v1.0"},
-  {"t": "2026-08-29T13:40:00Z", "p": 6.709816, "pool": "fone-SOL", "v": "v1.0"},
-  {"t": "2026-08-29T14:50:00Z", "p": 5.394618, "pool": "Pistacio-SOL", "v": "v1.0"},
-  {"t": "2026-08-29T15:07:17Z", "p": 7.065966, "pool": "fone-SOL", "v": "v1.1"},
-  {"t": "2026-08-29T15:07:17Z", "p": 5.851585, "pool": "fone-SOL", "v": "v1.1"},
-  {"t": "2026-08-29T16:45:00Z", "p": 5.701928, "pool": "Pistacio-SOL", "v": "v1.1"},
-  {"t": "2026-08-29T18:20:00Z", "p": 7.617165, "pool": "fone-SOL", "v": "v1.1"},
-  {"t": "2026-08-29T20:14:00Z", "p": -8.672687, "pool": "fone-SOL", "v": "v1.1"},
-  {"t": "2026-08-30T01:14:00Z", "p": 5.306668, "pool": "Pistacio-SOL", "v": "v1.1"},
-  {"t": "2026-08-31T05:17:00Z", "p": 5.62864, "pool": "fone-USDC", "v": "v1.1"},
-  {"t": "2026-08-31T16:12:00Z", "p": 5.232607, "pool": "fone-USDC", "v": "v1.1"},
-  {"t": "2026-09-01T01:51:00Z", "p": 5.186293, "pool": "fone-USDC", "v": "v1.1"},
-  {"t": "2026-09-01T11:29:01Z", "p": 5.398871, "pool": "DOGE-1-SOL", "v": "v1.1"},
-  {"t": "2026-09-01T17:24:00Z", "p": 5.294115, "pool": "fone-SOL", "v": "v1.1"},
-  {"t": "2026-09-02T02:33:00Z", "p": 4.992399, "pool": "DOGE-1-SOL", "v": "v1.1"},
+  {"id": "baf4fb92-ebc2-46d2-8937-915441e0a100", "t": "2026-08-27T13:40:00Z", "p": 9.845631, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
+  {"id": "a3c4295d-f2f4-448d-86ae-398d928e69c6", "t": "2026-08-27T17:50:00Z", "p": 9.935617, "pool": "CMLq…BwZz", "v": "v1.0"},
+  {"id": "e2bc3efb-f6ee-4867-9015-d60802fb336a", "t": "2026-08-27T18:00:00Z", "p": 5.350542, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
+  {"id": "fe80654f-5e26-481d-924d-2b48d6f9a29e", "t": "2026-08-27T19:20:01Z", "p": -9.063948, "pool": "CMLq…BwZz", "v": "v1.0"},
+  {"id": "2fca5b9c-923a-42e1-8ef4-dedaa21b60e8", "t": "2026-08-27T19:30:00Z", "p": -9.068871, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
+  {"id": "63aeb4c0-75a3-4cac-9748-95a099168076", "t": "2026-08-27T19:50:01Z", "p": 11.793903, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
+  {"id": "e4bc571c-4cdf-4560-8a96-c4b79bddc08a", "t": "2026-08-27T19:50:04Z", "p": 11.71, "pool": "CMLq…BwZz", "v": "v1.0"},
+  {"id": "44c83363-be26-42c1-a189-4fc26ef700cb", "t": "2026-08-27T21:50:00Z", "p": -10.684627, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
+  {"id": "0dc11931-805a-4d19-b06a-889e36d1cec3", "t": "2026-08-27T21:50:03Z", "p": -15.144074, "pool": "CMLq…BwZz", "v": "v1.0"},
+  {"id": "b6969c8e-a5f0-4e2c-bf04-b1c0264cc2ba", "t": "2026-08-28T02:30:00Z", "p": -11.121834, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
+  {"id": "d231c290-3e10-447b-ad36-1d98d3881c5a", "t": "2026-08-28T02:30:03Z", "p": -11.860714, "pool": "CMLq…BwZz", "v": "v1.0"},
+  {"id": "8e89e6fe-e594-4a69-979b-d524af3cb596", "t": "2026-08-28T04:10:01Z", "p": 5.38724, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
+  {"id": "802dc067-e8c2-433a-ba34-a607fad2c98a", "t": "2026-08-28T06:20:00Z", "p": 6.312218, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
+  {"id": "f2253014-c933-43d8-af2f-2d7d3e7c38c8", "t": "2026-08-28T19:40:00Z", "p": -14.696853, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
+  {"id": "fc1c7435-55bb-409f-9f3d-822d39eb9ed4", "t": "2026-08-29T00:50:00Z", "p": 14.982229, "pool": "fone-SOL", "v": "v1.0"},
+  {"id": "e7b41831-d895-497f-8ad2-7958705706f2", "t": "2026-08-29T01:30:00Z", "p": 8.047353, "pool": "fone-SOL", "v": "v1.0"},
+  {"id": "8a3dc7a2-a4a1-45c0-a27c-3789e3a21db8", "t": "2026-08-29T03:20:00Z", "p": 7.94016, "pool": "fone-SOL", "v": "v1.0"},
+  {"id": "a8747976-89b2-451a-b63b-742b786b3ed8", "t": "2026-08-29T03:20:02Z", "p": 5.550063, "pool": "fone-SOL", "v": "v1.0"},
+  {"id": "becef76c-1e2e-4627-9b7b-8462f08d0bc1", "t": "2026-08-29T04:20:00Z", "p": -10.295146, "pool": "fone-SOL", "v": "v1.0"},
+  {"id": "3e5b9996-c0ab-4302-960f-4235232f7834", "t": "2026-08-29T05:50:01Z", "p": -8.952888, "pool": "fone-SOL", "v": "v1.0"},
+  {"id": "00615207-59b5-408b-a333-be946e3de168", "t": "2026-08-29T09:10:00Z", "p": 8.249413, "pool": "fone-USDC", "v": "v1.0"},
+  {"id": "87b72357-95e3-4fe3-9f4f-5dcc9b804b51", "t": "2026-08-29T10:30:00Z", "p": -9.115586, "pool": "fone-SOL", "v": "v1.0"},
+  {"id": "ce000dce-e091-418f-9853-ae901e61f54d", "t": "2026-08-29T12:10:00Z", "p": -11.559318, "pool": "Pistacio-SOL", "v": "v1.0"},
+  {"id": "8e3506e9-c9a6-4844-bfb4-c2b01dbdbda8", "t": "2026-08-29T12:20:00Z", "p": -8.997137, "pool": "fone-SOL", "v": "v1.0"},
+  {"id": "5fb3ea65-0297-4abe-8e45-6719f8f05c19", "t": "2026-08-29T13:30:00Z", "p": 10.015058, "pool": "fone-SOL", "v": "v1.0"},
+  {"id": "4e05b760-b842-4b3f-b583-66e327dd56ac", "t": "2026-08-29T13:40:00Z", "p": 6.709816, "pool": "fone-SOL", "v": "v1.0"},
+  {"id": "7458d8d5-7579-43f4-b92e-8e5bdaadfb25", "t": "2026-08-29T14:50:00Z", "p": 5.394618, "pool": "Pistacio-SOL", "v": "v1.0"},
+  {"id": "dd8326f5-1c21-40de-91be-fb3d4e0b8829", "t": "2026-08-29T15:07:17Z", "p": 7.065966, "pool": "fone-SOL", "v": "v1.1"},
+  {"id": "a8260168-0620-44f1-bcdd-7ee7c743b63a", "t": "2026-08-29T15:07:17Z", "p": 5.851585, "pool": "fone-SOL", "v": "v1.1"},
+  {"id": "100f2302-2c93-4790-a007-277896be6af3", "t": "2026-08-29T16:45:00Z", "p": 5.701928, "pool": "Pistacio-SOL", "v": "v1.1"},
+  {"id": "0c31e40f-0194-4cc9-b9b5-33d0808d5aad", "t": "2026-08-29T18:20:00Z", "p": 7.617165, "pool": "fone-SOL", "v": "v1.1"},
+  {"id": "763f8e3b-06c1-477e-80bc-11aa4a871e3f", "t": "2026-08-29T20:14:00Z", "p": -8.672687, "pool": "fone-SOL", "v": "v1.1"},
+  {"id": "66ad2a98-3f68-4dd5-a2ff-fe191ff08680", "t": "2026-08-30T01:14:00Z", "p": 5.306668, "pool": "Pistacio-SOL", "v": "v1.1"},
+  {"id": "4b1f68ce-f38a-4a13-9f94-18ea7cced1ae", "t": "2026-08-31T05:17:00Z", "p": 5.62864, "pool": "fone-USDC", "v": "v1.1"},
+  {"id": "fc95267b-021f-42d6-9662-e58bdb8ee1ce", "t": "2026-08-31T16:12:00Z", "p": 5.232607, "pool": "fone-USDC", "v": "v1.1"},
+  {"id": "c653a8bc-5616-4e75-a23d-1baf5702976b", "t": "2026-09-01T01:51:00Z", "p": 5.186293, "pool": "fone-USDC", "v": "v1.1"},
+  {"id": "d287ab44-f918-4ca3-8750-cff6e9b0c68e", "t": "2026-09-01T11:29:01Z", "p": 5.398871, "pool": "DOGE-1-SOL", "v": "v1.1"},
+  {"id": "4f884320-8504-4f71-a9dd-420427cc65f6", "t": "2026-09-01T17:24:00Z", "p": 5.294115, "pool": "fone-SOL", "v": "v1.1"},
+  {"id": "367fb3b3-f769-403e-bd08-ed55e9c6319c", "t": "2026-09-02T02:33:00Z", "p": 4.992399, "pool": "DOGE-1-SOL", "v": "v1.1"}
 ];
 const STARTING_BALANCE = 1000;
+/* ------------------------------------------------------------------ *
+ * Data sources: a frozen ARCHIVE merged with the LIVE engine log.
+ *
+ * The TRADES array above is the archive — the 37 closed trades exported from the
+ * engine, each carrying its `position_id`. The engine serves its own closed-trade
+ * log at GET /api/analytics/live. The page merges the two by position id, live
+ * winning on conflict, and then recomputes every figure from the merged list.
+ *
+ * Merging at TRADE level rather than at day level is what makes this safe. The two
+ * sources overlap: on the VPS the live log is a superset of the archive, so a
+ * day-level merge would double-count every shared day. Position ids dedupe exactly,
+ * and two different trades that happened to close on the same day for the same
+ * amount stay two trades.
+ *
+ * Recomputing locally is also what keeps the archive useful at all. The server's
+ * summary describes only what the server can see; the merged view is the union, so
+ * a machine whose database is a scratch copy still shows the full history instead
+ * of losing it.
+ *
+ * Where the API lives:
+ *  - ?api=http://host:port  wins, for pointing a local page at a remote engine
+ *  - otherwise same-origin when served over http(s) — what GET /analytics gives you
+ *  - otherwise http://localhost:4000, for a page opened from disk (file://), where
+ *    a relative fetch would resolve to file:///api/... and never leave the machine
+ * ------------------------------------------------------------------ */
+const API_BASE = (() => {
+  const asked = new URLSearchParams(location.search).get("api");
+  if (asked) return asked.replace(/\/$/, "");
+  if (location.protocol === "http:" || location.protocol === "https:") return "";
+  return "http://localhost:4000";
+})();
+
+const POLL_MS = 60_000;
+const REQUEST_TIMEOUT_MS = 8000;
+/** Trailing windows the tabs map onto, in days. `all` means the whole history. */
+const RANGE_DAYS = { all: null, "30d": 30, "7d": 7 };
 
 /* ---------- helpers ---------- */
 const MS_DAY = 86400000;
@@ -226,14 +301,27 @@ const prettyDate = key => {
   return MONTHS[m - 1] + " " + d + ", " + y;
 };
 const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+/** Midnight UTC of a YYYY-MM-DD key. Date-only, so no zone can shift it a day. */
+const keyMs = key => Date.parse(key + "T00:00:00Z");
 
-const parsed = TRADES.map(t => ({ ...t, ms: Date.parse(t.t) })).sort((a, b) => a.ms - b.ms);
-const ANCHOR = parsed.length ? parsed[parsed.length - 1].ms : Date.now();
-const FIRST = parsed.length ? parsed[0].ms : Date.now();
+/* ---------- the merged trade list ---------- */
+const archiveTrades = TRADES.map(t => ({ ...t, ms: Date.parse(t.t), src: "archive" }));
 
-/* Windows anchor to the LAST CLOSE in the dataset, not to the wall clock — an export
-   opened months later would otherwise render every narrow tab empty. */
-const windowStart = range => range === "all" ? -Infinity : ANCHOR - (range === "7d" ? 7 : 30) * MS_DAY;
+let liveTrades = [];
+let liveMeta = null;
+
+/**
+ * Archive ∪ live, deduped by position id, oldest close first.
+ *
+ * Live wins on a conflict: the database is authoritative, the export is a copy of it
+ * taken at some past moment.
+ */
+function mergedTrades() {
+  const byId = new Map();
+  for (const t of archiveTrades) byId.set(t.id, t);
+  for (const t of liveTrades) byId.set(t.id, t);
+  return [...byId.values()].sort((a, b) => a.ms - b.ms);
+}
 
 /** Max drawdown over the realised curve — the same walk as src/services/metrics.ts. */
 function maxDrawdown(pnls, start) {
@@ -248,21 +336,33 @@ function maxDrawdown(pnls, start) {
   return { pct: ddPct, usd: ddUsd };
 }
 
-function compute(range) {
-  const from = windowStart(range);
-  const rows = parsed.filter(t => t.ms >= from);
+/**
+ * Everything the page renders, computed from the merged list.
+ *
+ * Windows anchor to the LAST CLOSE in the merged data rather than to the wall clock,
+ * so a page opened long after the last trade still renders its narrow tabs instead of
+ * going blank.
+ */
+function buildView(range) {
+  const all = mergedTrades();
+  if (!all.length) return null;
+
+  const anchor = all[all.length - 1].ms;
+  const days = RANGE_DAYS[range];
+  const from = days === null ? -Infinity : anchor - (days - 1) * MS_DAY;
+  const rows = all.filter(t => t.ms >= from);
   if (!rows.length) return null;
 
   const pnls = rows.map(t => t.p);
   const wins = pnls.filter(p => p > 0);
   const losses = pnls.filter(p => p <= 0);
 
-  const days = new Map();
+  const dayMap = new Map();
   for (const t of rows) {
     const k = dayKey(new Date(t.ms));
-    const cur = days.get(k) || { pnl: 0, n: 0 };
+    const cur = dayMap.get(k) || { pnl: 0, n: 0 };
     cur.pnl += t.p; cur.n += 1;
-    days.set(k, cur);
+    dayMap.set(k, cur);
   }
 
   let streak = 0;
@@ -273,7 +373,7 @@ function compute(range) {
     const h = new Date(t.ms).getUTCHours();
     byHour.set(h, (byHour.get(h) || 0) + t.p);
   }
-  const peakHour = [...byHour.entries()].sort((a, b) => b[1] - a[1])[0];
+  const peak = [...byHour.entries()].sort((a, b) => b[1] - a[1])[0];
 
   const byPool = new Map();
   for (const t of rows) {
@@ -281,30 +381,37 @@ function compute(range) {
     cur.pnl += t.p; cur.n += 1;
     byPool.set(t.pool, cur);
   }
-  const topPool = [...byPool.entries()].sort((a, b) => b[1].pnl - a[1].pnl)[0];
+  const top = [...byPool.entries()].sort((a, b) => b[1].pnl - a[1].pnl)[0];
 
   const net = pnls.reduce((a, b) => a + b, 0);
   const grossWin = wins.reduce((a, b) => a + b, 0);
   const grossLoss = Math.abs(losses.reduce((a, b) => a + b, 0));
 
   return {
-    rows, days,
+    rows,
     trades: rows.length,
     wins: wins.length,
     losses: losses.length,
     winRate: (wins.length / rows.length) * 100,
     net,
     netPct: (net / STARTING_BALANCE) * 100,
-    activeDays: days.size,
+    activeDays: dayMap.size,
     streak,
     dd: maxDrawdown(pnls, STARTING_BALANCE),
-    peakHour: peakHour[0],
-    peakHourPnl: peakHour[1],
-    topPool: topPool[0],
-    topPoolPnl: topPool[1].pnl,
-    topPoolTrades: topPool[1].n,
+    peakHour: peak[0],
+    peakHourPnl: peak[1],
+    topPool: top[0],
+    topPoolPnl: top[1].pnl,
+    topPoolTrades: top[1].n,
+    avgWin: wins.length ? grossWin / wins.length : null,
+    avgLoss: losses.length ? -grossLoss / losses.length : null,
     // Undefined metrics stay null — Infinity would render as a real measurement.
-    profitFactor: grossLoss > 0 ? grossWin / grossLoss : null
+    profitFactor: grossLoss > 0 ? grossWin / grossLoss : null,
+    days: dayMap,
+    anchorMs: anchor,
+    firstMs: all[0].ms,
+    archiveCount: rows.filter(t => t.src === "archive").length,
+    liveCount: rows.filter(t => t.src === "live").length,
   };
 }
 
@@ -318,30 +425,65 @@ function card(label, value, sub, tone) {
     + '</div>';
 }
 
-function renderCards(s) {
-  const pf = s.profitFactor === null
+function skeletonCards() {
+  const one = '<div class="card rounded-xl p-4">'
+    + '<div class="mb-3 h-[9px] w-24 animate-pulse rounded bg-zinc-800"></div>'
+    + '<div class="h-[22px] w-20 animate-pulse rounded bg-zinc-800"></div>'
+    + '<div class="mt-3 h-[9px] w-32 animate-pulse rounded bg-zinc-800/70"></div>'
+    + '</div>';
+  document.getElementById("metric-grid").innerHTML = one.repeat(8);
+}
+
+function renderCards(v) {
+  const pf = v.profitFactor === null
     ? "profit factor: n/a (belum ada loss)"
-    : "profit factor " + s.profitFactor.toFixed(2);
-  const signedPct = (s.netPct >= 0 ? "+" : "−") + Math.abs(s.netPct).toFixed(2) + "%";
+    : "profit factor " + v.profitFactor.toFixed(2);
+  const signedPct = (v.netPct >= 0 ? "+" : "−") + Math.abs(v.netPct).toFixed(2) + "%";
 
   document.getElementById("metric-grid").innerHTML = [
-    card("Total Trades", s.trades, s.wins + " menang · " + s.losses + " kalah", "neutral"),
-    card("Win Rate", s.winRate.toFixed(1) + "%", s.wins + " dari " + s.trades + " · " + pf, s.winRate >= 50 ? "pos" : "neg"),
-    card("Net Realized PnL", usd(s.net), signedPct + " dari modal $" + STARTING_BALANCE.toLocaleString("en-US"), s.net >= 0 ? "pos" : "neg"),
-    card("Active Days", s.activeDays, "hari dengan minimal 1 posisi ditutup", "neutral"),
-    card("Current Win Streak", s.streak, s.streak ? "penutupan profit beruntun terakhir" : "penutupan terakhir merugi", s.streak > 0 ? "pos" : "neutral"),
-    card("Max Drawdown", "−" + s.dd.pct.toFixed(2) + "%", "−" + usdPlain(s.dd.usd) + " puncak ke lembah (realised)", s.dd.pct > 0 ? "neg" : "neutral"),
-    card("Peak Trading Hour", String(s.peakHour).padStart(2, "0") + ":00 UTC", usd(s.peakHourPnl) + " dibukukan pada jam ini", s.peakHourPnl >= 0 ? "pos" : "neg"),
-    card("Top Pool", s.topPool, usd(s.topPoolPnl) + " dari " + s.topPoolTrades + " trades", s.topPoolPnl >= 0 ? "pos" : "neg")
+    card("Total Trades", v.trades, v.wins + " menang · " + v.losses + " kalah", "neutral"),
+    card("Win Rate", v.winRate.toFixed(1) + "%", v.wins + " dari " + v.trades + " · " + pf, v.winRate >= 50 ? "pos" : "neg"),
+    card("Net Realized PnL", usd(v.net), signedPct + " dari modal $" + STARTING_BALANCE.toLocaleString("en-US"), v.net >= 0 ? "pos" : "neg"),
+    card("Active Days", v.activeDays, "hari dengan minimal 1 posisi ditutup", "neutral"),
+    card("Current Win Streak", v.streak, v.streak ? "penutupan profit beruntun terakhir" : "penutupan terakhir merugi", v.streak > 0 ? "pos" : "neutral"),
+    card("Max Drawdown", "−" + v.dd.pct.toFixed(2) + "%", "−" + usdPlain(v.dd.usd) + " puncak ke lembah (realised)", v.dd.pct > 0 ? "neg" : "neutral"),
+    card("Peak Trading Hour", String(v.peakHour).padStart(2, "0") + ":00 UTC", usd(v.peakHourPnl) + " dibukukan pada jam ini", v.peakHourPnl >= 0 ? "pos" : "neg"),
+    card("Top Pool", v.topPool, usd(v.topPoolPnl) + " dari " + v.topPoolTrades + " trades", v.topPoolPnl >= 0 ? "pos" : "neg"),
   ].join("");
 }
 
 /* ---------- heatmap ---------- */
-const WEEKS = 13;
 const GREEN = ["#064e3b", "#047857", "#10b981", "#4ade80"];
 const RED = ["#7f1d1d", "#b91c1c", "#ef4444", "#f87171"];
 /** Traded, but netted exactly $0.00 — neither a profit nor a loss day. */
 const FLAT = "#3f4650";
+
+/** Cell geometry the column count is solved against. */
+const CELL_MAX = 17;
+const CELL_GAP = 3;
+const MIN_WEEKS = 8;
+/** One year of columns. Past this the grid is capped in width instead. */
+const MAX_WEEKS = 53;
+
+/**
+ * How many week-columns to draw for the measured width.
+ *
+ * The grid used to be a fixed 13 columns of 13px, which is why it never lined up with
+ * the card: short of the edge on a desktop, overflowing on a phone. Solving for the
+ * column count instead keeps the cells square and ends the grid flush with the
+ * container.
+ *
+ * The count is the fewest columns that keep a cell at or under CELL_MAX, so cells stay
+ * a sensible size rather than ballooning on a wide screen.
+ */
+function weeksThatFit(widthPx) {
+  if (!widthPx || widthPx <= 0) return 26;
+  const needed = Math.ceil((widthPx + CELL_GAP) / (CELL_MAX + CELL_GAP));
+  return Math.max(MIN_WEEKS, Math.min(MAX_WEEKS, needed));
+}
+
+/** Width at which `weeks` columns render exactly at CELL_MAX. */
+const gridCapPx = weeks => weeks * (CELL_MAX + CELL_GAP) - CELL_GAP;
 
 function level(pnl, maxAbs) {
   const r = Math.min(Math.abs(pnl) / maxAbs, 1);
@@ -351,58 +493,61 @@ function level(pnl, maxAbs) {
   return 4;
 }
 
-function renderHeatmap(s, range) {
+function renderHeatmap(v, range) {
   const grid = document.getElementById("heatmap");
   const labels = document.getElementById("month-labels");
   grid.innerHTML = "";
   labels.innerHTML = "";
 
+  const avail = grid.clientWidth || grid.parentElement?.clientWidth || 0;
+  const weeks = weeksThatFit(avail);
+  // Beyond a year of columns the grid stops widening rather than stretching cells into
+  // large squares; it stays left-aligned in the card.
+  const cap = gridCapPx(weeks) + "px";
+  grid.style.maxWidth = cap;
+  labels.style.maxWidth = cap;
+
   // End on the Saturday of the anchor week so the final column is complete.
-  const end = new Date(ANCHOR);
+  const end = new Date(v.anchorMs);
   end.setUTCHours(0, 0, 0, 0);
   end.setUTCDate(end.getUTCDate() + (6 - end.getUTCDay()));
-  const start = new Date(end.getTime() - (WEEKS * 7 - 1) * MS_DAY);
+  const start = new Date(end.getTime() - (weeks * 7 - 1) * MS_DAY);
 
-  const magnitudes = [...s.days.values()].map(d => Math.abs(d.pnl));
-  const maxAbs = Math.max(...magnitudes, 1);
-  const from = windowStart(range);
+  const maxAbs = Math.max(...[...v.days.values()].map(d => Math.abs(d.pnl)), 1);
+  const windowDays = RANGE_DAYS[range];
+  const from = windowDays === null ? -Infinity : v.anchorMs - (windowDays - 1) * MS_DAY;
 
+  // Month labels share the grid's column track, so they stay aligned as it resizes.
   let lastMonth = -1;
-  for (let i = 0; i < WEEKS * 7; i++) {
+  for (let col = 0; col < weeks; col++) {
+    const midweek = new Date(start.getTime() + (col * 7 + 3) * MS_DAY);
+    const m = midweek.getUTCMonth();
+    const span = document.createElement("span");
+    // Label a column by the month at its MIDPOINT, so the column is named after the
+    // month that owns most of it. Keying off the Sunday dropped the final month
+    // whenever the last column started in the previous one.
+    span.textContent = m === lastMonth ? "" : MONTHS[m];
+    if (m !== lastMonth) lastMonth = m;
+    labels.appendChild(span);
+  }
+
+  for (let i = 0; i < weeks * 7; i++) {
+    // Column-major fill, so index i walks down a week before moving to the next.
     const d = new Date(start.getTime() + i * MS_DAY);
     const key = dayKey(d);
-    const col = Math.floor(i / 7);
-
-    if (i % 7 === 0) {
-      // Label a column by the month at its MIDPOINT (Wednesday), so the column is
-      // named after the month that owns most of it. Keying off the Sunday instead
-      // dropped the final month whenever the last column started in the previous
-      // one — with data ending Sep 1 in a week beginning Aug 30, "Sep" never
-      // appeared at all.
-      const m = new Date(d.getTime() + 3 * MS_DAY).getUTCMonth();
-      if (m !== lastMonth) {
-        const el = document.createElement("span");
-        el.className = "absolute";
-        el.style.left = (col * 16) + "px";
-        el.textContent = MONTHS[m];
-        labels.appendChild(el);
-        lastMonth = m;
-      }
-    }
 
     const cell = document.createElement("div");
-    cell.className = "cell h-[13px] w-[13px] transition-colors";
+    cell.className = "cell transition-colors";
 
-    const rec = s.days.get(key);
-    const dayStart = Date.parse(key + "T00:00:00Z");
+    const rec = v.days.get(key);
+    const dayStart = keyMs(key);
     const inWindow = dayStart + MS_DAY > from;
-    const beforeEngine = dayStart < Date.parse(dayKey(new Date(FIRST)) + "T00:00:00Z");
-    const afterData = dayStart > ANCHOR;
+    const beforeEngine = dayStart < v.firstMs;
+    const afterData = dayStart > v.anchorMs;
 
     let tip;
     if (rec && inWindow) {
-      // A day that traded and netted exactly $0.00 is flat, not a profit day. Testing
-      // `pnl >= 0` would paint it green and overstate the win count by eye.
+      // A day that traded and netted exactly $0.00 is flat, not a profit day.
       const flat = Math.abs(rec.pnl) < 0.005;
       const trades = rec.n + " trade" + (rec.n === 1 ? "" : "s") + " ditutup";
 
@@ -419,7 +564,7 @@ function renderHeatmap(s, range) {
       }
     } else if (beforeEngine || afterData || !inWindow) {
       cell.style.background = "#0d0e10";
-      const why = beforeEngine ? "sebelum engine mulai" : afterData ? "di luar data export" : "di luar rentang filter";
+      const why = beforeEngine ? "sebelum engine mulai" : afterData ? "belum terjadi" : "di luar rentang filter";
       tip = '<div class="font-medium text-zinc-100">' + prettyDate(key) + '</div>'
         + '<div class="mt-1 text-[11.5px] text-zinc-500">Tidak ada data — ' + why + "</div>";
     } else {
@@ -432,11 +577,11 @@ function renderHeatmap(s, range) {
     grid.appendChild(cell);
   }
 
-  const span = Math.round((ANCHOR - FIRST) / MS_DAY) + 1;
+  const span = Math.round((v.anchorMs - v.firstMs) / MS_DAY) + 1;
   document.getElementById("heatmap-sub").textContent =
-    s.trades + " trades ditutup dalam " + s.activeDays + " hari aktif · rentang data "
-    + prettyDate(dayKey(new Date(FIRST))) + " → " + prettyDate(dayKey(new Date(ANCHOR)))
-    + " (" + span + " hari)";
+    v.trades + " trades ditutup dalam " + v.activeDays + " hari aktif · rentang data "
+    + prettyDate(dayKey(new Date(v.firstMs))) + " → " + prettyDate(dayKey(new Date(v.anchorMs)))
+    + " (" + span + " hari, kunci tanggal UTC)";
 }
 
 /* ---------- tooltip ---------- */
@@ -477,19 +622,15 @@ document.addEventListener("mouseout", e => {
 });
 
 /* ---------- insights ----------
- * Every line is derived from the repo or from the trade log — none are invented.
+ * Every line is derived from the repo or from the data on screen — none invented.
  */
-function buildFacts(s) {
+function buildFacts(v) {
   const sum = a => a.reduce((x, t) => x + t.p, 0);
-  const v10 = parsed.filter(t => t.v === "v1.0");
-  const v11 = parsed.filter(t => t.v === "v1.1");
-  const byDay = [...s.days.entries()];
+  const v10 = v.rows.filter(t => t.v === "v1.0");
+  const v11 = v.rows.filter(t => t.v === "v1.1");
+  const byDay = [...v.days.entries()];
   const best = byDay.slice().sort((a, b) => b[1].pnl - a[1].pnl)[0];
   const worst = byDay.slice().sort((a, b) => a[1].pnl - b[1].pnl)[0];
-  const wins = s.rows.filter(t => t.p > 0).map(t => t.p);
-  const losses = s.rows.filter(t => t.p <= 0).map(t => t.p);
-  const avgWin = wins.length ? wins.reduce((a, b) => a + b, 0) / wins.length : 0;
-  const avgLoss = losses.length ? losses.reduce((a, b) => a + b, 0) / losses.length : 0;
 
   const facts = [
     {
@@ -501,12 +642,8 @@ function buildFacts(s) {
       s: "REASONER_MAX_TOKENS = 16000, dikunci — src/services/deepseek.ts"
     },
     {
-      t: 'Guardrail v1.1 mengubah bentuk hasil: <strong class="text-zinc-100">v1.0 ' + v10.length + " trades → " + usd(sum(v10)) + '</strong> lawan <strong class="text-emerald-400">v1.1 ' + v11.length + " trades → " + usd(sum(v11)) + "</strong>. Sampel v1.1 baru " + v11.length + " trade, jadi ini arah, belum bukti.",
-      s: "kolom engine_version pada exports/trades.csv · cutoff 2026-08-29T13:20:40Z"
-    },
-    {
-      t: 'Rata-rata menang <strong class="text-emerald-400">' + usd(avgWin) + '</strong> lawan rata-rata kalah <strong class="text-red-400">' + usd(avgLoss) + '</strong> — payoff di bawah 1. Yang menahan hasil tetap positif adalah <strong class="text-zinc-100">win rate ' + s.winRate.toFixed(1) + "%</strong>, bukan besarnya kemenangan.",
-      s: "TAKE_PROFIT_PCT / STOP_LOSS_PCT sudah disweep dan sengaja tidak diubah — CLAUDE.md"
+      t: 'Guardrail V1.1 adalah satu-satunya konfigurasi yang dijalankan engine: cooldown <strong class="text-zinc-100">4 jam</strong>, lockout <strong class="text-zinc-100">2× gagal → 24 jam</strong>, gate breakeven menuntut fee menutup <strong class="text-zinc-100">2,5×</strong> ongkos bolak-balik.',
+      s: "dikunci oleh src/tests/v11Baseline.test.ts"
     },
     {
       t: 'Stop-loss menembus levelnya. Dipatok −8% tapi realisasinya kerap lebih dalam karena harga bergerak di antara dua tick monitor — itu granularitas 60 detik, <strong class="text-zinc-100">bukan lantai yang dijamin</strong>.',
@@ -514,10 +651,24 @@ function buildFacts(s) {
     }
   ];
 
+  if (v.avgWin !== null && v.avgLoss !== null) {
+    facts.push({
+      t: 'Rata-rata menang <strong class="text-emerald-400">' + usd(v.avgWin) + '</strong> lawan rata-rata kalah <strong class="text-red-400">' + usd(v.avgLoss) + '</strong> — payoff di bawah 1. Yang menahan hasil tetap positif adalah <strong class="text-zinc-100">win rate ' + v.winRate.toFixed(1) + "%</strong>, bukan besarnya kemenangan.",
+      s: "TAKE_PROFIT_PCT / STOP_LOSS_PCT sudah disweep dan sengaja tidak diubah — CLAUDE.md"
+    });
+  }
+
+  if (v10.length && v11.length) {
+    facts.push({
+      t: 'Guardrail V1.1 mengubah bentuk hasil: <strong class="text-zinc-100">v1.0 ' + v10.length + " trades → " + usd(sum(v10)) + '</strong> lawan <strong class="text-emerald-400">v1.1 ' + v11.length + " trades → " + usd(sum(v11)) + "</strong>. Sampel v1.1 baru " + v11.length + " trade, jadi ini arah, belum bukti.",
+      s: "opened_at vs ENGINE_V11_CUTOFF (2026-08-29T13:20:40Z)"
+    });
+  }
+
   if (best && worst && best[0] !== worst[0]) {
-    facts.splice(3, 0, {
-      t: 'Hari terbaik <strong class="text-emerald-400">' + prettyDate(best[0]) + " (" + usd(best[1].pnl) + ", " + best[1].n + ' closes)</strong> lebih besar dari hari terburuk <strong class="text-red-400">' + prettyDate(worst[0]) + " (" + usd(worst[1].pnl) + ", " + worst[1].n + " closes)</strong> — seluruh net profit ditentukan oleh satu hari itu.",
-      s: "diturunkan dari closed_at (UTC) pada exports/trades.csv"
+    facts.push({
+      t: 'Hari terbaik <strong class="text-emerald-400">' + prettyDate(best[0]) + " (" + usd(best[1].pnl) + ", " + best[1].n + ' closes)</strong> lawan hari terburuk <strong class="text-red-400">' + prettyDate(worst[0]) + " (" + usd(worst[1].pnl) + ", " + worst[1].n + " closes)</strong> — sebagian besar net ditentukan oleh sedikit hari.",
+      s: "dihitung dari data yang sedang tampil"
     });
   }
   return facts;
@@ -542,24 +693,64 @@ document.getElementById("fact-next").addEventListener("click", () => {
   cycleFacts();
 });
 
-/* ---------- render ---------- */
-function render(range) {
-  const s = compute(range);
-  if (!s) return;
+/* ---------- connection status ---------- */
+const statusEl = document.getElementById("conn-status");
 
-  renderCards(s);
-  renderHeatmap(s, range);
+/**
+ * The status pill is load-bearing, not decoration: it is the only thing separating a
+ * figure the engine just produced from one frozen in an export. "Archive only" must
+ * stay visibly different from "Live", or a stale number reads as current.
+ */
+function setStatus(state, detail) {
+  const map = {
+    loading: ["bg-sky-400", "text-zinc-400", "Live syncing…"],
+    live: ["bg-emerald-400", "text-zinc-400", "Live"],
+    archive: ["bg-amber-400", "text-amber-400/90", "Arsip — engine tak terjangkau"],
+  };
+  const [dot, text, label] = map[state];
+  statusEl.innerHTML =
+    '<span class="relative flex h-1.5 w-1.5">'
+    + (state === "loading" ? '<span class="absolute inline-flex h-full w-full animate-ping rounded-full ' + dot + ' opacity-60"></span>' : "")
+    + '<span class="relative inline-flex h-1.5 w-1.5 rounded-full ' + dot + '"></span></span>'
+    + '<span class="text-[11.5px] font-medium ' + text + '">' + esc(label) + (detail ? " · " + esc(detail) : "") + "</span>";
+}
 
-  facts = buildFacts(s);
+/* ---------- fetch + render ---------- */
+let currentRange = "all";
+let pollTimer = null;
+let firstPaintDone = false;
+
+async function fetchLive() {
+  // Always the whole cohort: the merge and every window are computed here, from the
+  // union. Asking the server for a window would hide archived trades outside it.
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    const res = await fetch(API_BASE + "/api/analytics/live?cohort=all", {
+      signal: ctrl.signal,
+      headers: { accept: "application/json" },
+    });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    return await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function paint(range) {
+  const v = buildView(range);
+  if (!v) return;
+
+  renderCards(v);
+  renderHeatmap(v, range);
+  facts = buildFacts(v);
   factIdx = 0;
   showFact(0);
   cycleFacts();
 
-  // The whole trade history is shorter than 30 days, so a narrower tab can return the
-  // identical set. Saying so plainly beats three tabs that look broken.
-  const spanDays = Math.round((ANCHOR - FIRST) / MS_DAY) + 1;
+  const spanDays = Math.round((v.anchorMs - v.firstMs) / MS_DAY) + 1;
   const note = document.getElementById("window-note");
-  if (range !== "all" && s.trades === parsed.length) {
+  if (range !== "all" && v.trades === mergedTrades().length) {
     note.textContent = "riwayat baru " + spanDays + " hari — filter ini memuat semua trade";
     note.classList.remove("hidden");
   } else {
@@ -570,9 +761,52 @@ function render(range) {
   }
 
   document.getElementById("caveat-span").textContent =
-    parsed.length + " trades dalam " + spanDays + " hari kalender (" + s.activeDays + " hari aktif).";
+    v.trades + " trades dalam " + spanDays + " hari kalender (" + v.activeDays + " hari aktif).";
+
+  // Always say what the mix is. "40 trades" means nothing without knowing how many
+  // came from a live database and how many from a frozen file.
   document.getElementById("src-meta").textContent =
-    parsed.length + " closed trades · last close " + dayKey(new Date(ANCHOR));
+    v.archiveCount + " arsip + " + v.liveCount + " live = " + v.trades + " closed trades";
+  document.getElementById("src-label").textContent = liveMeta
+    ? "exports/trades.csv + GET /api/analytics/live"
+    : "exports/trades.csv (arsip beku)";
+
+  firstPaintDone = true;
+}
+
+async function refresh(range, { silent = false } = {}) {
+  currentRange = range;
+  if (!firstPaintDone) skeletonCards();
+  if (!silent) setStatus("loading");
+
+  try {
+    const payload = await fetchLive();
+    liveTrades = (payload.trades ?? []).map(t => ({
+      id: t.id,
+      t: t.closedAt,
+      ms: Date.parse(t.closedAt),
+      p: t.pnl,
+      pool: t.pool,
+      v: t.engineVersion,
+      src: "live",
+    }));
+    liveMeta = payload;
+    paint(range);
+    setStatus("live", "diperbarui " + new Date().toLocaleTimeString());
+  } catch (err) {
+    // Graceful fallback: the archive alone still renders a complete page. Never leave
+    // the UI blank because an upstream is down.
+    liveTrades = [];
+    liveMeta = null;
+    paint(range);
+    setStatus("archive", String(err && err.message ? err.message : err));
+  }
+}
+
+function startPolling() {
+  clearInterval(pollTimer);
+  // Silent refreshes: the pill updates, the layout does not flicker back to skeletons.
+  pollTimer = setInterval(() => refresh(currentRange, { silent: true }), POLL_MS);
 }
 
 document.querySelectorAll(".range-tab").forEach(btn => {
@@ -583,11 +817,23 @@ document.querySelectorAll(".range-tab").forEach(btn => {
     });
     btn.classList.add("tab-active");
     btn.setAttribute("aria-selected", "true");
-    render(btn.dataset.range);
+    paint(btn.dataset.range);
+    currentRange = btn.dataset.range;
   });
 });
 
-render("all");
+// The column count is solved from the measured width, so a resize has to re-render.
+let resizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { if (firstPaintDone) paint(currentRange); }, 150);
+});
+
+setStatus("loading");
+skeletonCards();
+refresh("all");
+startPolling();
+
 </script>
 </body>
 </html>
