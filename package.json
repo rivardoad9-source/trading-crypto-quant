@@ -24,6 +24,8 @@
     "seed:demo": "node --import tsx src/scripts/seedDemo.ts",
     "backtest": "node --import tsx src/backtest/runBacktest.ts",
     "backtest:micro": "node --import tsx src/backtest/runMicroCapital.ts",
+    "backtest:annual": "node --import tsx src/backtest/runAnnual.ts",
+    "report:quant": "python scripts/generate_quant_report.py",
     "test:local": "node --import tsx scripts/test-local.ts",
     "audit:report": "node --import tsx scripts/generate-audit-report.ts",
     "sweep": "node --import tsx src/scripts/sweepGuardrails.ts",

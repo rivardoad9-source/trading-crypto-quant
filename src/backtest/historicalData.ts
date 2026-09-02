@@ -14,8 +14,40 @@ import { buildPointInTimeUniverse, type UniversePool } from "./universe.js";
  * are dead today. See BACKTEST_CAVEATS for what is measured and what is modelled.
  */
 
-const GECKO_BASE = "https://api.geckoterminal.com/api/v2";
+const GECKO_FREE_BASE = "https://api.geckoterminal.com/api/v2";
+/**
+ * CoinGecko Pro fronts the same GeckoTerminal data under /onchain, and is the only
+ * way to read OHLCV older than the free tier's window. Read straight from
+ * `process.env` rather than the Zod schema, the same way FRED_API_KEY is, so it stays
+ * genuinely optional and its absence is never a boot failure.
+ *
+ * NOTE: this path has not been exercised in this repository — no key is configured.
+ * It is the documented request shape, not a verified one. The keyless path below is
+ * the one every existing result was produced with and is unchanged.
+ */
+const GECKO_PRO_BASE = "https://pro-api.coingecko.com/api/v3/onchain";
 const NETWORK = "solana";
+
+const proApiKey = (): string | null => {
+  const key = process.env.COINGECKO_PRO_API_KEY?.trim();
+  return key ? key : null;
+};
+
+const geckoBase = (): string => (proApiKey() ? GECKO_PRO_BASE : GECKO_FREE_BASE);
+
+/**
+ * How far back hourly OHLCV is actually available.
+ *
+ * MEASURED against the live free endpoint on 2026-09-01: paginating back yields
+ * about 4,996 hourly bars per pool (~208 days, reaching early February 2026) and
+ * every deeper `before_timestamp` answers HTTP 401 — the upstream's "this range needs
+ * a paid plan" response, not an auth fault, since the same request without
+ * `before_timestamp` succeeds. Daily aggregation is capped at the same depth, so
+ * switching timeframe does not buy history. A window longer than this cannot be
+ * simulated without a paid key, and the runner must say so rather than quietly
+ * returning a shorter series.
+ */
+export const FREE_TIER_HISTORY_DAYS = 208;
 
 /** Wrapped SOL / USDC — used as the SOL/USD reference series. */
 export const SOL_USDC_POOL = "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6";
@@ -111,7 +143,38 @@ const MAX_RATE_LIMIT_RETRIES = 3;
 
 let lastRequestAt = 0;
 
+/**
+ * Thrown when upstream refuses a page because it lies outside the plan's historical
+ * window. Distinct from a transport failure: the caller keeps the bars it already has
+ * and stops paginating, instead of losing the pool.
+ */
+export class HistoryDepthLimitError extends Error {
+  constructor(url: string, status: number) {
+    super(`[backtest] history depth limit (HTTP ${status}) at ${url}`);
+    this.name = "HistoryDepthLimitError";
+  }
+}
+
+/**
+ * Pulls the HTTP status out of a `getJson` failure message.
+ *
+ * `getJson` formats failures as `[http] GET <url> failed: <status> <message>`, and the
+ * URL is part of that string. A `before_timestamp` is a ten-digit epoch that routinely
+ * contains "401", "403" or "429" as a substring, so classifying by `message.includes()`
+ * misreads an ordinary rate-limit as a plan boundary and silently truncates that pool's
+ * history. Anchoring to the position the status is actually written in is the fix.
+ *
+ * Returns null for a transport failure, which carries no status and is neither case.
+ */
+export function parseHttpStatus(message: string): number | null {
+  const match = /\sfailed:\s(\d{3})(?:\s|$)/.exec(message);
+  return match ? Number(match[1]) : null;
+}
+
 async function geckoGet<T>(url: string): Promise<T> {
+  const key = proApiKey();
+  const config = key ? { headers: { "x-cg-pro-api-key": key } } : undefined;
+
   for (let attempt = 0; attempt <= MAX_RATE_LIMIT_RETRIES; attempt++) {
     const waitFor = MIN_REQUEST_INTERVAL_MS - (Date.now() - lastRequestAt);
     if (waitFor > 0) await sleep(waitFor);
@@ -119,10 +182,24 @@ async function geckoGet<T>(url: string): Promise<T> {
     lastRequestAt = Date.now();
 
     try {
-      return await getJson<T>(url);
+      return await getJson<T>(url, config);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (!message.includes("429") || attempt === MAX_RATE_LIMIT_RETRIES) throw err;
+
+      const status = parseHttpStatus(message);
+
+      /*
+       * 401/403 on an OHLCV page is upstream saying "that range is not on your plan",
+       * not "your credentials are wrong" — the identical request without
+       * `before_timestamp` succeeds. Classifying it so the caller can stop paginating
+       * and keep what it has; treating it as a hard failure loses the whole pool and
+       * turns a known data-depth limit into an unexplained crash.
+       */
+      if (status === 401 || status === 403) {
+        throw new HistoryDepthLimitError(url, status);
+      }
+
+      if (status !== 429 || attempt === MAX_RATE_LIMIT_RETRIES) throw err;
 
       const backoff = RATE_LIMIT_BACKOFF_MS * (attempt + 1);
       console.warn(
@@ -139,7 +216,7 @@ const MAX_BARS_PER_REQUEST = 1000;
 
 async function fetchOnePage(poolAddress: string, beforeTimestamp?: number): Promise<Bar[]> {
   const url =
-    `${GECKO_BASE}/networks/${NETWORK}/pools/${poolAddress}/ohlcv/hour` +
+    `${geckoBase()}/networks/${NETWORK}/pools/${poolAddress}/ohlcv/hour` +
     `?aggregate=1&limit=${MAX_BARS_PER_REQUEST}&currency=usd&token=base` +
     (beforeTimestamp === undefined ? "" : `&before_timestamp=${beforeTimestamp}`);
 
@@ -152,11 +229,23 @@ async function fetchOnePage(poolAddress: string, beforeTimestamp?: number): Prom
     .sort((a, b) => a.t - b.t);
 }
 
+/** True once the fetcher has hit the plan's historical floor at least once. */
+let depthLimitObserved = false;
+
+/** Whether any fetch in this process was cut short by the plan's history window. */
+export const historyDepthLimitHit = (): boolean => depthLimitObserved;
+
 /**
  * Fetches hourly OHLCV, paginating backwards when the window exceeds the 1000-bar
  * per-request cap (anything beyond ~41 days). Returns oldest-first, deduplicated.
  * Pagination stops when a page comes back empty or stops yielding older bars — that
  * is the pool's inception, not an error.
+ *
+ * It also stops, keeping what it has, when upstream refuses a deeper page because the
+ * range is outside the plan's historical window (see FREE_TIER_HISTORY_DAYS). That
+ * refusal is a property of the data plan, not of the pool, so losing the pool over it
+ * would thin the universe for no reason. A refusal on the FIRST page is different —
+ * nothing was granted at all, so it propagates as the genuine error it is.
  */
 export async function fetchHourlyBars(poolAddress: string, limit = 1000): Promise<Bar[]> {
   const wanted = Math.max(1, limit);
@@ -166,7 +255,16 @@ export async function fetchHourlyBars(poolAddress: string, limit = 1000): Promis
   const maxPages = Math.ceil(wanted / MAX_BARS_PER_REQUEST) + 1;
 
   for (let page = 0; page < maxPages; page++) {
-    const bars = await fetchOnePage(poolAddress, before);
+    let bars: Bar[];
+    try {
+      bars = await fetchOnePage(poolAddress, before);
+    } catch (err) {
+      if (err instanceof HistoryDepthLimitError && byTimestamp.size > 0) {
+        depthLimitObserved = true;
+        break;
+      }
+      throw err;
+    }
     if (bars.length === 0) break;
 
     const oldestBefore = byTimestamp.size === 0 ? Infinity : Math.min(...byTimestamp.keys());
@@ -226,6 +324,15 @@ export interface IngestOptions {
   survivorTvlBand?: { minUsd: number; maxUsd: number };
   /** Pages of today's volume leaders to scan when building the universe. */
   survivorPages?: number;
+  /**
+   * Minimum usable bars a pool must have to enter the dataset.
+   *
+   * Defaults to `max(30, 15% of the window)`, which is right for a short window but
+   * wrong for a long one: on a 365-day run it demands 54 days of history and so
+   * excludes exactly the short-lived pools the dead cohort exists to capture. Long
+   * windows should pass an absolute floor instead.
+   */
+  minBars?: number;
 }
 
 /** Trims bars to the requested trailing window. */
@@ -295,7 +402,7 @@ export async function loadHistoricalData(options: IngestOptions = {}): Promise<H
 
   // Dead pools are short-lived by nature, so the bar-count floor must be low or the
   // very failures we are trying to capture get filtered back out.
-  const minBars = Math.max(30, Math.floor(windowDays * 24 * 0.15));
+  const minBars = options.minBars ?? Math.max(30, Math.floor(windowDays * 24 * 0.15));
   const pools: PoolHistory[] = [];
 
   async function ingest(list: UniversePool[], want: number, label: string): Promise<void> {

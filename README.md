@@ -328,6 +328,47 @@ Forward bars are consulted only to decide whether an exit was *executable* — w
 anyone left to sell to. They never inform an entry or exit decision, which would be look-ahead bias
 in the strategy itself.
 
+### Long-window backtest + QuantStats tear sheet
+
+```bash
+npm run backtest:annual                                   # 365-day request, $100, live V1.1 gates
+npm run backtest:annual -- --days=365 --capital=100 --refresh
+npm run report:quant                                      # renders the tear sheet
+```
+
+`backtest:annual` pins every gate to `src/config/env.ts` (it imports `liveV11Config()` from the
+micro-capital runner rather than re-declaring it, so the two cannot drift) and additionally exports
+a daily curve:
+
+| File | Contents |
+|---|---|
+| `reports/annual/daily_returns.csv` | one row per calendar day: equity, daily return, closes |
+| `reports/annual/trades.csv` | the full trade log |
+| `reports/annual/backtest_annual.json` | config, TVL model, universe, every scenario, caveats |
+
+`report:quant` (Python: `pandas numpy matplotlib scipy quantstats`) turns that into
+`reports/annual/tearsheet.pdf` and `reports/annual/tearsheet.html` — a self-contained page with the monthly-return distribution, the
+daily-returns timeline, the equity/drawdown pair, and the full metric battery (monthly and yearly
+extremes, average drawdown depth and duration, recovery factor, Ulcer index, segmented win rates,
+EOY table, worst-drawdown table), the scenario/assumption sweep and the cohort composition —
+plus `tearsheet.md`, the PNGs under `charts/`, and QuantStats' own `quantstats-full.html`.
+
+The PDF is printed from the same HTML by headless Chrome or Edge, whichever is already
+installed, so it is the same document rather than a re-layout — no extra dependency. Pass
+`--no-pdf` to skip it; if no browser is found the run says so and still writes everything else.
+
+**Two things about that report carry the result.**
+
+- **History depth.** GeckoTerminal's keyless tier serves roughly **208 days** of hourly OHLCV and
+  answers HTTP 401 on anything deeper; daily aggregation is capped at the same depth, so a coarser
+  timeframe buys no history. A 365-day request therefore returns a ~6-month series. The runner
+  compares requested against achieved days and says so in its header, in a terminal warning and in
+  the caveats block the tear sheet reproduces. Set `COINGECKO_PRO_API_KEY` for the full year.
+- **The daily series is realised-only.** Equity steps when a position closes and never on open
+  floating PnL, so a day with no close is a genuine `0.00%`. That deflates daily volatility and
+  therefore flatters Sharpe, Sortino and the Ulcer index. The share of active days is printed next
+  to them; read the trade-level statistics as primary and the daily ratios as indicative.
+
 ### Running 24/7 on a VPS
 
 The engine is a single long-lived Node process. These are the things that were wrong for

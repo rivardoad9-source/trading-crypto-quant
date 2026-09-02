@@ -1,0 +1,1252 @@
+<!DOCTYPE html>
+<html lang="id" class="dark">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FlowMetrix DLMM V1.1 — Arsitektur Engine</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet"
+    href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          colors: {
+            ground: "#0a0e14",
+            panel: "#111923",
+            raised: "#17212d",
+            rule: "#243140",
+            ink: "#dde5ed",
+            muted: "#7f92a4",
+            /* Dua clock adalah tulang punggung arsitektur ini, jadi keduanya memegang
+               dua aksen warna. Amber = screener 30 menit, cyan = monitor 60 detik.
+               Setiap elemen mewarisi warna clock yang memilikinya. */
+            slow: "#e0a33e",
+            fast: "#4cc9f0",
+            pos: "#3ecf8e",
+            neg: "#ef6461",
+          },
+          fontFamily: {
+            display: ['Archivo', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+            sans: ['"IBM Plex Sans"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+            mono: ['"IBM Plex Mono"', 'ui-monospace', 'SFMono-Regular', 'monospace'],
+          },
+        },
+      },
+    };
+  </script>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.1/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+
+  <style>
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      background: #0a0e14;
+      color: #dde5ed;
+    }
+
+    /* Satu perlakuan fokus yang seragam, supaya pengguna keyboard mendapat penanda
+     yang sama di tab, titik stepper dan tautan — bukan default browser di sebagian
+     elemen dan tidak ada apa-apa di sisanya. */
+    :focus-visible {
+      outline: 2px solid #4cc9f0;
+      outline-offset: 3px;
+      border-radius: 4px;
+    }
+
+    ::-webkit-scrollbar {
+      height: 9px;
+      width: 9px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: #111923;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: #2c3b4c;
+      border-radius: 5px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: #3a4c60;
+    }
+
+    .hairline {
+      border-top: 1px solid #243140;
+    }
+
+    .grain {
+      background-image:
+        radial-gradient(circle at 12% 0%, rgba(224, 163, 62, .07), transparent 42%),
+        radial-gradient(circle at 88% 8%, rgba(76, 201, 240, .08), transparent 46%);
+    }
+
+    /* Mermaid menyuntikkan SVG-nya sendiri; aturan ini menjaganya tetap pada palet
+     halaman, dan membuat graf yang lebar bergulir di dalam panelnya sendiri
+     ketimbang mendorong seluruh halaman ke samping. */
+    #flowDiagram svg {
+      max-width: none;
+      height: auto;
+    }
+
+    #flowDiagram .edgeLabel {
+      background: transparent !important;
+    }
+
+    #flowDiagram .edgeLabel rect {
+      fill: #0a0e14 !important;
+    }
+
+    .step-rail::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 19px;
+      height: 2px;
+      background: #243140;
+      z-index: 0;
+    }
+
+    .fade-in {
+      animation: fade .28s ease-out;
+    }
+
+    @keyframes fade {
+      from {
+        opacity: 0;
+        transform: translateY(5px);
+      }
+
+      to {
+        opacity: 1;
+        transform: none;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html {
+        scroll-behavior: auto;
+      }
+
+      .fade-in {
+        animation: none;
+      }
+
+      * {
+        transition-duration: .01ms !important;
+      }
+    }
+  </style>
+</head>
+
+<body class="font-sans antialiased">
+
+  <!-- ══════════════════ HEADER ══════════════════ -->
+  <header class="grain border-b border-rule">
+    <div class="max-w-6xl mx-auto px-6 pt-14 pb-10">
+      <div class="flex items-center gap-2.5 mb-5">
+        <span
+          class="font-mono text-[10px] tracking-[.18em] uppercase text-muted border border-rule rounded px-2 py-1">FlowMetrix</span>
+        <span
+          class="font-mono text-[10px] tracking-[.18em] uppercase text-slow border border-slow/35 bg-slow/10 rounded px-2 py-1">Engine
+          V1.1</span>
+        <span
+          class="font-mono text-[10px] tracking-[.18em] uppercase text-muted border border-rule rounded px-2 py-1">Dry
+          run · paper trading</span>
+      </div>
+
+      <h1 class="font-display font-extrabold text-4xl sm:text-5xl tracking-[-.03em] leading-[1.05] text-balance">
+        Cara engine DLMM ini<br>benar-benar bekerja
+      </h1>
+      <p class="mt-4 max-w-2xl text-[15px] leading-relaxed text-muted">
+        Engine likuiditas DLMM di Solana yang dibangun di atas dua clock independen: satu
+        screener lambat yang memutuskan <em class="not-italic text-ink">apa</em> yang dimasuki,
+        dan satu monitor cepat yang memutuskan <em class="not-italic text-ink">kapan</em> keluar.
+        Semua di bawah ini dibaca dari kode yang berjalan — ekspresi cron, batas token dan
+        ambang guardrail dikutip dari source, dan angka performanya berasal dari backtest
+        212 hari atas konfigurasi yang persis sama.
+      </p>
+
+      <div class="mt-9 grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div class="bg-panel border border-rule rounded-lg p-4">
+          <div class="font-mono text-[10px] uppercase tracking-[.13em] text-muted">Return bersih</div>
+          <div class="font-display font-bold text-2xl text-pos mt-1.5 tabular-nums">+19,39%</div>
+          <div class="text-[11px] text-muted mt-1">$100 → $119.39</div>
+        </div>
+        <div class="bg-panel border border-rule rounded-lg p-4">
+          <div class="font-mono text-[10px] uppercase tracking-[.13em] text-muted">Max drawdown</div>
+          <div class="font-display font-bold text-2xl text-neg mt-1.5 tabular-nums">−13,16%</div>
+          <div class="text-[11px] text-muted mt-1">puncak ke lembah terdalam</div>
+        </div>
+        <div class="bg-panel border border-rule rounded-lg p-4">
+          <div class="font-mono text-[10px] uppercase tracking-[.13em] text-muted">Jumlah trade</div>
+          <div class="font-display font-bold text-2xl mt-1.5 tabular-nums">47</div>
+          <div class="text-[11px] text-muted mt-1">74,5% menang · PF 1,35</div>
+        </div>
+        <div class="bg-panel border border-rule rounded-lg p-4">
+          <div class="font-mono text-[10px] uppercase tracking-[.13em] text-muted">Rentang waktu</div>
+          <div class="font-display font-bold text-2xl mt-1.5 tabular-nums">212 hari</div>
+          <div class="text-[11px] text-muted mt-1">Feb – Sep 2026</div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <nav class="sticky top-0 z-30 bg-ground/92 backdrop-blur border-b border-rule">
+    <div class="max-w-6xl mx-auto px-6 flex gap-6 overflow-x-auto font-mono text-[11px] uppercase tracking-[.13em]">
+      <a href="#architecture" class="py-3.5 text-muted hover:text-ink whitespace-nowrap transition-colors">01 ·
+        Arsitektur</a>
+      <a href="#components" class="py-3.5 text-muted hover:text-ink whitespace-nowrap transition-colors">02 ·
+        Komponen</a>
+      <a href="#lifecycle" class="py-3.5 text-muted hover:text-ink whitespace-nowrap transition-colors">03 · Siklus
+        trade</a>
+      <a href="#performance" class="py-3.5 text-muted hover:text-ink whitespace-nowrap transition-colors">04 ·
+        Performa</a>
+    </div>
+  </nav>
+
+  <main class="max-w-6xl mx-auto px-6">
+
+    <!-- ══════════════════ 01 · ARSITEKTUR ══════════════════ -->
+    <section id="architecture" class="pt-16 pb-14 scroll-mt-14">
+      <div class="flex items-baseline gap-3 mb-2">
+        <span class="font-mono text-xs text-slow">01</span>
+        <h2 class="font-display font-bold text-2xl tracking-[-.02em]">Arsitektur tingkat tinggi</h2>
+      </div>
+      <p class="text-muted text-sm max-w-2xl mb-8">
+        Data mengalir satu arah: API eksternal → agent → SQLite → REST API → dashboard.
+        Dashboard tidak memuat logika trading sama sekali; ia hanya tampilan baca-saja.
+        Kedua clock di bawah tidak pernah saling memblokir — pemisahan itu adalah sifat
+        terpenting dari seluruh desain ini.
+      </p>
+
+      <div class="bg-panel border border-rule rounded-xl p-4 sm:p-6 overflow-x-auto">
+        <div id="flowDiagram" class="flex justify-center min-w-[720px]"></div>
+
+        <!-- Hanya tampil kalau Mermaid gagal dimuat: offline, atau CDN diblokir. Halaman
+         harus tetap bisa menjelaskan dirinya sendiri tanpa jaringan. -->
+        <div id="flowFallback" class="hidden min-w-[680px]">
+          <div class="flex items-stretch gap-2 text-[11px]">
+            <div class="flex-1 bg-raised border border-rule rounded-lg p-3">
+              <div class="font-mono text-[9px] uppercase tracking-wider text-muted mb-1.5">Sumber</div>
+              <div class="space-y-1 font-mono">
+                <div>Meteora <span class="text-muted">/pools</span></div>
+                <div>DexScreener</div>
+                <div>Solana RPC</div>
+                <div>CoinGecko · Jupiter</div>
+              </div>
+            </div>
+            <div class="flex items-center text-muted">→</div>
+            <div class="flex-1 bg-raised border border-slow/40 rounded-lg p-3">
+              <div class="font-mono text-[9px] uppercase tracking-wider text-slow mb-1.5">Screener · 30m</div>
+              <div class="font-mono">scan 600 pool<br>filter lokal<br>screen anti-rug</div>
+            </div>
+            <div class="flex items-center text-muted">→</div>
+            <div class="flex-1 bg-raised border border-slow/40 rounded-lg p-3">
+              <div class="font-mono text-[9px] uppercase tracking-wider text-slow mb-1.5">Reasoner</div>
+              <div class="font-mono">deepseek-reasoner<br>batas 16k token<br>graceful skip</div>
+            </div>
+            <div class="flex items-center text-muted">→</div>
+            <div class="flex-1 bg-raised border border-rule rounded-lg p-3">
+              <div class="font-mono text-[9px] uppercase tracking-wider text-muted mb-1.5">Guardrail</div>
+              <div class="font-mono">cooldown 4 jam<br>lockout 2×/24 jam<br>gate breakeven</div>
+            </div>
+            <div class="flex items-center text-muted">→</div>
+            <div class="flex-1 bg-raised border border-fast/40 rounded-lg p-3">
+              <div class="font-mono text-[9px] uppercase tracking-wider text-fast mb-1.5">Monitor · 60d</div>
+              <div class="font-mono">mark to market<br>akrual fee<br>picu exit</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="mt-4 grid sm:grid-cols-3 gap-3 text-[13px]">
+        <div class="bg-panel border-l-2 border-slow border-y border-r border-rule rounded-r-lg p-3.5">
+          <div class="font-mono text-[10px] uppercase tracking-[.12em] text-slow mb-1">Jalur lambat · entry</div>
+          <p class="text-muted leading-relaxed">Upstream ber-rate-limit dan satu panggilan LLM tiap tick. Mahal, jadi
+            dijalankan jarang.</p>
+        </div>
+        <div class="bg-panel border-l-2 border-fast border-y border-r border-rule rounded-r-lg p-3.5">
+          <div class="font-mono text-[10px] uppercase tracking-[.12em] text-fast mb-1">Jalur cepat · exit</div>
+          <p class="text-muted leading-relaxed">Hanya menyentuh posisi terbuka. Tanpa LLM, tanpa API ber-rate-limit,
+            jadi bisa jalan tiap menit.</p>
+        </div>
+        <div class="bg-panel border-l-2 border-rule border-y border-r border-rule rounded-r-lg p-3.5">
+          <div class="font-mono text-[10px] uppercase tracking-[.12em] text-muted mb-1">State bersama</div>
+          <p class="text-muted leading-relaxed">Setiap tulisan ke <span
+              class="font-mono text-ink">simulated_positions</span> diserialkan oleh <span
+              class="font-mono text-ink">positionMutex</span>.</p>
+        </div>
+      </div>
+    </section>
+
+    <div class="hairline"></div>
+
+    <!-- ══════════════════ 02 · KOMPONEN ══════════════════ -->
+    <section id="components" class="pt-14 pb-14 scroll-mt-14">
+      <div class="flex items-baseline gap-3 mb-2">
+        <span class="font-mono text-xs text-slow">02</span>
+        <h2 class="font-display font-bold text-2xl tracking-[-.02em]">Komponen inti</h2>
+      </div>
+      <p class="text-muted text-sm max-w-2xl mb-7">
+        Tiga keputusan menanggung sebagian besar perilaku engine ini. Masing-masing ada
+        karena desain yang lebih murah sudah dicoba lebih dulu, lalu diukur.
+      </p>
+
+      <div role="tablist" aria-label="Komponen inti" class="flex flex-wrap gap-2 mb-5">
+        <button role="tab" data-tab="clocks" aria-selected="true"
+          class="tab-btn font-mono text-[11px] uppercase tracking-[.11em] px-3.5 py-2 rounded-md border transition-colors">
+          Mesin dua clock
+        </button>
+        <button role="tab" data-tab="reasoner" aria-selected="false"
+          class="tab-btn font-mono text-[11px] uppercase tracking-[.11em] px-3.5 py-2 rounded-md border transition-colors">
+          Ekonomi reasoner
+        </button>
+        <button role="tab" data-tab="guardrails" aria-selected="false"
+          class="tab-btn font-mono text-[11px] uppercase tracking-[.11em] px-3.5 py-2 rounded-md border transition-colors">
+          Guardrail risiko
+        </button>
+      </div>
+
+      <!-- ── Dua clock ── -->
+      <div class="tab-panel" data-panel="clocks" role="tabpanel">
+        <div class="grid md:grid-cols-2 gap-4">
+          <article class="bg-panel border border-slow/30 rounded-xl overflow-hidden">
+            <div class="bg-slow/10 border-b border-slow/25 px-5 py-3 flex items-center justify-between">
+              <div>
+                <div class="font-mono text-[10px] uppercase tracking-[.13em] text-slow">Clock lambat</div>
+                <h3 class="font-display font-bold text-lg mt-0.5">DLMM_LOOP</h3>
+              </div>
+              <code
+                class="font-mono text-sm text-slow bg-ground/60 px-2.5 py-1 rounded border border-slow/25">*/30 * * * *</code>
+            </div>
+            <div class="p-5 space-y-4 text-[13px] leading-relaxed">
+              <p class="text-muted">
+                Memindai 600 pool, menjalankan screen anti-rug, dan membelanjakan satu panggilan
+                <span class="font-mono text-ink">deepseek-reasoner</span> untuk memilih entry.
+                Clock ini mengatur <em class="text-ink not-italic font-medium">hanya</em> boleh-tidaknya
+                posisi baru dibuka.
+              </p>
+              <div class="bg-raised border border-rule rounded-lg p-3.5">
+                <div class="font-mono text-[10px] uppercase tracking-[.12em] text-muted mb-2">Kenapa 30 menit, bukan 10
+                </div>
+                <p class="text-muted">
+                  Chain-of-thought mendominasi tagihan token. Pada 10 menit, screener membakar
+                  <span class="text-slow font-medium">tiga kali lipat token</span> untuk entry yang
+                  toh sebagian besar ditolak gate anti-churn — cooldown pool diukur dalam
+                  <em class="not-italic text-ink">jam</em>, jadi kadensi 10 menit hanya mengulang
+                  pertanyaan yang jawabannya mustahil berubah.
+                </p>
+              </div>
+              <ul class="space-y-1.5 text-muted">
+                <li class="flex gap-2"><span class="text-slow">·</span> Semua upstream ber-rate-limit ada di sini</li>
+                <li class="flex gap-2"><span class="text-slow">·</span> Satu-satunya biaya LLM di sistem ini</li>
+                <li class="flex gap-2"><span class="text-slow">·</span> Melewati tahap monitornya sendiri selama fast
+                  monitor aktif</li>
+              </ul>
+            </div>
+          </article>
+
+          <article class="bg-panel border border-fast/30 rounded-xl overflow-hidden">
+            <div class="bg-fast/10 border-b border-fast/25 px-5 py-3 flex items-center justify-between">
+              <div>
+                <div class="font-mono text-[10px] uppercase tracking-[.13em] text-fast">Clock cepat</div>
+                <h3 class="font-display font-bold text-lg mt-0.5">FAST_MONITOR</h3>
+              </div>
+              <code
+                class="font-mono text-sm text-fast bg-ground/60 px-2.5 py-1 rounded border border-fast/25">* * * * *</code>
+            </div>
+            <div class="p-5 space-y-4 text-[13px] leading-relaxed">
+              <p class="text-muted">
+                Menilai setiap posisi terbuka terhadap harga Meteora terkini, mengakrualkan fee,
+                dan memicu exit. Ia tidak membawa satu pun upstream ber-rate-limit milik screener
+                maupun biaya LLM-nya — justru itulah sebabnya ia sanggup jalan tiap 60 detik.
+              </p>
+              <div class="bg-raised border border-rule rounded-lg p-3.5">
+                <div class="font-mono text-[10px] uppercase tracking-[.12em] text-muted mb-2">Kenapa stop-loss butuh
+                  clock sendiri</div>
+                <p class="text-muted">
+                  Ambang exit hanya seketat interval yang mengujinya. Pada clock 10 menit, dry run
+                  melewati stop −8% sampai
+                  <span class="text-neg font-medium tabular-nums">−13,84%</span>. Melambatkan
+                  screener tidak boleh sekali pun ikut melambatkan loop ini.
+                </p>
+              </div>
+              <ul class="space-y-1.5 text-muted">
+                <li class="flex gap-2"><span class="text-fast">·</span> Memakai <span
+                    class="font-mono text-ink">tryRun</span> — melewat kalau mutex sedang dipegang</li>
+                <li class="flex gap-2"><span class="text-fast">·</span> Mengambil harga dari Meteora, bukan DexScreener
+                </li>
+                <li class="flex gap-2"><span class="text-fast">·</span> Akrual fee dibatasi 1 jam setelah downtime</li>
+              </ul>
+            </div>
+          </article>
+        </div>
+
+        <div class="mt-4 bg-panel border border-rule rounded-xl p-5">
+          <h4 class="font-display font-semibold text-[15px] mb-2">Satu aturan yang mengikat keduanya</h4>
+          <p class="text-[13px] text-muted leading-relaxed max-w-3xl">
+            Akrual fee adalah <span class="font-mono text-ink">rate × (now − last_checked_at)</span>.
+            Dua pass yang tumpang tindih akan mengukur dari timestamp tersimpan yang sama lalu
+            membukukan interval yang sama dua kali, dan keduanya bisa membaca baris yang sama
+            sebagai ACTIVE lalu menutupnya sendiri-sendiri. Pembungkus
+            <span class="font-mono text-ink">withLock</span> per job hanya mencegah satu job
+            tumpang tindih dengan <em class="not-italic text-ink">dirinya sendiri</em>; keamanan
+            lintas-clock dipegang <span class="font-mono text-ink">positionMutex</span>. Tidak ada
+            yang boleh melakukan I/O sambil memegang mutex itu — kiriman Telegram dan panggilan LLM
+            post-mortem diantrikan dan diselesaikan setelah lock dilepas, kalau tidak satu
+            round-trip DeepSeek diam-diam membatalkan jaminan exit 60 detik.
+          </p>
+        </div>
+      </div>
+
+      <!-- ── Reasoner ── -->
+      <div class="tab-panel hidden" data-panel="reasoner" role="tabpanel">
+        <div class="grid lg:grid-cols-[1.15fr_.85fr] gap-4">
+          <article class="bg-panel border border-rule rounded-xl p-5">
+            <h3 class="font-display font-bold text-lg mb-1">Batas token: plafon tetap, bukan tangga retry</h3>
+            <p class="text-[13px] text-muted leading-relaxed mb-4">
+              <span class="font-mono text-ink">deepseek-reasoner</span> menulis chain-of-thought-nya
+              sebelum menulis jawaban, jadi <span class="font-mono text-ink">max_tokens</span>
+              menanggung keduanya. Budget seukuran chat akan habis dipakai berpikir, dan jawabannya
+              tidak pernah dimulai.
+            </p>
+
+            <div class="bg-raised border border-rule rounded-lg p-4 mb-4">
+              <div class="flex items-baseline justify-between mb-3">
+                <span class="font-mono text-[10px] uppercase tracking-[.12em] text-muted">REASONER_MAX_TOKENS</span>
+                <span class="font-display font-bold text-2xl text-slow tabular-nums">16.000</span>
+              </div>
+              <div class="h-2 rounded-full bg-ground overflow-hidden flex">
+                <div class="bg-slow/80 h-full" style="width:55%"></div>
+                <div class="bg-slow/35 h-full" style="width:25%"></div>
+                <div class="bg-rule h-full" style="width:20%"></div>
+              </div>
+              <div class="flex justify-between mt-2 font-mono text-[10px] text-muted">
+                <span>chain-of-thought &gt;8.000 teramati</span>
+                <span>jawaban</span>
+                <span>sisa ruang</span>
+              </div>
+            </div>
+
+            <div class="space-y-3 text-[13px] leading-relaxed">
+              <div class="border-l-2 border-neg/60 pl-3">
+                <div class="font-medium text-ink mb-0.5">Bug yang digantikannya</div>
+                <p class="text-muted">
+                  Dulu budget-nya <span class="text-neg">berlipat dua</span> saat percobaan terpotong
+                  16rb → 32rb, sehingga satu tick bisa membayar 48.000 token penalaran dan tetap
+                  tidak mengembalikan apa pun. Mode gagalnya menagih dua kali.
+                </p>
+              </div>
+              <div class="border-l-2 border-slow/60 pl-3">
+                <div class="font-medium text-ink mb-0.5">Kenapa tidak diturunkan</div>
+                <p class="text-muted">
+                  16.000 adalah hasil pengukuran, bukan angka bulat. Pada 4rb/8rb setiap siklus
+                  membakar satu percobaan pertama yang sia-sia dan CoT yang panjang tetap menabrak
+                  plafon. Karena sekarang terpotong berarti siklus dilewati — bukan retry yang lebih
+                  besar — memangkas angka ini justru akan membuat engine berhenti membuka posisi.
+                </p>
+              </div>
+            </div>
+          </article>
+
+          <div class="space-y-4">
+            <article class="bg-panel border border-rule rounded-xl p-5">
+              <h3 class="font-display font-bold text-[15px] mb-2">Graceful skip</h3>
+              <p class="text-[13px] text-muted leading-relaxed mb-3">
+                Reasoner yang menghabiskan budget untuk berpikir lalu tidak mengembalikan apa pun
+                adalah <em class="not-italic text-ink">hasil yang wajar, bukan kerusakan</em>. Tidak
+                ada keputusan untuk ditindaklanjuti, dan berapa kali pun diulang di dalam satu tick
+                tidak akan memunculkannya.
+              </p>
+              <div class="font-mono text-[11px] bg-raised border border-rule rounded-lg p-3 space-y-1.5">
+                <div class="text-neg">DeepSeekTruncatedError</div>
+                <div class="text-muted">↳ lewati siklus ini</div>
+                <div class="text-muted">↳ posisi terbuka tidak terpengaruh</div>
+                <div class="text-fast">↳ fast monitor tetap menutupnya</div>
+              </div>
+              <p class="text-[12px] text-muted mt-3 leading-relaxed">
+                Hanya pemotongan yang ditelan. Kegagalan DeepSeek jenis lain tetap dilempar ke atas,
+                karena itu berarti ada yang benar-benar salah.
+              </p>
+            </article>
+
+            <article class="bg-panel border border-rule rounded-xl p-5">
+              <h3 class="font-display font-bold text-[15px] mb-2">Apa yang masuk ke prompt</h3>
+              <ul class="text-[13px] text-muted space-y-2">
+                <li class="flex gap-2"><span class="text-slow font-mono text-[11px] mt-0.5">01</span><span>Pool kandidat
+                    teratas yang lolos seluruh gate lokal</span></li>
+                <li class="flex gap-2"><span class="text-slow font-mono text-[11px] mt-0.5">02</span><span>Harga SOL/USD
+                    dan priority fee saat itu</span></li>
+                <li class="flex gap-2"><span class="text-slow font-mono text-[11px] mt-0.5">03</span><span>Penutupan <em
+                      class="not-italic text-ink">rugi</em> terakhir beserta post-mortem tertulisnya</span></li>
+                <li class="flex gap-2"><span class="text-slow font-mono text-[11px] mt-0.5">04</span><span>Metrik makro,
+                    yang absen disebut <span class="font-mono text-ink">UNAVAILABLE</span></span></li>
+              </ul>
+              <p class="text-[12px] text-muted mt-3 leading-relaxed">
+                Riwayat kerugian direkonstruksi dari harga bin yang
+                <em class="not-italic text-ink">benar-benar dijalani</em> posisi itu, setelah lantai
+                rentang diterapkan — mengutip rentang yang semula diminta model akan mengajarinya
+                dari rentang yang tidak pernah ada.
+              </p>
+            </article>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Guardrail ── -->
+      <div class="tab-panel hidden" data-panel="guardrails" role="tabpanel">
+        <div class="bg-panel border border-rule rounded-xl p-5 mb-4">
+          <div class="grid md:grid-cols-[1fr_auto] gap-6 items-center">
+            <div>
+              <h3 class="font-display font-bold text-lg mb-1.5">Gate itulah edge-nya</h3>
+              <p class="text-[13px] text-muted leading-relaxed">
+                Menjalankan ulang jendela 212 hari yang identik dengan gate anti-churn dimatikan
+                adalah bukti terbersih di seluruh harness ini. Pool sama, harga sama, aturan exit
+                sama — hanya gate-nya yang berubah. Tanpa gate, engine trading
+                <span class="text-ink font-medium">2,5× lebih sering</span> dan mengubah untung
+                menjadi rugi.
+              </p>
+            </div>
+            <div class="flex gap-3">
+              <div class="text-center bg-raised border border-pos/30 rounded-lg px-5 py-3.5">
+                <div class="font-mono text-[9px] uppercase tracking-[.12em] text-muted">Gate aktif</div>
+                <div class="font-display font-bold text-3xl text-pos tabular-nums mt-1">1,35</div>
+                <div class="text-[10px] text-muted mt-0.5">profit factor</div>
+              </div>
+              <div class="text-center bg-raised border border-neg/30 rounded-lg px-5 py-3.5">
+                <div class="font-mono text-[9px] uppercase tracking-[.12em] text-muted">Gate mati</div>
+                <div class="font-display font-bold text-3xl text-neg tabular-nums mt-1">0,92</div>
+                <div class="text-[10px] text-muted mt-0.5">profit factor</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="mt-5 overflow-x-auto">
+            <table class="w-full text-[13px] tabular-nums">
+              <thead>
+                <tr class="font-mono text-[10px] uppercase tracking-[.11em] text-muted border-b border-rule">
+                  <th class="text-left font-normal py-2 pr-4">Konfigurasi</th>
+                  <th class="text-right font-normal py-2 px-3">Trade</th>
+                  <th class="text-right font-normal py-2 px-3">Win rate</th>
+                  <th class="text-right font-normal py-2 px-3">Profit factor</th>
+                  <th class="text-right font-normal py-2 px-3">PnL bersih</th>
+                  <th class="text-right font-normal py-2 px-3">Max DD</th>
+                  <th class="text-right font-normal py-2 pl-3">Friksi</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr class="border-b border-rule/60">
+                  <td class="py-2.5 pr-4">V1.1 — semua guardrail aktif</td>
+                  <td class="text-right px-3">47</td>
+                  <td class="text-right px-3">74,5%</td>
+                  <td class="text-right px-3 text-pos font-medium">1,35</td>
+                  <td class="text-right px-3 text-pos">+$19,39</td>
+                  <td class="text-right px-3">13,2%</td>
+                  <td class="text-right pl-3">$32,74</td>
+                </tr>
+                <tr>
+                  <td class="py-2.5 pr-4 text-muted">Anti-churn dilepas</td>
+                  <td class="text-right px-3 text-muted">117</td>
+                  <td class="text-right px-3 text-muted">65,8%</td>
+                  <td class="text-right px-3 text-neg font-medium">0,92</td>
+                  <td class="text-right px-3 text-neg">−$13,86</td>
+                  <td class="text-right px-3 text-neg">43,6%</td>
+                  <td class="text-right pl-3 text-muted">$84,08</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <article class="bg-panel border border-rule rounded-xl p-4">
+            <div class="font-mono text-[10px] uppercase tracking-[.12em] text-slow mb-1.5">Cooldown</div>
+            <div class="font-display font-bold text-xl mb-2">4 jam</div>
+            <p class="text-[12px] text-muted leading-relaxed">
+              Pool dibangkucadangkan setelah <em class="not-italic text-ink">setiap</em> penutupan,
+              menang maupun kalah. Memblokir 144 kandidat entry sepanjang jendela.
+            </p>
+            <p class="text-[11px] text-muted/80 mt-2 leading-relaxed border-t border-rule pt-2">
+              Gagal <span class="text-ink">terbuka</span>: timestamp yang tak terbaca dianggap bangku
+              yang sudah habis, bukan larangan. Jam yang rusak tidak boleh membekukan screener.
+            </p>
+          </article>
+
+          <article class="bg-panel border border-rule rounded-xl p-4">
+            <div class="font-mono text-[10px] uppercase tracking-[.12em] text-slow mb-1.5">Lockout</div>
+            <div class="font-display font-bold text-xl mb-2">2× / 24 jam</div>
+            <p class="text-[12px] text-muted leading-relaxed">
+              Dua penutupan gagal berturut-turut pada satu pool memicu breaker 24 jam. Memblokir 263
+              entry — gate tersibuk di antara keduanya.
+            </p>
+            <p class="text-[11px] text-muted/80 mt-2 leading-relaxed border-t border-rule pt-2">
+              Timeout bersifat netral dan mereset hitungan. <span class="font-mono">/close_all</span>
+              manual tidak terlihat olehnya — breaker mengukur pool, bukan operatornya.
+            </p>
+          </article>
+
+          <article class="bg-panel border border-rule rounded-xl p-4">
+            <div class="font-mono text-[10px] uppercase tracking-[.12em] text-slow mb-1.5">Gate breakeven</div>
+            <div class="font-display font-bold text-xl mb-2">2,5× biaya</div>
+            <p class="text-[12px] text-muted leading-relaxed">
+              Proyeksi fee 24 jam harus melampaui 2,5× gas dan slippage pulang-pergi, kalau tidak
+              pool dilewati. 8,3% dari seluruh penolakan.
+            </p>
+            <p class="text-[11px] text-muted/80 mt-2 leading-relaxed border-t border-rule pt-2">
+              Saat estimasi gas tidak tersedia, ia mengasumsikan biaya konservatif — tidak pernah nol.
+              Menganggap perjalanan itu gratis persis yang dulu memicu churn.
+            </p>
+          </article>
+
+          <article class="bg-panel border border-rule rounded-xl p-4">
+            <div class="font-mono text-[10px] uppercase tracking-[.12em] text-slow mb-1.5">Batas semesta</div>
+            <div class="font-display font-bold text-xl mb-2">$50rb–$500rb</div>
+            <p class="text-[12px] text-muted leading-relaxed">
+              Pita TVL plus umur pool minimum 48 jam dan batas lonjakan 1 jam sebesar 10%.
+              Gabungannya 41% dari seluruh penolakan.
+            </p>
+            <p class="text-[11px] text-muted/80 mt-2 leading-relaxed border-t border-rule pt-2">
+              Umur dinilai pada bar tersimulasi, bukan hari ini — pool yang kini berumur 200 hari
+              baru berumur tiga jam pada bulan Juni.
+            </p>
+          </article>
+        </div>
+
+        <div class="mt-4 bg-panel border-l-2 border-neg border-y border-r border-rule rounded-r-xl p-4">
+          <div class="font-mono text-[10px] uppercase tracking-[.12em] text-neg mb-1.5">Screen yang gagal tertutup</div>
+          <p class="text-[13px] text-muted leading-relaxed max-w-3xl">
+            Berbeda dari cooldown, screen anti-rug mengembalikan
+            <span class="font-mono text-ink">UNKNOWN</span> — tidak pernah
+            <span class="font-mono text-ink">PASS</span> — ketika sebuah pemeriksaan tidak bisa
+            dijalankan, dan UNKNOWN itu ditolak. Mint authority dan freeze authority disimpan sebagai
+            <span class="font-mono text-ink">1 / 0 / null</span>, di mana null berarti pemeriksaannya
+            tidak pernah berjalan; meruntuhkan null menjadi false sama dengan mengklaim sebuah
+            authority masih hidup padahal ia sekadar belum pernah diperiksa. Pada Solana RPC publik,
+            <span class="font-mono text-ink">getTokenLargestAccounts</span> diblokir, sehingga setiap
+            kandidat ditolak dan tidak ada posisi yang terbuka. Itu perilaku yang benar, bukan bug.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <div class="hairline"></div>
+
+    <!-- ══════════════════ 03 · SIKLUS ══════════════════ -->
+    <section id="lifecycle" class="pt-14 pb-14 scroll-mt-14">
+      <div class="flex items-baseline gap-3 mb-2">
+        <span class="font-mono text-xs text-slow">03</span>
+        <h2 class="font-display font-bold text-2xl tracking-[-.02em]">Siklus hidup satu trade</h2>
+      </div>
+      <p class="text-muted text-sm max-w-2xl mb-7">
+        Satu posisi nyata, dari awal sampai akhir — <span class="font-mono text-ink">MENSA-SOL</span>,
+        dibuka 09.00 dan ditutup 11.00 pada 2 Agustus 2026, trade tunggal terbaik sepanjang run.
+        Telusuri langkah demi langkah.
+      </p>
+
+      <!-- Stepper -->
+      <div class="relative step-rail mb-6">
+        <div class="relative z-10 grid grid-cols-5 gap-2">
+          <button class="step-dot group flex flex-col items-center gap-2" data-step="1" aria-label="Langkah 1: Saring">
+            <span
+              class="dot w-10 h-10 rounded-full border-2 flex items-center justify-center font-mono text-[13px] font-medium transition-all">1</span>
+            <span
+              class="label font-mono text-[9px] uppercase tracking-[.1em] text-center leading-tight transition-colors">Saring</span>
+          </button>
+          <button class="step-dot group flex flex-col items-center gap-2" data-step="2" aria-label="Langkah 2: Gate">
+            <span
+              class="dot w-10 h-10 rounded-full border-2 flex items-center justify-center font-mono text-[13px] font-medium transition-all">2</span>
+            <span
+              class="label font-mono text-[9px] uppercase tracking-[.1em] text-center leading-tight transition-colors">Gate</span>
+          </button>
+          <button class="step-dot group flex flex-col items-center gap-2" data-step="3" aria-label="Langkah 3: Nalar">
+            <span
+              class="dot w-10 h-10 rounded-full border-2 flex items-center justify-center font-mono text-[13px] font-medium transition-all">3</span>
+            <span
+              class="label font-mono text-[9px] uppercase tracking-[.1em] text-center leading-tight transition-colors">Nalar</span>
+          </button>
+          <button class="step-dot group flex flex-col items-center gap-2" data-step="4"
+            aria-label="Langkah 4: Buka posisi">
+            <span
+              class="dot w-10 h-10 rounded-full border-2 flex items-center justify-center font-mono text-[13px] font-medium transition-all">4</span>
+            <span
+              class="label font-mono text-[9px] uppercase tracking-[.1em] text-center leading-tight transition-colors">Buka</span>
+          </button>
+          <button class="step-dot group flex flex-col items-center gap-2" data-step="5"
+            aria-label="Langkah 5: Pantau dan keluar">
+            <span
+              class="dot w-10 h-10 rounded-full border-2 flex items-center justify-center font-mono text-[13px] font-medium transition-all">5</span>
+            <span
+              class="label font-mono text-[9px] uppercase tracking-[.1em] text-center leading-tight transition-colors">Pantau
+              → keluar</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="bg-panel border border-rule rounded-xl overflow-hidden">
+        <div class="border-b border-rule px-5 py-3 flex items-center justify-between gap-4 flex-wrap">
+          <div class="flex items-center gap-3">
+            <span id="stepClock"
+              class="font-mono text-[10px] uppercase tracking-[.12em] px-2 py-1 rounded border"></span>
+            <h3 id="stepTitle" class="font-display font-bold text-lg"></h3>
+          </div>
+          <div class="flex items-center gap-2">
+            <button id="prevStep"
+              class="font-mono text-[11px] uppercase tracking-[.1em] px-3 py-1.5 rounded border border-rule text-muted hover:text-ink hover:border-muted disabled:opacity-35 disabled:cursor-not-allowed transition-colors">←
+              Kembali</button>
+            <button id="nextStep"
+              class="font-mono text-[11px] uppercase tracking-[.1em] px-3 py-1.5 rounded border border-rule text-muted hover:text-ink hover:border-muted disabled:opacity-35 disabled:cursor-not-allowed transition-colors">Lanjut
+              →</button>
+          </div>
+        </div>
+        <div id="stepBody" class="p-5 min-h-[290px]"></div>
+      </div>
+
+      <p class="text-[11px] text-muted mt-3">
+        Pakai <kbd class="font-mono border border-rule rounded px-1.5 py-0.5 text-[10px]">←</kbd>
+        <kbd class="font-mono border border-rule rounded px-1.5 py-0.5 text-[10px]">→</kbd> untuk berpindah langkah.
+      </p>
+    </section>
+
+    <div class="hairline"></div>
+
+    <!-- ══════════════════ 04 · PERFORMA ══════════════════ -->
+    <section id="performance" class="pt-14 pb-14 scroll-mt-14">
+      <div class="flex items-baseline gap-3 mb-2">
+        <span class="font-mono text-xs text-slow">04</span>
+        <h2 class="font-display font-bold text-2xl tracking-[-.02em]">Performa &amp; risiko</h2>
+      </div>
+      <p class="text-muted text-sm max-w-2xl mb-7">
+        Backtest 212 hari yang dikontrol survivorship bias atas konfigurasi yang persis sama,
+        akun $100. Baca catatan peringatan di kaki halaman sebelum mengutip angka mana pun.
+      </p>
+
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+        <div class="bg-panel border border-rule rounded-lg p-4">
+          <div class="font-mono text-[10px] uppercase tracking-[.12em] text-muted">Profit factor</div>
+          <div class="font-display font-bold text-2xl mt-1.5 tabular-nums text-pos">1,35</div>
+        </div>
+        <div class="bg-panel border border-rule rounded-lg p-4">
+          <div class="font-mono text-[10px] uppercase tracking-[.12em] text-muted">Win rate</div>
+          <div class="font-display font-bold text-2xl mt-1.5 tabular-nums">74,5%</div>
+          <div class="text-[11px] text-muted mt-1">35 menang / 12 kalah</div>
+        </div>
+        <div class="bg-panel border border-rule rounded-lg p-4">
+          <div class="font-mono text-[10px] uppercase tracking-[.12em] text-muted">Rata-rata tahan</div>
+          <div class="font-display font-bold text-2xl mt-1.5 tabular-nums">6,1 jam</div>
+        </div>
+        <div class="bg-panel border border-rule rounded-lg p-4">
+          <div class="font-mono text-[10px] uppercase tracking-[.12em] text-muted">Friksi dibayar</div>
+          <div class="font-display font-bold text-2xl mt-1.5 tabular-nums text-neg">$32,74</div>
+          <div class="text-[11px] text-muted mt-1">0,70× fee kotor</div>
+        </div>
+      </div>
+
+      <div class="grid lg:grid-cols-[1.6fr_1fr] gap-4">
+        <div class="bg-panel border border-rule rounded-xl p-5">
+          <h3 class="font-display font-semibold text-[15px] mb-1">Kurva ekuitas terealisasi</h3>
+          <p class="text-[12px] text-muted mb-4">
+            Bergerak hanya ketika sebuah posisi ditutup — tidak pernah pada PnL mengambang.
+            Lima bulan datar di awal adalah hari-hari tanpa satu pun penutupan.
+          </p>
+          <div class="h-[260px]"><canvas id="equityChart"></canvas></div>
+        </div>
+
+        <div class="bg-panel border border-rule rounded-xl p-5">
+          <h3 class="font-display font-semibold text-[15px] mb-1">Bagaimana posisi berakhir</h3>
+          <p class="text-[12px] text-muted mb-4">47 penutupan, menurut pemicunya.</p>
+          <div class="h-[260px]"><canvas id="exitChart"></canvas></div>
+        </div>
+      </div>
+
+      <div class="mt-4 bg-panel border-l-2 border-slow border-y border-r border-rule rounded-r-xl p-5">
+        <div class="font-mono text-[10px] uppercase tracking-[.12em] text-slow mb-2">Baca ini sebelum mengutip angkanya
+        </div>
+        <div class="grid md:grid-cols-3 gap-4 text-[12.5px] leading-relaxed text-muted">
+          <div>
+            <div class="text-ink font-medium mb-1">Jendelanya 212 hari, bukan setahun</div>
+            Tier data gratis hanya melayani ~208 hari OHLCV per jam dan menjawab HTTP 401 di luar itu.
+            Setahun penuh butuh API key berbayar.
+          </div>
+          <div>
+            <div class="text-ink font-medium mb-1">Semua trade datang dari satu kohort</div>
+            Ke-47 trade mendarat di pool yang sekarat; kohort survivor ditawari 14 pool dan tidak
+            mengambil satu pun. Itu artefak seleksi, bukan sifat strateginya.
+          </div>
+          <div>
+            <div class="text-ink font-medium mb-1">Asumsi TVL membalik tandanya</div>
+            Pendapatan fee berskala 1/k. Pada p25 hasil fit, run yang sama justru rugi
+            <span class="text-neg">−$23,91</span>; pada p75 ia tidak pernah trading sama sekali.
+            +19,39% adalah satu tarikan dari rentang yang melintasi nol.
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="hairline">
+    <div class="max-w-6xl mx-auto px-6 py-8 flex flex-wrap gap-x-8 gap-y-2 font-mono text-[11px] text-muted">
+      <span>Kadensi, batas token dan ambang dibaca dari <span class="text-ink">src/config/constants.ts</span>, <span
+          class="text-ink">src/config/env.ts</span>, <span class="text-ink">src/services/deepseek.ts</span></span>
+      <span>Angka performa dari <span class="text-ink">reports/annual/backtest_annual.json</span></span>
+      <span class="text-slow">Simulasi kertas — nol modal dikerahkan, tidak ada yang ditandatangani on-chain</span>
+    </div>
+  </footer>
+
+  <script>
+    /* ────────────────────────────────────────────────────────────
+       Data — deret ekuitas disuntikkan apa adanya dari
+       reports/annual/daily_returns.csv supaya grafiknya tidak bisa
+       menyimpang dari run yang diklaimnya.
+       ──────────────────────────────────────────────────────────── */
+    const EQUITY = [100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 104.44, 110.05, 105.45, 107.45, 108.72, 110.1, 110.56, 110.56, 110.56, 110.56, 110.56, 110.56, 105.94, 102.33, 98.43, 98.43, 107.53, 103.9, 105.33, 105.33, 106.43, 107.52, 112.18, 119.85, 123.81, 123.81, 123.81, 123.81, 131.01, 131.01, 133.86, 133.86, 133.86, 133.86, 132.0, 132.0, 134.16, 131.09, 134.39, 135.86, 137.48, 137.48, 137.48, 125.81, 130.69, 125.65, 119.39, 119.39, 119.39, 119.39, 119.39, 119.39, 119.39, 119.39, 119.39, 119.39, 119.39, 119.39, 119.39];
+    const DATES = ["2026-02-02", "2026-02-03", "2026-02-04", "2026-02-05", "2026-02-06", "2026-02-07", "2026-02-08", "2026-02-09", "2026-02-10", "2026-02-11", "2026-02-12", "2026-02-13", "2026-02-14", "2026-02-15", "2026-02-16", "2026-02-17", "2026-02-18", "2026-02-19", "2026-02-20", "2026-02-21", "2026-02-22", "2026-02-23", "2026-02-24", "2026-02-25", "2026-02-26", "2026-02-27", "2026-02-28", "2026-03-01", "2026-03-02", "2026-03-03", "2026-03-04", "2026-03-05", "2026-03-06", "2026-03-07", "2026-03-08", "2026-03-09", "2026-03-10", "2026-03-11", "2026-03-12", "2026-03-13", "2026-03-14", "2026-03-15", "2026-03-16", "2026-03-17", "2026-03-18", "2026-03-19", "2026-03-20", "2026-03-21", "2026-03-22", "2026-03-23", "2026-03-24", "2026-03-25", "2026-03-26", "2026-03-27", "2026-03-28", "2026-03-29", "2026-03-30", "2026-03-31", "2026-04-01", "2026-04-02", "2026-04-03", "2026-04-04", "2026-04-05", "2026-04-06", "2026-04-07", "2026-04-08", "2026-04-09", "2026-04-10", "2026-04-11", "2026-04-12", "2026-04-13", "2026-04-14", "2026-04-15", "2026-04-16", "2026-04-17", "2026-04-18", "2026-04-19", "2026-04-20", "2026-04-21", "2026-04-22", "2026-04-23", "2026-04-24", "2026-04-25", "2026-04-26", "2026-04-27", "2026-04-28", "2026-04-29", "2026-04-30", "2026-05-01", "2026-05-02", "2026-05-03", "2026-05-04", "2026-05-05", "2026-05-06", "2026-05-07", "2026-05-08", "2026-05-09", "2026-05-10", "2026-05-11", "2026-05-12", "2026-05-13", "2026-05-14", "2026-05-15", "2026-05-16", "2026-05-17", "2026-05-18", "2026-05-19", "2026-05-20", "2026-05-21", "2026-05-22", "2026-05-23", "2026-05-24", "2026-05-25", "2026-05-26", "2026-05-27", "2026-05-28", "2026-05-29", "2026-05-30", "2026-05-31", "2026-06-01", "2026-06-02", "2026-06-03", "2026-06-04", "2026-06-05", "2026-06-06", "2026-06-07", "2026-06-08", "2026-06-09", "2026-06-10", "2026-06-11", "2026-06-12", "2026-06-13", "2026-06-14", "2026-06-15", "2026-06-16", "2026-06-17", "2026-06-18", "2026-06-19", "2026-06-20", "2026-06-21", "2026-06-22", "2026-06-23", "2026-06-24", "2026-06-25", "2026-06-26", "2026-06-27", "2026-06-28", "2026-06-29", "2026-06-30", "2026-07-01", "2026-07-02", "2026-07-03", "2026-07-04", "2026-07-05", "2026-07-06", "2026-07-07", "2026-07-08", "2026-07-09", "2026-07-10", "2026-07-11", "2026-07-12", "2026-07-13", "2026-07-14", "2026-07-15", "2026-07-16", "2026-07-17", "2026-07-18", "2026-07-19", "2026-07-20", "2026-07-21", "2026-07-22", "2026-07-23", "2026-07-24", "2026-07-25", "2026-07-26", "2026-07-27", "2026-07-28", "2026-07-29", "2026-07-30", "2026-07-31", "2026-08-01", "2026-08-02", "2026-08-03", "2026-08-04", "2026-08-05", "2026-08-06", "2026-08-07", "2026-08-08", "2026-08-09", "2026-08-10", "2026-08-11", "2026-08-12", "2026-08-13", "2026-08-14", "2026-08-15", "2026-08-16", "2026-08-17", "2026-08-18", "2026-08-19", "2026-08-20", "2026-08-21", "2026-08-22", "2026-08-23", "2026-08-24", "2026-08-25", "2026-08-26", "2026-08-27", "2026-08-28", "2026-08-29", "2026-08-30", "2026-08-31", "2026-09-01"];
+
+    const PALETTE = {
+      ink: "#dde5ed", muted: "#7f92a4", rule: "#243140",
+      slow: "#e0a33e", fast: "#4cc9f0", pos: "#3ecf8e", neg: "#ef6461",
+      ground: "#0a0e14", panel: "#111923",
+    };
+
+    /* ── Diagram alur Mermaid ────────────────────────────────── */
+    const GRAPH = `
+flowchart LR
+  subgraph SRC["SUMBER EKSTERNAL"]
+    direction TB
+    M["Meteora /pools<br/>~123rb pool"]
+    D["DexScreener<br/>pair · boost"]
+    R["Solana RPC<br/>mint · freeze · holder"]
+    P["CoinGecko → Jupiter<br/>→ DexScreener<br/>rantai SOL/USD"]
+  end
+
+  subgraph SLOW["CLOCK LAMBAT · DLMM_LOOP · tiap 30 menit"]
+    direction TB
+    S1["Screener<br/>scan 600 pool"]
+    S2["Filter lokal<br/>TVL · fee/TVL · volume · umur"]
+    S3["Screen anti-rug<br/>gagal TERTUTUP saat UNKNOWN"]
+    S4["Gate anti-churn<br/>cooldown 4 jam · lockout 2x/24 jam"]
+    S5["deepseek-reasoner<br/>batas 16rb token"]
+    S1 --> S2 --> S3 --> S4 --> S5
+  end
+
+  subgraph FAST["CLOCK CEPAT · FAST_MONITOR · tiap 60 detik"]
+    direction TB
+    F1["Mark to market<br/>harga Meteora saja"]
+    F2["Akrual fee<br/>dibatasi gap 1 jam"]
+    F3["evaluateExit<br/>TP +5% · SL -8%<br/>keluar rentang · 24 jam"]
+    F1 --> F2 --> F3
+  end
+
+  DB[("SQLite<br/>simulated_positions")]
+  API["Fastify REST :4000"]
+  UI["Dashboard Next.js<br/>baca-saja"]
+  TG["Telegram<br/>/status /pause /close_all"]
+
+  M --> S1
+  D --> S1
+  R --> S3
+  P --> S1
+  S5 -->|"buka posisi"| DB
+  S5 -.->|"terpotong → lewati siklus"| S1
+  DB --> F1
+  F3 -->|"tutup"| DB
+  DB --> API --> UI
+  DB --> TG
+
+  classDef src fill:#17212d,stroke:#243140,color:#7f92a4
+  classDef slowN fill:#1c1a12,stroke:#e0a33e,color:#e8d5b0
+  classDef fastN fill:#0f1f27,stroke:#4cc9f0,color:#bfe6f5
+  classDef store fill:#17212d,stroke:#3ecf8e,color:#a8e6c8
+  classDef out fill:#17212d,stroke:#243140,color:#dde5ed
+
+  class M,D,R,P src
+  class S1,S2,S3,S4,S5 slowN
+  class F1,F2,F3 fastN
+  class DB store
+  class API,UI,TG out
+`;
+
+    function renderGraph() {
+      const host = document.getElementById("flowDiagram");
+      const fallback = document.getElementById("flowFallback");
+      if (typeof mermaid === "undefined") { host.classList.add("hidden"); fallback.classList.remove("hidden"); return; }
+
+      mermaid.initialize({
+        startOnLoad: false,
+        theme: "base",
+        securityLevel: "loose",
+        fontFamily: '"IBM Plex Sans", ui-sans-serif, sans-serif',
+        themeVariables: {
+          background: PALETTE.ground,
+          primaryColor: "#17212d",
+          primaryTextColor: PALETTE.ink,
+          primaryBorderColor: PALETTE.rule,
+          lineColor: "#4a5c70",
+          secondaryColor: "#17212d",
+          tertiaryColor: "#0f1620",
+          clusterBkg: "#0d141c",
+          clusterBorder: PALETTE.rule,
+          fontSize: "13px",
+        },
+        flowchart: { curve: "basis", nodeSpacing: 34, rankSpacing: 58, padding: 14 },
+      });
+
+      mermaid.render("flowSvg", GRAPH)
+        .then(({ svg }) => { host.innerHTML = svg; })
+        .catch(() => { host.classList.add("hidden"); fallback.classList.remove("hidden"); });
+    }
+
+    /* ── Tab komponen ────────────────────────────────────────── */
+    const TAB_ON = "bg-slow/12 border-slow/45 text-slow";
+    const TAB_OFF = "bg-panel border-rule text-muted hover:text-ink hover:border-muted";
+
+    function selectTab(name) {
+      document.querySelectorAll(".tab-btn").forEach((btn) => {
+        const on = btn.dataset.tab === name;
+        btn.setAttribute("aria-selected", String(on));
+        btn.className = "tab-btn font-mono text-[11px] uppercase tracking-[.11em] px-3.5 py-2 rounded-md border transition-colors " + (on ? TAB_ON : TAB_OFF);
+      });
+      document.querySelectorAll(".tab-panel").forEach((panel) => {
+        const on = panel.dataset.panel === name;
+        panel.classList.toggle("hidden", !on);
+        if (on) { panel.classList.remove("fade-in"); void panel.offsetWidth; panel.classList.add("fade-in"); }
+      });
+    }
+
+    /* ── Simulator siklus trade ──────────────────────────────── */
+    const row = (label, value, tone = "") =>
+      `<div class="flex justify-between gap-4 py-1.5 border-b border-rule/50 last:border-0">
+     <span class="text-muted">${label}</span>
+     <span class="font-mono tabular-nums ${tone}">${value}</span>
+   </div>`;
+
+    const STEPS = [
+      {
+        clock: "Clock lambat · T+0",
+        tone: "slow",
+        title: "Menyaring 600 pool",
+        body: `
+      <div class="grid md:grid-cols-2 gap-5">
+        <div class="text-[13px] leading-relaxed text-muted space-y-3">
+          <p>Screener menarik daftar pool Meteora yang diurutkan berdasarkan <span class="font-mono text-ink">volume_24h:desc</span> — tidak pernah berdasarkan fee/TVL, yang mengembalikan sampah karena daftarnya penuh baris <span class="font-mono text-ink">tvl: 0</span> yang kalau dibagi menghasilkan rasio bernilai miliaran.</p>
+          <p>Fee/TVL dihitung sendiri secara lokal sebagai <span class="font-mono text-ink">fees.24h / tvl</span>. Field dari upstream satuannya persen sedangkan ambangnya rasio, jadi memakainya langsung akan meleset 100×.</p>
+          <p class="text-ink">Dari 5.052 bar tersimulasi, 5.005 di antaranya tidak menghasilkan satu pun kandidat yang layak. Menolak untuk trading adalah kasus yang paling sering terjadi.</p>
+        </div>
+        <div class="bg-raised border border-rule rounded-lg p-4">
+          <div class="font-mono text-[10px] uppercase tracking-[.12em] text-muted mb-3">Alasan entry ditolak</div>
+          <div class="space-y-2 text-[12px]">
+            ${[["fee/TVL terlalu rendah", 42.4], ["TVL di bawah $50rb", 30.8], ["TVL di atas $500rb", 8.4], ["di bawah breakeven", 8.3], ["volume terlalu rendah", 7.2], ["pool lebih muda dari 48 jam", 1.6], ["lockout / cooldown", 0.6], ["harga melonjak / pumped", 0.5]]
+            .map(([label, share]) => `
+                <div>
+                  <div class="flex justify-between mb-1"><span class="text-muted">${label}</span><span class="font-mono tabular-nums text-ink">${String(share).replace(".", ",")}%</span></div>
+                  <div class="h-1.5 rounded-full bg-ground overflow-hidden"><div class="h-full bg-slow/70 rounded-full" style="width:${Math.min(share * 2.2, 100)}%"></div></div>
+                </div>`).join("")}
+          </div>
+        </div>
+      </div>`,
+      },
+      {
+        clock: "Clock lambat · T+0",
+        tone: "slow",
+        title: "Gate keamanan dan anti-churn",
+        body: `
+      <div class="grid md:grid-cols-2 gap-5">
+        <div class="text-[13px] leading-relaxed text-muted space-y-3">
+          <p>Dua gate dengan mode kegagalan yang sengaja <em class="not-italic text-ink">berlawanan</em> berjalan di sini, dan justru ketimpangan itulah intinya.</p>
+          <div class="bg-raised border-l-2 border-neg border-y border-r border-rule rounded-r-lg p-3">
+            <div class="text-ink font-medium mb-1 text-[12px]">Anti-rug — gagal TERTUTUP</div>
+            <p class="text-[12px]">Mint authority, freeze authority, konsentrasi holder. Pemeriksaan yang tidak bisa dijalankan mengembalikan <span class="font-mono text-ink">UNKNOWN</span> dan ditolak. Ia melindungi modal, jadi diam berarti tidak.</p>
+          </div>
+          <div class="bg-raised border-l-2 border-pos border-y border-r border-rule rounded-r-lg p-3">
+            <div class="text-ink font-medium mb-1 text-[12px]">Cooldown — gagal TERBUKA</div>
+            <p class="text-[12px]">Timestamp yang tak terbaca dianggap bangku yang sudah habis, bukan larangan tanpa batas. Ia melindungi return, dan jam yang rusak tidak boleh membekukan engine.</p>
+          </div>
+        </div>
+        <div class="bg-raised border border-rule rounded-lg p-4">
+          <div class="font-mono text-[10px] uppercase tracking-[.12em] text-muted mb-3">MENSA-SOL · pemeriksaan gate</div>
+          <div class="text-[13px]">
+            ${row("Umur pool", "&gt; 48 jam", "text-pos")}
+            ${row("TVL termodelkan", "$50.558", "text-pos")}
+            ${row("Lonjakan 1 jam", "&lt; 10%", "text-pos")}
+            ${row("Mint authority", "dicabut", "text-pos")}
+            ${row("Penutupan terakhir", "nihil dalam 4 jam", "text-pos")}
+            ${row("Kegagalan beruntun", "0 dari 2", "text-pos")}
+          </div>
+          <div class="mt-3 pt-3 border-t border-rule font-mono text-[11px] text-pos">→ diteruskan ke reasoner</div>
+        </div>
+      </div>`,
+      },
+      {
+        clock: "Clock lambat · T+0",
+        tone: "slow",
+        title: "Reasoner mengambil keputusan",
+        body: `
+      <div class="grid md:grid-cols-2 gap-5">
+        <div class="text-[13px] leading-relaxed text-muted space-y-3">
+          <p>Satu panggilan <span class="font-mono text-ink">deepseek-reasoner</span>, dibatasi 16.000 token yang menanggung chain-of-thought <em class="not-italic text-ink">sekaligus</em> jawabannya.</p>
+          <p>Prompt-nya membawa kandidat yang lolos, harga SOL/USD, priority fee saat itu, dan rentang hasil rekonstruksi dari trade rugi terakhir — supaya model menakar rentang kali ini terhadap bagaimana rentangnya sendiri benar-benar berperilaku.</p>
+          <p>Ia mengembalikan arah, tingkat keyakinan, dan usulan rentang bin. <span class="text-ink">Rentang yang diminta bukan rentang yang didapat:</span> <span class="font-mono text-ink">computeBinRange</span> tetap menjepitnya ke lantai −45% / +15%.</p>
+        </div>
+        <div class="bg-raised border border-rule rounded-lg p-4">
+          <div class="font-mono text-[10px] uppercase tracking-[.12em] text-muted mb-3">Dua kemungkinan hasil</div>
+          <div class="space-y-3">
+            <div class="border border-pos/30 bg-pos/5 rounded-lg p-3">
+              <div class="font-mono text-[11px] text-pos mb-1">JAWABAN DIKEMBALIKAN</div>
+              <p class="text-[12px] text-muted">Rentang dan keyakinan terbaca → posisi dibuka di bawah <span class="font-mono text-ink">positionMutex</span>.</p>
+            </div>
+            <div class="border border-neg/30 bg-neg/5 rounded-lg p-3">
+              <div class="font-mono text-[11px] text-neg mb-1">DeepSeekTruncatedError</div>
+              <p class="text-[12px] text-muted">Budget habis untuk berpikir, jawaban tidak pernah ditulis. Siklusnya <em class="not-italic text-ink">dilewati</em>, bukan diulang dengan budget lebih besar. Posisi terbuka tidak tersentuh; tick berikutnya mencoba lagi 30 menit kemudian.</p>
+            </div>
+          </div>
+        </div>
+      </div>`,
+      },
+      {
+        clock: "Clock lambat · T+0 · 09.00Z",
+        tone: "slow",
+        title: "Posisi dibuka",
+        body: `
+      <div class="grid md:grid-cols-2 gap-5">
+        <div class="text-[13px] leading-relaxed text-muted space-y-3">
+          <p>Notional dikunci saat entry sebagai <span class="font-mono text-ink">virtualSol × entrySolPriceUsd</span> dan tidak pernah dinilai ulang. Akrual fee sengaja dihitung terhadapnya — perubahan nilai LP adalah suku yang terpisah, jadi menilai ulang notional akan menghitung pergerakan harga dua kali.</p>
+          <p>Sizing diambil dari modal <em class="not-italic text-ink">bebas</em>, bukan ekuitas. Dengan tiga posisi konkuren yang diizinkan, menakar masing-masing dari ekuitas akan mengerahkan dolar yang sama tiga kali — leverage tak kasat mata.</p>
+          <p>Gas <span class="text-ink">dicatat, bukan dipotong</span> dari PnL terealisasi. Memasukkannya akan diam-diam mendefinisikan ulang setiap angka historis.</p>
+        </div>
+        <div class="bg-raised border border-rule rounded-lg p-4">
+          <div class="font-mono text-[10px] uppercase tracking-[.12em] text-muted mb-3">MENSA-SOL · entry</div>
+          <div class="text-[13px]">
+            ${row("Dibuka", "2026-08-02 09.00Z")}
+            ${row("Notional", "$34,05")}
+            ${row("TVL pool termodelkan", "$50.558")}
+            ${row("Porsi dari pool", "0,067%")}
+            ${row("Lantai rentang", "−45% / +15%")}
+            ${row("Gas 2 transaksi", "$0,51", "text-neg")}
+          </div>
+        </div>
+      </div>`,
+      },
+      {
+        clock: "Clock cepat · tiap 60 detik",
+        tone: "fast",
+        title: "Dipantau, lalu keluar",
+        body: `
+      <div class="grid md:grid-cols-2 gap-5">
+        <div class="text-[13px] leading-relaxed text-muted space-y-3">
+          <p>Mulai dari sini clock lambat tidak lagi relevan. Setiap 60 detik fast monitor menilai ulang posisi <em class="not-italic text-ink">dari Meteora</em> — tidak pernah DexScreener, karena harga entry dan harga bin disimpan dari Meteora, dan membandingkan dua harga yang diturunkan berbeda bisa memicu stop karena ketidakcocokan satuan alih-alih pergerakan sungguhan.</p>
+          <p>Fee terakrual sebagai <span class="font-mono text-ink">rate × waktu berlalu</span>, dibatasi satu jam supaya restart tidak bisa mengkredit berhari-hari pendapatan yang tidak pernah diamati.</p>
+          <p>Posisi ini keluar dari rentang setelah dua bar per jam. Exit paksa membayar slippage 2%.</p>
+        </div>
+        <div class="bg-raised border border-rule rounded-lg p-4">
+          <div class="font-mono text-[10px] uppercase tracking-[.12em] text-muted mb-3">MENSA-SOL · tutup 11.00Z</div>
+          <div class="text-[13px]">
+            ${row("Pemicu exit", "OUT_OF_RANGE", "text-slow")}
+            ${row("Ditahan", "2,0 jam")}
+            ${row("Fee diperoleh", "+$0,15", "text-pos")}
+            ${row("Perubahan nilai LP", "+$7,99", "text-pos")}
+            ${row("Gas", "−$0,51", "text-neg")}
+            ${row("Slippage", "−$0,43", "text-neg")}
+          </div>
+          <div class="mt-3 pt-3 border-t border-rule flex justify-between items-baseline">
+            <span class="font-mono text-[11px] uppercase tracking-[.12em] text-muted">PnL bersih</span>
+            <span class="font-display font-bold text-xl text-pos tabular-nums">+$7,20 · +21,2%</span>
+          </div>
+          <div class="mt-3 pt-3 border-t border-rule font-mono text-[11px] text-slow">→ pool dibangkucadangkan 4 jam · post-mortem diantrikan setelah lock dilepas</div>
+        </div>
+      </div>`,
+      },
+    ];
+
+    let current = 1;
+
+    /*
+     * Setiap class Tailwind yang mungkin dipakai stepper ditulis lengkap di sini.
+     *
+     * Merangkainya sebagai `border-${accent}` tidak menyisakan literal apa pun untuk
+     * ditemukan Tailwind. Play CDN kebetulan memindai ulang mutasi DOM sehingga hari ini
+     * masih tertangani, tetapi build terkompilasi hanya memindai teks sumber — class-nya
+     * akan lenyap diam-diam dan stepper tampil abu-abu tanpa error di mana pun. String
+     * statis hanya memakan beberapa baris dan menghapus mode kegagalan itu.
+     */
+    const DOT_BASE = "dot w-10 h-10 rounded-full border-2 flex items-center justify-center font-mono text-[13px] font-medium transition-all ";
+    const LABEL_BASE = "label font-mono text-[9px] uppercase tracking-[.1em] text-center leading-tight transition-colors ";
+
+    const DOT_STYLES = {
+      slow: {
+        active: "bg-slow/15 border-slow text-slow scale-110",
+        done: "bg-panel border-slow/50 text-slow/70",
+      },
+      fast: {
+        active: "bg-fast/15 border-fast text-fast scale-110",
+        done: "bg-panel border-fast/50 text-fast/70",
+      },
+    };
+    const DOT_IDLE = "bg-panel border-rule text-muted";
+    const LABEL_ACTIVE = { slow: "text-slow", fast: "text-fast" };
+
+    function paintStep(n) {
+      current = Math.min(Math.max(n, 1), STEPS.length);
+      const step = STEPS[current - 1];
+
+      document.querySelectorAll(".step-dot").forEach((btn) => {
+        const i = Number(btn.dataset.step);
+        const dot = btn.querySelector(".dot");
+        const label = btn.querySelector(".label");
+        const done = i < current, now = i === current;
+        const accent = STEPS[i - 1].tone === "fast" ? "fast" : "slow";
+
+        dot.className = DOT_BASE +
+          (now ? DOT_STYLES[accent].active : done ? DOT_STYLES[accent].done : DOT_IDLE);
+        label.className = LABEL_BASE + (now ? LABEL_ACTIVE[accent] : "text-muted");
+      });
+
+      const clock = document.getElementById("stepClock");
+      clock.textContent = step.clock;
+      clock.className = "font-mono text-[10px] uppercase tracking-[.12em] px-2 py-1 rounded border " +
+        (step.tone === "fast" ? "text-fast border-fast/35 bg-fast/10" : "text-slow border-slow/35 bg-slow/10");
+
+      document.getElementById("stepTitle").textContent = step.title;
+
+      const body = document.getElementById("stepBody");
+      body.innerHTML = step.body;
+      body.classList.remove("fade-in"); void body.offsetWidth; body.classList.add("fade-in");
+
+      document.getElementById("prevStep").disabled = current === 1;
+      document.getElementById("nextStep").disabled = current === STEPS.length;
+    }
+
+    /* ── Grafik ──────────────────────────────────────────────── */
+    const BULAN = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
+
+    function drawCharts() {
+      if (typeof Chart === "undefined") return;
+
+      Chart.defaults.font.family = '"IBM Plex Sans", ui-sans-serif, sans-serif';
+      Chart.defaults.font.size = 11;
+      Chart.defaults.color = PALETTE.muted;
+
+      const eq = document.getElementById("equityChart");
+      if (eq) {
+        const gradient = eq.getContext("2d").createLinearGradient(0, 0, 0, 260);
+        gradient.addColorStop(0, "rgba(76,201,240,.28)");
+        gradient.addColorStop(1, "rgba(76,201,240,0)");
+
+        new Chart(eq, {
+          type: "line",
+          data: {
+            labels: DATES,
+            datasets: [{
+              data: EQUITY,
+              borderColor: PALETTE.fast,
+              backgroundColor: gradient,
+              borderWidth: 1.8,
+              fill: true,
+              pointRadius: 0,
+              pointHoverRadius: 4,
+              pointHoverBackgroundColor: PALETTE.fast,
+              tension: 0.06,
+            }],
+          },
+          options: {
+            responsive: true, maintainAspectRatio: false,
+            interaction: { intersect: false, mode: "index" },
+            plugins: {
+              legend: { display: false },
+              tooltip: {
+                backgroundColor: "#0d141c", borderColor: PALETTE.rule, borderWidth: 1,
+                titleColor: PALETTE.muted, bodyColor: PALETTE.ink, padding: 10, displayColors: false,
+                callbacks: { label: (c) => "Ekuitas  $" + c.parsed.y.toFixed(2) },
+              },
+            },
+            scales: {
+              x: {
+                grid: { display: false },
+                border: { color: PALETTE.rule },
+                ticks: {
+                  maxTicksLimit: 7, maxRotation: 0, callback(v) {
+                    const d = this.getLabelForValue(v);
+                    if (!d) return "";
+                    const [tahun, bulan] = d.split("-");
+                    return BULAN[Number(bulan) - 1] + " " + tahun;
+                  }
+                },
+              },
+              y: {
+                grid: { color: "rgba(36,49,64,.6)" },
+                border: { display: false },
+                ticks: { callback: (v) => "$" + v },
+                suggestedMin: 95,
+              },
+            },
+          },
+        });
+      }
+
+      const ex = document.getElementById("exitChart");
+      if (ex) {
+        new Chart(ex, {
+          type: "doughnut",
+          data: {
+            /* Label memakai nilai exit reason apa adanya dari engine, bukan terjemahan:
+               keempatnya adalah nilai enum yang muncul di trade log dan di step 5. */
+            labels: ["TAKE_PROFIT", "STOP_LOSS", "OUT_OF_RANGE", "TIMEOUT"],
+            datasets: [{
+              data: [23, 12, 11, 1],
+              backgroundColor: [PALETTE.pos, PALETTE.neg, PALETTE.slow, "#4a5c70"],
+              borderColor: PALETTE.panel,
+              borderWidth: 2,
+              hoverOffset: 6,
+            }],
+          },
+          options: {
+            responsive: true, maintainAspectRatio: false, cutout: "58%",
+            plugins: {
+              legend: { position: "bottom", labels: { boxWidth: 9, boxHeight: 9, padding: 12, usePointStyle: true, pointStyle: "circle", font: { family: '"IBM Plex Mono", monospace', size: 10 } } },
+              tooltip: {
+                backgroundColor: "#0d141c", borderColor: PALETTE.rule, borderWidth: 1,
+                titleColor: PALETTE.muted, bodyColor: PALETTE.ink, padding: 10, displayColors: false,
+                callbacks: { label: (c) => `${c.label}: ${c.parsed} dari 47 (${(c.parsed / 47 * 100).toFixed(0)}%)` },
+              },
+            },
+          },
+        });
+      }
+    }
+
+    /* ── Perakitan ───────────────────────────────────────────── */
+    document.addEventListener("DOMContentLoaded", () => {
+      renderGraph();
+      selectTab("clocks");
+      paintStep(1);
+      drawCharts();
+
+      document.querySelectorAll(".tab-btn").forEach((b) =>
+        b.addEventListener("click", () => selectTab(b.dataset.tab)));
+      document.querySelectorAll(".step-dot").forEach((b) =>
+        b.addEventListener("click", () => paintStep(Number(b.dataset.step))));
+      document.getElementById("prevStep").addEventListener("click", () => paintStep(current - 1));
+      document.getElementById("nextStep").addEventListener("click", () => paintStep(current + 1));
+
+      document.addEventListener("keydown", (e) => {
+        if (e.target.matches("input, textarea")) return;
+        if (e.key === "ArrowLeft") paintStep(current - 1);
+        if (e.key === "ArrowRight") paintStep(current + 1);
+      });
+    });
+  </script>
+</body>
+
+</html>
