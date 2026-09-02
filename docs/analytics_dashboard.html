@@ -100,6 +100,10 @@
       <p class="mt-1.5 text-[13.5px] leading-relaxed text-zinc-500">
         Paper-trading simulation — Meteora DLMM. Realised PnL saja, tanpa floating PnL.
       </p>
+      <div class="mt-2.5 inline-flex flex-wrap items-center gap-2">
+        <span class="rounded-md bg-emerald-500/10 px-2 py-1 text-[11px] font-medium text-emerald-400">Engine V1.1 saja</span>
+        <span class="text-[11.5px] text-zinc-500">dihitung dari saldo awal $1.000 — bukan saldo akun</span>
+      </div>
     </div>
 
     <div class="flex flex-col items-start gap-2 sm:items-end">
@@ -199,7 +203,6 @@
             <tr>
               <th class="px-4 py-2.5 text-left font-medium">Ditutup</th>
               <th class="px-4 py-2.5 text-left font-medium">Pool</th>
-              <th class="px-4 py-2.5 text-left font-medium">Engine</th>
               <th class="px-4 py-2.5 text-right font-medium">PnL</th>
               <th class="px-4 py-2.5 text-right font-medium">Sumber</th>
             </tr>
@@ -243,17 +246,6 @@
   </section>
 
   <!-- Caveats -->
-  <footer class="rounded-xl border border-zinc-800/60 bg-zinc-900/25 p-5 text-[12px] leading-relaxed text-zinc-500">
-    <p class="mb-2 font-semibold text-zinc-400">Cara baca angka di halaman ini</p>
-    <ul class="list-disc space-y-1.5 pl-4">
-      <li><span class="text-zinc-400">Realised-only.</span> Equity bergerak saat posisi <em>ditutup</em>, bukan dari floating PnL — sama seperti <code class="font-mono text-zinc-400">computeMaxDrawdown</code>. Hari tanpa penutupan adalah 0.00% yang asli, bukan data hilang.</li>
-      <li><span class="text-zinc-400">Sampel masih kecil.</span> <span id="caveat-span"></span> Statistik level-trade adalah bukti utama; rasio harian hanya indikatif.</li>
-      <li><span class="text-zinc-400">Zona tanggal.</span> Saat live, hari dikelompokkan oleh engine dengan <code class="font-mono text-zinc-400">date(closed_at,'localtime')</code> — zona aktifnya dicetak di bawah judul heatmap, sama seperti <code class="font-mono text-zinc-400">/api/pnl-calendar</code>. Snapshot beku memakai UTC dan diberi label UTC.</li>
-      <li><span class="text-zinc-400">Nama pool.</span> Field <code class="font-mono text-zinc-400">pair_name</code> dari upstream kadang rusak (mis. <code class="font-mono text-zinc-400">"-SOL"</code>); baris seperti itu dilabeli dengan potongan pool address, bukan ditebak.</li>
-      <li><span class="text-zinc-400">Sumber data.</span> Pil status di kanan atas menyebut mana yang sedang tampil: <strong class="text-zinc-400">Live</strong> berarti angka datang dari <code class="font-mono text-zinc-400">GET /api/analytics/live</code> yang membaca <code class="font-mono text-zinc-400">flowmetrix.db</code> langsung; <strong class="text-amber-500/90">Snapshot</strong> berarti engine tidak terjangkau dan halaman jatuh ke export beku <code class="font-mono text-zinc-400">exports/trades.csv</code>. Angka snapshot tidak bergerak.</li>
-      <li><span class="text-zinc-400">Refresh.</span> Halaman melakukan polling tiap 60 detik, sejajar dengan siklus <code class="font-mono text-zinc-400">FAST_MONITOR</code> yang membukukan penutupan.</li>
-    </ul>
-  </footer>
 </div>
 
 <!-- Tooltip -->
@@ -269,45 +261,18 @@
  * day on any non-UTC box — the same trap parseDbTimestamp exists to avoid.
  * ------------------------------------------------------------------ */
 const TRADES = [
-  {"id": "baf4fb92-ebc2-46d2-8937-915441e0a100", "t": "2026-08-27T13:40:00Z", "p": 9.845631, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
-  {"id": "a3c4295d-f2f4-448d-86ae-398d928e69c6", "t": "2026-08-27T17:50:00Z", "p": 9.935617, "pool": "CMLq…BwZz", "v": "v1.0"},
-  {"id": "e2bc3efb-f6ee-4867-9015-d60802fb336a", "t": "2026-08-27T18:00:00Z", "p": 5.350542, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
-  {"id": "fe80654f-5e26-481d-924d-2b48d6f9a29e", "t": "2026-08-27T19:20:01Z", "p": -9.063948, "pool": "CMLq…BwZz", "v": "v1.0"},
-  {"id": "2fca5b9c-923a-42e1-8ef4-dedaa21b60e8", "t": "2026-08-27T19:30:00Z", "p": -9.068871, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
-  {"id": "63aeb4c0-75a3-4cac-9748-95a099168076", "t": "2026-08-27T19:50:01Z", "p": 11.793903, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
-  {"id": "e4bc571c-4cdf-4560-8a96-c4b79bddc08a", "t": "2026-08-27T19:50:04Z", "p": 11.71, "pool": "CMLq…BwZz", "v": "v1.0"},
-  {"id": "44c83363-be26-42c1-a189-4fc26ef700cb", "t": "2026-08-27T21:50:00Z", "p": -10.684627, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
-  {"id": "0dc11931-805a-4d19-b06a-889e36d1cec3", "t": "2026-08-27T21:50:03Z", "p": -15.144074, "pool": "CMLq…BwZz", "v": "v1.0"},
-  {"id": "b6969c8e-a5f0-4e2c-bf04-b1c0264cc2ba", "t": "2026-08-28T02:30:00Z", "p": -11.121834, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
-  {"id": "d231c290-3e10-447b-ad36-1d98d3881c5a", "t": "2026-08-28T02:30:03Z", "p": -11.860714, "pool": "CMLq…BwZz", "v": "v1.0"},
-  {"id": "8e89e6fe-e594-4a69-979b-d524af3cb596", "t": "2026-08-28T04:10:01Z", "p": 5.38724, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
-  {"id": "802dc067-e8c2-433a-ba34-a607fad2c98a", "t": "2026-08-28T06:20:00Z", "p": 6.312218, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
-  {"id": "f2253014-c933-43d8-af2f-2d7d3e7c38c8", "t": "2026-08-28T19:40:00Z", "p": -14.696853, "pool": "CYBERLEEK-SOL", "v": "v1.0"},
-  {"id": "fc1c7435-55bb-409f-9f3d-822d39eb9ed4", "t": "2026-08-29T00:50:00Z", "p": 14.982229, "pool": "fone-SOL", "v": "v1.0"},
-  {"id": "e7b41831-d895-497f-8ad2-7958705706f2", "t": "2026-08-29T01:30:00Z", "p": 8.047353, "pool": "fone-SOL", "v": "v1.0"},
-  {"id": "8a3dc7a2-a4a1-45c0-a27c-3789e3a21db8", "t": "2026-08-29T03:20:00Z", "p": 7.94016, "pool": "fone-SOL", "v": "v1.0"},
-  {"id": "a8747976-89b2-451a-b63b-742b786b3ed8", "t": "2026-08-29T03:20:02Z", "p": 5.550063, "pool": "fone-SOL", "v": "v1.0"},
-  {"id": "becef76c-1e2e-4627-9b7b-8462f08d0bc1", "t": "2026-08-29T04:20:00Z", "p": -10.295146, "pool": "fone-SOL", "v": "v1.0"},
-  {"id": "3e5b9996-c0ab-4302-960f-4235232f7834", "t": "2026-08-29T05:50:01Z", "p": -8.952888, "pool": "fone-SOL", "v": "v1.0"},
-  {"id": "00615207-59b5-408b-a333-be946e3de168", "t": "2026-08-29T09:10:00Z", "p": 8.249413, "pool": "fone-USDC", "v": "v1.0"},
-  {"id": "87b72357-95e3-4fe3-9f4f-5dcc9b804b51", "t": "2026-08-29T10:30:00Z", "p": -9.115586, "pool": "fone-SOL", "v": "v1.0"},
-  {"id": "ce000dce-e091-418f-9853-ae901e61f54d", "t": "2026-08-29T12:10:00Z", "p": -11.559318, "pool": "Pistacio-SOL", "v": "v1.0"},
-  {"id": "8e3506e9-c9a6-4844-bfb4-c2b01dbdbda8", "t": "2026-08-29T12:20:00Z", "p": -8.997137, "pool": "fone-SOL", "v": "v1.0"},
-  {"id": "5fb3ea65-0297-4abe-8e45-6719f8f05c19", "t": "2026-08-29T13:30:00Z", "p": 10.015058, "pool": "fone-SOL", "v": "v1.0"},
-  {"id": "4e05b760-b842-4b3f-b583-66e327dd56ac", "t": "2026-08-29T13:40:00Z", "p": 6.709816, "pool": "fone-SOL", "v": "v1.0"},
-  {"id": "7458d8d5-7579-43f4-b92e-8e5bdaadfb25", "t": "2026-08-29T14:50:00Z", "p": 5.394618, "pool": "Pistacio-SOL", "v": "v1.0"},
-  {"id": "dd8326f5-1c21-40de-91be-fb3d4e0b8829", "t": "2026-08-29T15:07:17Z", "p": 7.065966, "pool": "fone-SOL", "v": "v1.1"},
-  {"id": "a8260168-0620-44f1-bcdd-7ee7c743b63a", "t": "2026-08-29T15:07:17Z", "p": 5.851585, "pool": "fone-SOL", "v": "v1.1"},
-  {"id": "100f2302-2c93-4790-a007-277896be6af3", "t": "2026-08-29T16:45:00Z", "p": 5.701928, "pool": "Pistacio-SOL", "v": "v1.1"},
-  {"id": "0c31e40f-0194-4cc9-b9b5-33d0808d5aad", "t": "2026-08-29T18:20:00Z", "p": 7.617165, "pool": "fone-SOL", "v": "v1.1"},
-  {"id": "763f8e3b-06c1-477e-80bc-11aa4a871e3f", "t": "2026-08-29T20:14:00Z", "p": -8.672687, "pool": "fone-SOL", "v": "v1.1"},
-  {"id": "66ad2a98-3f68-4dd5-a2ff-fe191ff08680", "t": "2026-08-30T01:14:00Z", "p": 5.306668, "pool": "Pistacio-SOL", "v": "v1.1"},
-  {"id": "4b1f68ce-f38a-4a13-9f94-18ea7cced1ae", "t": "2026-08-31T05:17:00Z", "p": 5.62864, "pool": "fone-USDC", "v": "v1.1"},
-  {"id": "fc95267b-021f-42d6-9662-e58bdb8ee1ce", "t": "2026-08-31T16:12:00Z", "p": 5.232607, "pool": "fone-USDC", "v": "v1.1"},
-  {"id": "c653a8bc-5616-4e75-a23d-1baf5702976b", "t": "2026-09-01T01:51:00Z", "p": 5.186293, "pool": "fone-USDC", "v": "v1.1"},
-  {"id": "d287ab44-f918-4ca3-8750-cff6e9b0c68e", "t": "2026-09-01T11:29:01Z", "p": 5.398871, "pool": "DOGE-1-SOL", "v": "v1.1"},
-  {"id": "4f884320-8504-4f71-a9dd-420427cc65f6", "t": "2026-09-01T17:24:00Z", "p": 5.294115, "pool": "fone-SOL", "v": "v1.1"},
-  {"id": "367fb3b3-f769-403e-bd08-ed55e9c6319c", "t": "2026-09-02T02:33:00Z", "p": 4.992399, "pool": "DOGE-1-SOL", "v": "v1.1"}
+  {"id": "dd8326f5-1c21-40de-91be-fb3d4e0b8829", "t": "2026-08-29T15:07:17Z", "p": 7.065966, "pool": "fone-SOL"},
+  {"id": "a8260168-0620-44f1-bcdd-7ee7c743b63a", "t": "2026-08-29T15:07:17Z", "p": 5.851585, "pool": "fone-SOL"},
+  {"id": "100f2302-2c93-4790-a007-277896be6af3", "t": "2026-08-29T16:45:00Z", "p": 5.701928, "pool": "Pistacio-SOL"},
+  {"id": "0c31e40f-0194-4cc9-b9b5-33d0808d5aad", "t": "2026-08-29T18:20:00Z", "p": 7.617165, "pool": "fone-SOL"},
+  {"id": "763f8e3b-06c1-477e-80bc-11aa4a871e3f", "t": "2026-08-29T20:14:00Z", "p": -8.672687, "pool": "fone-SOL"},
+  {"id": "66ad2a98-3f68-4dd5-a2ff-fe191ff08680", "t": "2026-08-30T01:14:00Z", "p": 5.306668, "pool": "Pistacio-SOL"},
+  {"id": "4b1f68ce-f38a-4a13-9f94-18ea7cced1ae", "t": "2026-08-31T05:17:00Z", "p": 5.62864, "pool": "fone-USDC"},
+  {"id": "fc95267b-021f-42d6-9662-e58bdb8ee1ce", "t": "2026-08-31T16:12:00Z", "p": 5.232607, "pool": "fone-USDC"},
+  {"id": "c653a8bc-5616-4e75-a23d-1baf5702976b", "t": "2026-09-01T01:51:00Z", "p": 5.186293, "pool": "fone-USDC"},
+  {"id": "d287ab44-f918-4ca3-8750-cff6e9b0c68e", "t": "2026-09-01T11:29:01Z", "p": 5.398871, "pool": "DOGE-1-SOL"},
+  {"id": "4f884320-8504-4f71-a9dd-420427cc65f6", "t": "2026-09-01T17:24:00Z", "p": 5.294115, "pool": "fone-SOL"},
+  {"id": "367fb3b3-f769-403e-bd08-ed55e9c6319c", "t": "2026-09-02T02:33:00Z", "p": 4.992399, "pool": "DOGE-1-SOL"}
 ];
 const STARTING_BALANCE = 1000;
 
@@ -374,8 +339,29 @@ const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(
 /** Midnight UTC of a YYYY-MM-DD key. Date-only, so no zone can shift it a day. */
 const keyMs = key => Date.parse(key + "T00:00:00Z");
 
+/**
+ * Calendar days covered by two close timestamps, inclusive of both ends.
+ *
+ * Measured between the DAY KEYS, not the raw timestamps: Aug 29 13:50 to Sep 2 11:29 is
+ * 3.9 elapsed days and rounds to 4, but it touches five calendar days. Rounding the raw
+ * difference printed a span shorter than the count of active days sitting next to it.
+ */
+const spanDaysBetween = (firstMs, lastMs) =>
+  Math.round((keyMs(dayKey(new Date(lastMs))) - keyMs(dayKey(new Date(firstMs)))) / MS_DAY) + 1;
+
 /* ---------- the merged trade list ---------- */
 const archiveTrades = TRADES.map(t => ({ ...t, ms: Date.parse(t.t), src: "archive" }));
+
+/*
+ * Everything on this page is the V1.1 engine and nothing else. The archive above holds
+ * only trades opened on or after ENGINE_V11_CUTOFF, and the live fetch asks for the
+ * same cohort, so the two halves describe one machine.
+ *
+ * That makes every figure here a STANDING-START figure: the equity curve, the net
+ * percentage and the drawdown all restart from STARTING_BALANCE, so they answer "what
+ * has V1.1 done from a clean slate", not "what is in the account". The header says so,
+ * because a rebased number with no label is a fabricated balance.
+ */
 
 let liveTrades = [];
 let liveMeta = null;
@@ -647,7 +633,7 @@ function renderHeatmap(v, range) {
     grid.appendChild(cell);
   }
 
-  const span = Math.round((v.anchorMs - v.firstMs) / MS_DAY) + 1;
+  const span = spanDaysBetween(v.firstMs, v.anchorMs);
   document.getElementById("heatmap-sub").textContent =
     v.trades + " trades ditutup dalam " + v.activeDays + " hari aktif · rentang data "
     + prettyDate(dayKey(new Date(v.firstMs))) + " → " + prettyDate(dayKey(new Date(v.anchorMs)))
@@ -695,9 +681,6 @@ document.addEventListener("mouseout", e => {
  * Every line is derived from the repo or from the data on screen — none invented.
  */
 function buildFacts(v) {
-  const sum = a => a.reduce((x, t) => x + t.p, 0);
-  const v10 = v.rows.filter(t => t.v === "v1.0");
-  const v11 = v.rows.filter(t => t.v === "v1.1");
   const byDay = [...v.days.entries()];
   const best = byDay.slice().sort((a, b) => b[1].pnl - a[1].pnl)[0];
   const worst = byDay.slice().sort((a, b) => a[1].pnl - b[1].pnl)[0];
@@ -725,13 +708,6 @@ function buildFacts(v) {
     facts.push({
       t: 'Rata-rata menang <strong class="text-emerald-400">' + usd(v.avgWin) + '</strong> lawan rata-rata kalah <strong class="text-red-400">' + usd(v.avgLoss) + '</strong> — payoff di bawah 1. Yang menahan hasil tetap positif adalah <strong class="text-zinc-100">win rate ' + v.winRate.toFixed(1) + "%</strong>, bukan besarnya kemenangan.",
       s: "TAKE_PROFIT_PCT / STOP_LOSS_PCT sudah disweep dan sengaja tidak diubah — CLAUDE.md"
-    });
-  }
-
-  if (v10.length && v11.length) {
-    facts.push({
-      t: 'Guardrail V1.1 mengubah bentuk hasil: <strong class="text-zinc-100">v1.0 ' + v10.length + " trades → " + usd(sum(v10)) + '</strong> lawan <strong class="text-emerald-400">v1.1 ' + v11.length + " trades → " + usd(sum(v11)) + "</strong>. Sampel v1.1 baru " + v11.length + " trade, jadi ini arah, belum bukti.",
-      s: "opened_at vs ENGINE_V11_CUTOFF (2026-08-29T13:20:40Z)"
     });
   }
 
@@ -782,23 +758,19 @@ function renderTrades(v) {
     const stamp = MONTHS[when.getUTCMonth()] + " " + when.getUTCDate()
       + ", " + String(when.getUTCHours()).padStart(2, "0") + ":" + String(when.getUTCMinutes()).padStart(2, "0");
     const tone = t.p > 0 ? "text-emerald-400" : t.p < 0 ? "text-red-400" : "text-zinc-300";
-    const engine = t.v === "v1.1"
-      ? '<span class="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10.5px] font-medium text-emerald-400">v1.1</span>'
-      : '<span class="rounded bg-zinc-700/30 px-1.5 py-0.5 text-[10.5px] font-medium text-zinc-400">v1.0</span>';
     const src = t.src === "live"
       ? '<span class="text-emerald-500/80">live</span>'
       : '<span class="text-zinc-600">arsip</span>';
     return '<tr class="border-t border-zinc-800/50 hover:bg-zinc-800/20">'
       + '<td class="whitespace-nowrap px-4 py-2 font-mono text-[11.5px] text-zinc-400">' + esc(stamp) + " UTC</td>"
       + '<td class="max-w-[220px] truncate px-4 py-2 text-zinc-300" title="' + esc(t.pool) + '">' + esc(t.pool) + "</td>"
-      + '<td class="px-4 py-2">' + engine + "</td>"
       + '<td class="whitespace-nowrap px-4 py-2 text-right font-mono ' + tone + '">' + esc(usd(t.p)) + "</td>"
       + '<td class="whitespace-nowrap px-4 py-2 text-right text-[11.5px]">' + src + "</td>"
       + "</tr>";
   }).join("");
 
   document.getElementById("trades-sub").textContent =
-    rows.length + " trade ditutup · " + v.archiveCount + " arsip + " + v.liveCount + " live";
+    rows.length + " trade V1.1 ditutup · " + v.archiveCount + " arsip + " + v.liveCount + " live";
 }
 
 /* ---------- daily macro brief ---------- */
@@ -915,12 +887,17 @@ let pollTimer = null;
 let firstPaintDone = false;
 
 async function fetchLive() {
-  // Always the whole cohort: the merge and every window are computed here, from the
-  // union. Asking the server for a window would hide archived trades outside it.
+  /*
+   * cohort=current is the V1.1 engine — positions opened on or after
+   * ENGINE_V11_CUTOFF. The page reports one engine, so it asks for one engine;
+   * merging in trades the old screener picked would describe a machine that no
+   * longer exists. No `days`: every window is computed here, from the merged union,
+   * and asking the server for one would hide archived trades outside it.
+   */
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
   try {
-    const res = await fetch(API_BASE + "/api/analytics/live?cohort=all", {
+    const res = await fetch(API_BASE + "/api/analytics/live?cohort=current", {
       signal: ctrl.signal,
       headers: { accept: "application/json" },
     });
@@ -943,7 +920,7 @@ function paint(range) {
   showFact(0);
   cycleFacts();
 
-  const spanDays = Math.round((v.anchorMs - v.firstMs) / MS_DAY) + 1;
+  const spanDays = spanDaysBetween(v.firstMs, v.anchorMs);
   const note = document.getElementById("window-note");
   if (range !== "all" && v.trades === mergedTrades().length) {
     note.textContent = "riwayat baru " + spanDays + " hari — filter ini memuat semua trade";
@@ -955,13 +932,10 @@ function paint(range) {
     note.classList.add("hidden");
   }
 
-  document.getElementById("caveat-span").textContent =
-    v.trades + " trades dalam " + spanDays + " hari kalender (" + v.activeDays + " hari aktif).";
-
   // Always say what the mix is. "40 trades" means nothing without knowing how many
   // came from a live database and how many from a frozen file.
   document.getElementById("src-meta").textContent =
-    v.archiveCount + " arsip + " + v.liveCount + " live = " + v.trades + " closed trades";
+    v.archiveCount + " arsip + " + v.liveCount + " live = " + v.trades + " closed trades (V1.1)";
   document.getElementById("src-label").textContent = liveMeta
     ? "exports/trades.csv + GET /api/analytics/live"
     : "exports/trades.csv (arsip beku)";
@@ -982,7 +956,6 @@ async function refresh(range, { silent = false } = {}) {
       ms: Date.parse(t.closedAt),
       p: t.pnl,
       pool: t.pool,
-      v: t.engineVersion,
       src: "live",
     }));
     liveMeta = payload;
