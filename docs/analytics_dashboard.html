@@ -19,16 +19,65 @@
   };
 </script>
 <style>
-  :root { color-scheme: dark; }
-  body { background:#08090a; -webkit-font-smoothing:antialiased; }
-  /* Subtle top glow — the Vercel/Anthropic dark-surface cue. */
-  .page-glow::before{
-    content:""; position:fixed; inset:0 0 auto 0; height:340px; pointer-events:none;
-    background:radial-gradient(60% 100% at 50% 0%, rgba(56,189,248,.07), transparent 70%);
+  :root{
+    color-scheme: dark;
+    --bg: #07080b;
+    --wash-emerald: rgba(16,185,129,.10);
+    --wash-indigo:  rgba(99,102,241,.11);
+    --wash-sky:     rgba(56,189,248,.06);
   }
+
+  /*
+   * Layered background, in three parts.
+   *
+   * The base colour sits on <html> so the fixed layers below can be painted between it
+   * and the content without fighting the body's own background. Alphas are all under
+   * .12 on purpose: this is a page of numbers, and a wash strong enough to notice on an
+   * empty area is strong enough to drag down the contrast of the text sitting on it.
+   */
+  /* Both need a floor: body paints the wash on its OWN box, so on a short page the
+     gradient would stop where the content stops. */
+  html, body{ min-height:100%; }
+  html{ background:var(--bg); }
+  body{
+    background:
+      radial-gradient(900px 520px at 12% -8%,  var(--wash-emerald), transparent 62%),
+      radial-gradient(760px 460px at 88% -4%,  var(--wash-indigo),  transparent 60%),
+      radial-gradient(1200px 760px at 50% 106%, var(--wash-sky),    transparent 66%),
+      var(--bg);
+    /* Fixed, so the wash stays put instead of sliding away on a long page. */
+    background-attachment: fixed;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /*
+   * Fine grid, faded out toward the edges so it reads as texture rather than as a
+   * table. It is the first child of <body>, so it paints beneath the content wrapper
+   * and never sits over a card.
+   */
+  .page-glow::before{
+    content:""; position:fixed; inset:0; pointer-events:none;
+    background-image:
+      linear-gradient(rgba(255,255,255,.021) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,.021) 1px, transparent 1px);
+    background-size:56px 56px;
+    -webkit-mask-image:radial-gradient(1150px 720px at 50% -5%, #000 15%, transparent 80%);
+    mask-image:radial-gradient(1150px 720px at 50% -5%, #000 15%, transparent 80%);
+  }
+
+  /* Vignette: darkens the far corners so the washes above do not float loose. */
+  .page-glow::after{
+    content:""; position:fixed; inset:0; pointer-events:none; z-index:-1;
+    background:radial-gradient(120% 90% at 50% 40%, transparent 55%, rgba(0,0,0,.55) 100%);
+  }
+
   .card{
-    background:linear-gradient(180deg,#121316 0%,#0e0f11 100%);
+    /* Slightly translucent, so the wash behind tints the surface instead of the card
+       sitting on it as a flat grey rectangle. */
+    background:linear-gradient(180deg, rgba(23,24,28,.86) 0%, rgba(15,16,19,.92) 100%);
     border:1px solid #1f2125;
+    backdrop-filter:blur(6px);
+    -webkit-backdrop-filter:blur(6px);
   }
   .card:hover{ border-color:#2c2f34; }
   .cell{ border-radius:3px; outline:1px solid rgba(255,255,255,.035); outline-offset:-1px; }
@@ -199,7 +248,7 @@
       </summary>
       <div class="max-h-[420px] overflow-auto border-t border-zinc-800/70">
         <table class="w-full min-w-[560px] border-collapse text-[12.5px]">
-          <thead class="sticky top-0 z-10 bg-[#101114] text-[11px] uppercase tracking-wider text-zinc-500">
+          <thead class="sticky top-0 z-10 bg-[#111216]/95 backdrop-blur text-[11px] uppercase tracking-wider text-zinc-500">
             <tr>
               <th class="px-4 py-2.5 text-left font-medium">Ditutup</th>
               <th class="px-4 py-2.5 text-left font-medium">Pool</th>
