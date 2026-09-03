@@ -7,6 +7,10 @@ import {
 } from "../config/liveConfig.js";
 import { getWalletBalanceSol, type WalletBalance } from "./solana.js";
 import { sendMessage } from "./telegram.js";
+import {
+  describeStartingBalance,
+  seedStartingBalanceFromWallet,
+} from "../config/startingBalance.js";
 
 /**
  * Startup gate for the live micro-capital profile.
@@ -51,6 +55,12 @@ export interface PreflightResult {
 
 export interface PreflightDeps {
   config?: LiveMicroCapitalConfig;
+  /**
+   * Closed trades already in the database. The baseline is seeded from the wallet only
+   * on a genuinely clean slate — rebasing under existing trades would re-scale every
+   * percentage already reported against the old number.
+   */
+  existingTrades?: number;
   /** Injected for tests; defaults to the real RPC read. */
   readBalance?: (address: string) => Promise<WalletBalance>;
   /** Injected for tests; defaults to the real Telegram dispatch. */
@@ -164,6 +174,27 @@ export async function runLivePreflight(deps: PreflightDeps = {}): Promise<Prefli
     `[preflight]   wallet ${balance.address}: ${balance.sol.toFixed(6)} SOL ` +
       `(floor ${config.minWalletSol} SOL) — OK`,
   );
+
+  /*
+   * Seed the paper baseline from the real wallet, so the dashboard's percentages are
+   * measured against what the operator actually funded rather than a $1,000 figure
+   * nothing backs. Seeded HERE and nowhere else: this runs once per process, before any
+   * request can read the value, which is what keeps the baseline stable for the run.
+   *
+   * Refuses on an explicit STARTING_BALANCE_USD, on an unreadable price, and on a
+   * database that already holds trades. Its own log line says which.
+   */
+  if (deps.solPriceUsd && deps.solPriceUsd > 0) {
+    const seed = seedStartingBalanceFromWallet({
+      walletUsd: balance.sol * deps.solPriceUsd,
+      walletSol: balance.sol,
+      existingTrades: deps.existingTrades ?? 0,
+    });
+    if (!seed.applied) log(`[preflight]   baseline not seeded: ${seed.reason}`);
+  } else {
+    log("[preflight]   baseline not seeded: no SOL/USD price available");
+  }
+  for (const line of describeStartingBalance()) log(`[preflight]   ${line}`);
 
   return { status: "ok", balance, envelope };
 }

@@ -24,7 +24,7 @@ import {
   getRealisedPnlSeries,
 } from "../database/repositories.js";
 import { computeCurrentWinStreak, computeMaxDrawdown, computeProfitFactor } from "./metrics.js";
-import { STARTING_BALANCE_USD } from "../config/constants.js";
+import { getStartingBalanceUsd } from "../config/startingBalance.js";
 import { env } from "../config/env.js";
 import { defaultCohort, type Cohort } from "./cohort.js";
 import { localDateString } from "../agents/researcherAgent.js";
@@ -152,7 +152,8 @@ export function computeLiveAnalytics(
   // Ordered oldest close first, which is what both the drawdown walk and the streak
   // count assume.
   const pnlSeries = getRealisedPnlSeries(filter);
-  const drawdown = computeMaxDrawdown(pnlSeries, STARTING_BALANCE_USD);
+  const startingBalanceUsd = getStartingBalanceUsd();
+  const drawdown = computeMaxDrawdown(pnlSeries, startingBalanceUsd);
 
   const totalTrades = pnlSeries.length;
   const wins = pnlSeries.filter((p) => p > 0).length;
@@ -182,8 +183,8 @@ export function computeLiveAnalytics(
       losses,
       winRate: totalTrades > 0 ? (wins / totalTrades) * 100 : 0,
       netPnl,
-      netPnlPct: (netPnl / STARTING_BALANCE_USD) * 100,
-      startingBalanceUsd: STARTING_BALANCE_USD,
+      netPnlPct: (netPnl / startingBalanceUsd) * 100,
+      startingBalanceUsd,
       activeDays: dailyHeatmap.filter((d) => d.tradesCount > 0).length,
       currentStreak: computeCurrentWinStreak(pnlSeries),
       maxDrawdown: drawdown.maxDrawdownPct,
