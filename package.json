@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=20 <25"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && node src/scripts/copyAssets.mjs",
@@ -37,8 +37,6 @@
   },
   "dependencies": {
     "@fastify/cors": "^10.0.1",
-    "@meteora-ag/dlmm": "^1.4.0",
-    "@solana/web3.js": "^1.95.8",
     "axios": "^1.7.9",
     "better-sqlite3": "^11.7.0",
     "fastify": "^5.2.0",
