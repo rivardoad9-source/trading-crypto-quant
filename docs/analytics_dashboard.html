@@ -5,6 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FlowMetrix — Performance &amp; Analytics</title>
 <script src="https://cdn.tailwindcss.com"></script>
+<!--
+  Chart.js for the equity curve, pinned to an exact version: an unpinned CDN tag lets a
+  future major rewrite the chart underneath us. The page stays complete without it —
+  renderEquity() states that the picture is missing rather than leaving an empty box,
+  because every number the curve draws is already on the cards and in the table.
+-->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <script>
   tailwind.config = {
     darkMode: "class",
@@ -203,6 +210,67 @@
   @media (prefers-reduced-motion: reduce){
     .livedot{ animation:none; }
   }
+  /* ---- system health strip ---- */
+  .sysnum{
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    font-size:11.5px; font-variant-numeric:tabular-nums; letter-spacing:.01em;
+  }
+  .sysitem-btn{
+    cursor:pointer; border:0; background:transparent; border-radius:7px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    font-size:11.5px; font-weight:600; letter-spacing:.05em; color:#6ee7b7;
+    transition:color .15s ease, background-color .15s ease;
+  }
+  .sysitem-btn:hover{ color:#a7f3d0; background-color:rgba(16,185,129,.10); }
+  .sysitem-btn:focus-visible{ outline:2px solid #10b981; outline-offset:1px; }
+
+  /* ---- equity curve ---- */
+  .eqwrap{ position:relative; height:250px; }
+  @media (min-width:640px){ .eqwrap{ height:300px; } }
+  .eqfallback{
+    position:absolute; inset:0; margin:0; display:flex; align-items:center;
+    justify-content:center; text-align:center; padding:0 1.25rem;
+    font-size:12.5px; line-height:1.6; color:#64748b;
+  }
+
+  /* ---- AI reasoning drawer ---- */
+  .drawer-backdrop{
+    position:fixed; inset:0; z-index:60; background:rgba(2,6,23,.66);
+    backdrop-filter:blur(2px); -webkit-backdrop-filter:blur(2px);
+    opacity:0; pointer-events:none; transition:opacity .22s ease;
+  }
+  .drawer-backdrop.open{ opacity:1; pointer-events:auto; }
+  .drawer{
+    position:fixed; top:0; right:0; bottom:0; z-index:61;
+    width:min(31rem,100vw); display:flex; flex-direction:column;
+    background:rgba(2,6,23,.95);
+    border-left:1px solid #1e293b;
+    box-shadow:-24px 0 60px -30px rgba(0,0,0,.9);
+    transform:translateX(100%);
+    transition:transform .26s cubic-bezier(.22,.61,.36,1);
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  .drawer.open{ transform:translateX(0); }
+  .termlabel{ font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:#475569; }
+  .termbadge{
+    font-size:9.5px; letter-spacing:.13em; text-transform:uppercase; font-weight:700;
+    border-radius:5px; padding:3px 7px; white-space:nowrap;
+  }
+  .termbox{
+    border:1px solid #1e293b; border-radius:9px;
+    background:rgba(15,23,42,.55); padding:12px 13px;
+  }
+  .termkey{ font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:#64748b; }
+  .termval{ font-size:12.5px; color:#e2e8f0; font-variant-numeric:tabular-nums; word-break:break-word; }
+  .termval-dim{ color:#64748b; }
+  .thesis{
+    font-size:12.5px; line-height:1.7; color:#cbd5e1;
+    white-space:pre-wrap; word-break:break-word;
+  }
+  @media (prefers-reduced-motion: reduce){
+    .drawer{ transition:none; }
+    .drawer-backdrop{ transition:none; }
+  }
   .eyebrow{ font-size:11px; letter-spacing:.16em; text-transform:uppercase; color:#8b8f9a; }
   /* ---- trade detail ---- */
   .trow{ cursor:pointer; }
@@ -336,8 +404,25 @@
     <div class="sysbar mt-5">
       <!-- Filled by setStatus(). Distinguishes a live figure from a frozen one. -->
       <span id="conn-status" class="sysitem sysitem-live"></span>
+      <!-- Countdown to the next screener pass. CRON.DLMM_LOOP fires on the half hour,
+           so this is the SCHEDULE, not an observation; with the engine unreachable it
+           says so instead of counting down to a scan that is not coming. -->
+      <span class="sysitem">
+        <span class="sysdot bg-emerald-400/70"></span>Next AI Scan
+        <span id="scan-next" class="sysnum text-slate-500">&mdash;</span>
+      </span>
+      <span id="dual-clock" class="sysitem">
+        <span class="sysdot bg-slate-600"></span>Dual-Clock 30m / 1m &mdash; tidak terpantau
+      </span>
+      <!-- Round-trip to THIS engine's /api/health, measured in the browser. It is not an
+           RPC probe; see refreshHealth(). -->
+      <span class="sysitem">
+        <span class="sysdot bg-slate-500"></span>Engine API
+        <span id="api-latency" class="sysnum text-slate-500">&mdash;</span>
+      </span>
       <span class="sysitem sysitem-accent">
         <span class="sysdot bg-emerald-400"></span>V1.1 Official Baseline
+        <span id="engine-uptime" class="sysnum text-slate-500">&mdash;</span>
       </span>
       <span class="sysitem">
         <span class="sysdot bg-slate-500"></span>DRY RUN Mode
@@ -345,6 +430,8 @@
       <span class="sysitem sysitem-quiet">
         <span class="sysdot bg-slate-600"></span>Saldo awal $1.000 — bukan saldo akun
       </span>
+      <button id="reason-open" type="button" class="sysitem sysitem-btn"
+              aria-expanded="false" aria-controls="reason-drawer">&gt;_ AI Reasoning Stream</button>
     </div>
 
     <div class="header-rule mt-7"></div>
@@ -367,7 +454,22 @@
   </div>
 
   <!-- 8 metric cards -->
-  <section id="metric-grid" class="mb-10 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4"></section>
+  <section id="metric-grid" class="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4"></section>
+
+  <!-- Equity curve -->
+  <section class="card mb-5 rounded-xl p-5 sm:p-6">
+    <div class="mb-4 flex flex-col gap-1.5 sm:flex-row sm:items-end sm:justify-between">
+      <div>
+        <h2 class="text-[15px] font-semibold tracking-tight text-zinc-100">Equity Curve</h2>
+        <p id="eq-sub" class="mt-1 text-[12.5px] text-zinc-500">&mdash;</p>
+      </div>
+      <p class="text-[11px] text-zinc-500">realised saja — floating PnL posisi terbuka tidak dihitung</p>
+    </div>
+    <div id="eq-wrap" class="eqwrap">
+      <canvas id="eq-chart" role="img" aria-label="Kurva ekuitas kumulatif dari modal awal"></canvas>
+      <p id="eq-fallback" class="eqfallback hidden"></p>
+    </div>
+  </section>
 
   <!-- Open positions: what the engine is holding right now -->
   <section class="card mb-5 rounded-xl">
@@ -500,6 +602,30 @@
 
   <!-- Caveats -->
 </div>
+
+<!--
+  AI reasoning stream. Everything here is read back from SQLite through /api/positions/*:
+  the thesis is simulated_positions.reasoning_log, the pool snapshot is the entry-time
+  TVL and volume that row stored, and the fee figure is the engine's own conservative 24h
+  estimate. Nothing in this panel is produced client-side.
+-->
+<div id="reason-backdrop" class="drawer-backdrop" aria-hidden="true"></div>
+<aside id="reason-drawer" class="drawer" role="dialog" aria-modal="true"
+       aria-labelledby="reason-title" aria-hidden="true">
+  <div class="flex items-start justify-between gap-3 border-b border-slate-800 px-4 py-3.5">
+    <div class="min-w-0">
+      <h2 id="reason-title" class="text-[12.5px] font-bold tracking-[.09em] text-emerald-300">DEEPSEEK REASONER V1.1 LOG</h2>
+      <p class="termlabel mt-1 truncate">simulated_positions.reasoning_log</p>
+    </div>
+    <div class="flex shrink-0 items-center gap-2">
+      <span id="reason-sync" class="termbadge bg-slate-700/40 text-slate-400">&mdash;</span>
+      <button id="reason-close" type="button" aria-label="Tutup panel"
+              class="rounded-md border border-slate-800 px-2 py-1 text-[12px] leading-none text-slate-400 transition hover:border-slate-700 hover:text-slate-200">&#10005;</button>
+    </div>
+  </div>
+  <div id="reason-body" class="flex-1 overflow-auto px-4 py-4"></div>
+  <div id="reason-foot" class="border-t border-slate-800 px-4 py-3"></div>
+</aside>
 
 <!-- Tooltip -->
 <div id="tip" class="pointer-events-none fixed z-50 hidden rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-[12px] shadow-xl shadow-black/60"></div>
@@ -1944,6 +2070,408 @@ async function refreshBrief() {
   }
 }
 
+/* ---------- next screener scan ---------- */
+
+// CRON.DLMM_LOOP is the half-hourly screener, so the next pass is the next :00 or :30 of
+// the engine's own clock. The engine runs Asia/Jakarta, a whole-hour offset, so its
+// minute-of-hour equals UTC's and the countdown is exact without asking the server for
+// it. An engine on a :45 zone would have to publish its own next fire time.
+//
+// This is a SCHEDULE, not an observation. With the engine unreachable nothing is coming,
+// and the widget says so rather than counting down to an event that will not happen —
+// the same rule that keeps the status pill from animating over a dead connection.
+const SCAN_PERIOD_MIN = 30;
+
+function msToNextScan(now) {
+  const d = new Date(now === undefined ? Date.now() : now);
+  const into = ((d.getUTCMinutes() % SCAN_PERIOD_MIN) * 60 + d.getUTCSeconds()) * 1000
+    + d.getUTCMilliseconds();
+  return SCAN_PERIOD_MIN * 60000 - into;
+}
+
+const fmtCountdown = ms => {
+  const total = Math.max(0, Math.round(ms / 1000));
+  return Math.floor(total / 60) + "m " + String(total % 60).padStart(2, "0") + "s";
+};
+
+// Rewriting the dual-clock badge every second would restart nothing visible but churn
+// the DOM 86,400 times a day, so it is only rebuilt when the state actually flips.
+let dualState = null;
+
+function tickEngineState() {
+  const online = lastSyncMs !== null;
+
+  const scan = document.getElementById("scan-next");
+  if (scan) {
+    scan.className = online ? "sysnum text-emerald-300/90" : "sysnum text-slate-500";
+    scan.textContent = online ? fmtCountdown(msToNextScan()) : "engine offline";
+  }
+
+  const dual = document.getElementById("dual-clock");
+  if (dual && dualState !== online) {
+    dualState = online;
+    dual.innerHTML =
+      '<span class="sysdot ' + (online ? "bg-emerald-400/70" : "bg-slate-600") + '"></span>'
+      + (online
+        ? "Dual-Clock aktif — 30m screener / 1m monitor"
+        : "Dual-Clock 30m / 1m — tidak terpantau");
+  }
+}
+
+/* ---------- engine health ---------- */
+
+const fmtUptime = sec => {
+  const v = Number(sec);
+  if (!Number.isFinite(v) || v < 0) return "—";
+  const d = Math.floor(v / 86400), h = Math.floor((v % 86400) / 3600), m = Math.floor((v % 3600) / 60);
+  if (d > 0) return d + " hari " + h + "j";
+  if (h > 0) return h + "j " + m + "m";
+  return m + "m";
+};
+
+// The latency shown here is the browser's measured round-trip to THIS engine's
+// /api/health. It is deliberately NOT labelled as Solana RPC latency: nothing the page
+// can reach reports that number, and printing an API round-trip under an RPC label would
+// be inventing a measurement — the same thing the macro metrics refuse to do when they
+// print UNAVAILABLE. Unreachable is reported as unreachable, never as a stale duration.
+async function refreshHealth() {
+  const lat = document.getElementById("api-latency");
+  const up = document.getElementById("engine-uptime");
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+  const t0 = Date.now();
+  try {
+    const res = await fetch(API_BASE + "/api/health", {
+      signal: ctrl.signal,
+      headers: { accept: "application/json" },
+    });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const payload = await res.json();
+    const rtt = Date.now() - t0;
+    if (lat) {
+      lat.textContent = rtt + "ms";
+      lat.className = "sysnum " + (rtt < 150 ? "text-emerald-300/90"
+        : rtt < 500 ? "text-amber-400/90" : "text-red-400/90");
+    }
+    if (up) {
+      up.textContent = "up " + fmtUptime(payload && payload.uptimeSeconds);
+      up.className = "sysnum text-slate-400";
+    }
+  } catch {
+    if (lat) { lat.textContent = "tak terjangkau"; lat.className = "sysnum text-slate-500"; }
+    if (up) { up.textContent = "—"; up.className = "sysnum text-slate-500"; }
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/* ---------- equity curve ---------- */
+
+let eqChart = null;
+
+// Cumulative REALISED equity, stepped once per closed trade in the same order and on the
+// same basis as maxDrawdown(). Sharing that basis is the point: the trough of this line
+// IS the figure on the Max Drawdown card above it. Floating PnL from open positions is
+// deliberately absent — folding it in would make the curve unreproducible from the trade
+// log, which is exactly why the annual tear sheet's daily curve leaves it out too.
+function renderEquity(v) {
+  const wrap = document.getElementById("eq-wrap");
+  const fb = document.getElementById("eq-fallback");
+  const sub = document.getElementById("eq-sub");
+  const canvas = document.getElementById("eq-chart");
+  if (!wrap || !fb || !canvas) return;
+
+  const end = STARTING_BALANCE + v.net;
+  if (sub) {
+    sub.textContent = v.trades + " trade · $" + STARTING_BALANCE.toLocaleString("en-US")
+      + " → $" + end.toFixed(2)
+      + " (" + (v.net >= 0 ? "+" : "−") + Math.abs(v.netPct).toFixed(2) + "%)";
+  }
+
+  // Chart.js arrives from a CDN. Blocked, offline or still loading, the page keeps every
+  // number the curve would have drawn; it says the picture is missing rather than leaving
+  // an empty frame that reads as "no trades".
+  if (typeof Chart === "undefined" || typeof canvas.getContext !== "function") {
+    fb.textContent = "Grafik tidak digambar — Chart.js gagal dimuat dari CDN. "
+      + "Semua angka di kartu metrik dan tabel trade di atas tidak terpengaruh.";
+    fb.classList.remove("hidden");
+    canvas.classList.add("hidden");
+    return;
+  }
+  fb.classList.add("hidden");
+  canvas.classList.remove("hidden");
+
+  const labels = ["Modal awal"];
+  const data = [STARTING_BALANCE];
+  const points = [null];
+  let eq = STARTING_BALANCE;
+  for (const t of v.rows) {
+    eq += t.p;
+    labels.push(prettyDate(dayKey(new Date(t.ms))));
+    data.push(Number(eq.toFixed(2)));
+    points.push(t);
+  }
+
+  if (eqChart) {
+    // Updated in place rather than rebuilt: the page repaints on every silent poll, and a
+    // fresh Chart would replay its entry animation and flash the panel once a minute.
+    eqChart.data.labels = labels;
+    eqChart.data.datasets[0].data = data;
+    eqChart.$points = points;
+    eqChart.update("none");
+    return;
+  }
+
+  const ctx = canvas.getContext("2d");
+  const fill = ctx.createLinearGradient(0, 0, 0, wrap.clientHeight || 280);
+  fill.addColorStop(0, "rgba(16,185,129,.34)");
+  fill.addColorStop(1, "rgba(16,185,129,0)");
+
+  eqChart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels,
+      datasets: [{
+        data,
+        borderColor: "#10b981",
+        borderWidth: 2,
+        fill: true,
+        backgroundColor: fill,
+        tension: 0.25,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+        pointHoverBackgroundColor: "#10b981",
+        pointHoverBorderColor: "#04231b",
+        pointHoverBorderWidth: 2,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: { duration: 320 },
+      interaction: { mode: "index", intersect: false },
+      scales: {
+        x: {
+          grid: { display: false },
+          border: { color: "#1e293b" },
+          ticks: { color: "#64748b", font: { size: 10 }, maxRotation: 0, autoSkipPadding: 26 },
+        },
+        y: {
+          grid: { color: "rgba(30,41,59,.75)" },
+          border: { display: false },
+          ticks: {
+            color: "#64748b",
+            font: { size: 10 },
+            callback: val => "$" + Number(val).toFixed(0),
+          },
+        },
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: "rgba(15,23,42,.96)",
+          borderColor: "#334155",
+          borderWidth: 1,
+          titleColor: "#e2e8f0",
+          bodyColor: "#cbd5e1",
+          padding: 10,
+          displayColors: false,
+          callbacks: {
+            title: items => {
+              const t = eqChart && eqChart.$points ? eqChart.$points[items[0].dataIndex] : null;
+              return t ? t.pool : "Modal awal";
+            },
+            label: item => {
+              const t = eqChart && eqChart.$points ? eqChart.$points[item.dataIndex] : null;
+              const out = ["Ekuitas $" + Number(item.raw).toFixed(2)];
+              if (t) {
+                out.push("PnL trade " + usd(t.p));
+                out.push("Ditutup " + prettyDate(dayKey(new Date(t.ms))));
+                out.push("Sumber " + (t.src === "live" ? "live" : "arsip"));
+              }
+              return out;
+            },
+          },
+        },
+      },
+    },
+  });
+  eqChart.$points = points;
+}
+
+/* ---------- AI reasoning drawer ---------- */
+
+// REASONER_MAX_TOKENS, src/services/deepseek.ts. The CAP is a real, checked-in constant.
+// Per-call USAGE is not: the engine reads usage.completion_tokens_details only to explain
+// an empty completion and never persists it, so the footer prints the cap it is measured
+// against and names the usage as unrecorded instead of guessing a number.
+const REASONER_TOKEN_CAP = 16000;
+const THESIS_MAX = 400;
+
+let drawerOpen = false;
+let reasonTimer = null;
+
+const fmtBig = n => {
+  const v = Number(n);
+  if (n === null || n === undefined || !Number.isFinite(v)) return "tidak dicatat";
+  if (Math.abs(v) >= 1e6) return "$" + (v / 1e6).toFixed(2) + "M";
+  if (Math.abs(v) >= 1e3) return "$" + (v / 1e3).toFixed(1) + "K";
+  return "$" + v.toFixed(2);
+};
+
+const termRow = (k, val, dim, title) =>
+  '<div class="min-w-0"' + (title ? ' title="' + esc(title) + '"' : "") + ">"
+  + '<p class="termkey">' + esc(k) + "</p>"
+  + '<p class="termval mt-0.5' + (dim ? " termval-dim" : "") + '">' + esc(val) + "</p>"
+  + "</div>";
+
+function setDrawer(open) {
+  drawerOpen = open;
+  const d = document.getElementById("reason-drawer");
+  const b = document.getElementById("reason-backdrop");
+  const btn = document.getElementById("reason-open");
+  // classList.toggle's second argument is not used: it is the one classList call whose
+  // force form some minimal DOM shims silently ignore, which would leave the drawer stuck.
+  if (d) {
+    if (open) d.classList.add("open"); else d.classList.remove("open");
+    d.setAttribute("aria-hidden", open ? "false" : "true");
+  }
+  if (b) { if (open) b.classList.add("open"); else b.classList.remove("open"); }
+  if (btn) btn.setAttribute("aria-expanded", open ? "true" : "false");
+
+  clearInterval(reasonTimer);
+  reasonTimer = null;
+  if (!open) return;
+
+  refreshReasoning();
+  // Only polls while it is on screen. A closed drawer asking the engine for a thesis
+  // once a minute is load nobody is looking at.
+  reasonTimer = setInterval(refreshReasoning, POLL_MS);
+  const close = document.getElementById("reason-close");
+  if (close && typeof close.focus === "function") close.focus();
+}
+
+// An OPEN position carries the thesis the engine is acting on right now. With the book
+// flat the most recent CLOSED position still has the reasoning that opened it, shown
+// under an archive badge — a finished trade's thesis is not a statement about what the
+// engine is doing at this moment, and must not be dressed as one.
+async function refreshReasoning() {
+  if (openPositions === null) { paintReasoning(null, "offline"); return; }
+
+  if (Array.isArray(openPositions) && openPositions.length) {
+    const newest = openPositions
+      .slice()
+      .sort((a, b) => String(b.openedAt || "").localeCompare(String(a.openedAt || "")))[0];
+    paintReasoning(newest, "live");
+    return;
+  }
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    const res = await fetch(API_BASE + "/api/positions/history?limit=1&cohort=current", {
+      signal: ctrl.signal,
+      headers: { accept: "application/json" },
+    });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const payload = await res.json();
+    const rows = Array.isArray(payload.positions) ? payload.positions : [];
+    paintReasoning(rows[0] || null, rows.length ? "closed" : "empty");
+  } catch {
+    paintReasoning(null, "offline");
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function paintReasoning(p, mode) {
+  const body = document.getElementById("reason-body");
+  const foot = document.getElementById("reason-foot");
+  const sync = document.getElementById("reason-sync");
+  if (!body || !foot) return;
+
+  const badge = {
+    live: ["termbadge bg-emerald-500/15 text-emerald-300", "REAL-TIME SYNC"],
+    closed: ["termbadge bg-amber-500/15 text-amber-300", "ARSIP · POSISI TERAKHIR"],
+    empty: ["termbadge bg-slate-700/40 text-slate-400", "BELUM ADA POSISI"],
+    offline: ["termbadge bg-slate-700/40 text-slate-400", "ENGINE OFFLINE"],
+  }[mode] || ["termbadge bg-slate-700/40 text-slate-400", "—"];
+  if (sync) { sync.className = badge[0]; sync.textContent = badge[1]; }
+
+  if (!p) {
+    const msg = mode === "offline"
+      ? "Engine tak terjangkau, jadi panel ini tidak bisa membaca reasoning_log. Tidak ada thesis yang ditampilkan daripada menampilkan yang basi."
+      : "Belum ada posisi tercatat pada cohort V1.1, jadi belum ada thesis yang bisa dibaca.";
+    body.innerHTML = '<div class="termbox"><p class="thesis termval-dim">' + esc(msg) + "</p></div>";
+    foot.innerHTML = '<p class="termkey">Token budget <span class="termval ml-1.5">'
+      + REASONER_TOKEN_CAP.toLocaleString("id-ID") + " cap</span></p>";
+    return;
+  }
+
+  const raw = String(p.thesis || "").trim();
+  const cut = raw.length > THESIS_MAX;
+  const thesis = raw
+    ? esc(cut ? raw.slice(0, THESIS_MAX).trimEnd() + "…" : raw)
+    : '<span class="termval-dim">Tidak ada reasoning_log tersimpan untuk posisi ini.</span>';
+
+  const lo = Number(p.lowerBinPrice), hi = Number(p.upperBinPrice), entry = Number(p.entryPrice);
+  const bounded = Number.isFinite(lo) && Number.isFinite(hi);
+  const binRange = bounded ? fmtPrice(lo) + " – " + fmtPrice(hi) : "tidak dicatat";
+  const depth = bounded && Number.isFinite(entry) && entry > 0
+    ? "±" + (((hi - lo) / 2 / entry) * 100).toFixed(2) + "% dari entry"
+    : "tidak dicatat";
+
+  const fee = Number(p.expectedFee24hUsd);
+  const notional = Number(p.notionalUsd);
+  const yieldTxt = Number.isFinite(fee) && Number.isFinite(notional) && notional > 0
+    ? "$" + fee.toFixed(2) + " · " + ((fee / notional) * 100).toFixed(2) + "% notional/24j"
+    : "tidak dicatat";
+
+  const cov = Number(p.breakevenCoverageRatio);
+  const covTxt = Number.isFinite(cov) ? cov.toFixed(2) + "× biaya round-trip" : "tidak dicatat";
+
+  const rangeTxt = mode === "live"
+    ? (p.inRange ? "IN RANGE" : "OUT OF RANGE")
+    : String(p.status || "—");
+
+  body.innerHTML =
+    '<p class="termlabel mb-1.5">Current Thesis</p>'
+    + '<div class="termbox"><p class="thesis">' + thesis + "</p></div>"
+    + '<p class="termlabel mt-1.5">'
+    + (cut ? "dipotong pada " + THESIS_MAX + " karakter" : "utuh")
+    + " · simulated_positions.reasoning_log</p>"
+    + '<p class="termlabel mb-1.5 mt-4">Pool Snapshot</p>'
+    + '<div class="termbox grid grid-cols-2 gap-x-3 gap-y-3">'
+    +   termRow("Pool", p.pairName || "—")
+    +   termRow("Status", rangeTxt)
+    +   termRow("Bin range", binRange, !bounded)
+    +   termRow("Active bin depth", depth, !bounded)
+    +   termRow("TVL saat entry", fmtBig(p.entryTvl), p.entryTvl === null || p.entryTvl === undefined)
+    +   termRow("Volume 24j saat entry", fmtBig(p.entry24hVolume),
+                p.entry24hVolume === null || p.entry24hVolume === undefined)
+    +   termRow("Projected yield", yieldTxt, !Number.isFinite(fee),
+                "Estimasi fee 24 jam milik engine: model fee level-pool tanpa pengali konsentrasi, "
+                + "sengaja batas bawah — bukan proyeksi hasil sebenarnya.")
+    +   termRow("Breakeven coverage", covTxt, !Number.isFinite(cov),
+                "MIN_FEE_COST_COVERAGE gate: estimasi fee 24 jam dibagi biaya gas + slippage pulang-pergi.")
+    + "</div>";
+
+  const conf = Number(p.confidenceScore);
+  const decision = mode === "live"
+    ? "ENTER" + (Number.isFinite(conf) && conf > 0 ? " · conf " + conf : "")
+    : (String(p.closeReason || p.status || "—"));
+
+  foot.innerHTML =
+    '<div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5">'
+    + '<span class="termkey" title="Cap dari REASONER_MAX_TOKENS. Pemakaian token per panggilan '
+    +   'tidak disimpan engine, jadi tidak ditampilkan sebagai angka.">Tokens '
+    +   '<span class="termval ml-1.5 termval-dim">tidak dicatat</span>'
+    +   '<span class="termval ml-1"> / ' + REASONER_TOKEN_CAP.toLocaleString("id-ID") + " cap</span></span>"
+    + '<span class="termkey">Decision <span class="termval ml-1.5 text-emerald-300">'
+    +   esc(decision) + "</span></span>"
+    + "</div>";
+}
+
 /* ---------- connection status ---------- */
 const statusEl = document.getElementById("conn-status");
 
@@ -2002,7 +2530,10 @@ function tickStatus() {
 
 function startTicker() {
   clearInterval(tickTimer);
-  tickTimer = setInterval(tickStatus, 1000);
+  // One second-hand for both: the clock in the pill and the countdown to the next
+  // screener pass. A second interval would drift against this one and show two
+  // different ideas of "now" in the same header.
+  tickTimer = setInterval(() => { tickStatus(); tickEngineState(); }, 1000);
 }
 
 /* ---------- fetch + render ---------- */
@@ -2037,6 +2568,7 @@ function paint(range) {
   if (!v) return;
 
   renderCards(v);
+  renderEquity(v);
   renderHeatmap(v, range);
   renderMonthly(v);
   renderTrades(v);
@@ -2100,6 +2632,7 @@ function startPolling() {
     refresh(currentRange, { silent: true });
     refreshBrief();
     refreshPositions();
+    refreshHealth();
   }, POLL_MS);
 }
 
@@ -2123,11 +2656,24 @@ window.addEventListener("resize", () => {
   resizeTimer = setTimeout(() => { if (firstPaintDone) paint(currentRange); }, 150);
 });
 
+/* ---------- reasoning drawer wiring ---------- */
+const reasonOpenBtn = document.getElementById("reason-open");
+if (reasonOpenBtn) reasonOpenBtn.addEventListener("click", () => setDrawer(!drawerOpen));
+const reasonCloseBtn = document.getElementById("reason-close");
+if (reasonCloseBtn) reasonCloseBtn.addEventListener("click", () => setDrawer(false));
+const reasonBackdrop = document.getElementById("reason-backdrop");
+if (reasonBackdrop) reasonBackdrop.addEventListener("click", () => setDrawer(false));
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && drawerOpen) setDrawer(false);
+});
+
 setStatus("loading");
 skeletonCards();
+tickEngineState();
 refresh("all");
 refreshBrief();
 refreshPositions();
+refreshHealth();
 startPolling();
 startTicker();
 
