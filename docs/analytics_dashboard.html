@@ -429,7 +429,7 @@
         <span class="sysdot bg-slate-500"></span>DRY RUN Mode
       </span>
       <span class="sysitem sysitem-quiet">
-        <span class="sysdot bg-slate-600"></span><span id="modal-label">Modal awal $100 — simulasi paper (menunggu /api/wallet)</span>
+        <span class="sysdot bg-slate-600"></span><span id="modal-label">Modal dasar — sinkron dari engine · PnL = simulasi paper (DRY RUN)</span>
       </span>
       <button id="reason-open" type="button" class="sysitem sysitem-btn"
               aria-expanded="false" aria-controls="reason-drawer">&gt;_ AI Reasoning Stream</button>
@@ -641,60 +641,19 @@
  * day on any non-UTC box — the same trap parseDbTimestamp exists to avoid.
  * ------------------------------------------------------------------ */
 const TRADES = [
-  {"id":"baf4fb92-ebc2-46d2-8937-915441e0a100","t":"2026-08-27T13:40:00Z","p":9.845631,"pool":"CYBERLEEK-SOL","v":"v1.0"},
-  {"id":"a3c4295d-f2f4-448d-86ae-398d928e69c6","t":"2026-08-27T17:50:00Z","p":9.935617,"pool":"-SOL","v":"v1.0"},
-  {"id":"e2bc3efb-f6ee-4867-9015-d60802fb336a","t":"2026-08-27T18:00:00Z","p":5.350542,"pool":"CYBERLEEK-SOL","v":"v1.0"},
-  {"id":"fe80654f-5e26-481d-924d-2b48d6f9a29e","t":"2026-08-27T19:20:01Z","p":-9.063948,"pool":"-SOL","v":"v1.0"},
-  {"id":"2fca5b9c-923a-42e1-8ef4-dedaa21b60e8","t":"2026-08-27T19:30:00Z","p":-9.068871,"pool":"CYBERLEEK-SOL","v":"v1.0"},
-  {"id":"63aeb4c0-75a3-4cac-9748-95a099168076","t":"2026-08-27T19:50:01Z","p":11.793903,"pool":"CYBERLEEK-SOL","v":"v1.0"},
-  {"id":"e4bc571c-4cdf-4560-8a96-c4b79bddc08a","t":"2026-08-27T19:50:04Z","p":11.71,"pool":"-SOL","v":"v1.0"},
-  {"id":"44c83363-be26-42c1-a189-4fc26ef700cb","t":"2026-08-27T21:50:00Z","p":-10.684627,"pool":"CYBERLEEK-SOL","v":"v1.0"},
-  {"id":"0dc11931-805a-4d19-b06a-889e36d1cec3","t":"2026-08-27T21:50:03Z","p":-15.144074,"pool":"-SOL","v":"v1.0"},
-  {"id":"b6969c8e-a5f0-4e2c-bf04-b1c0264cc2ba","t":"2026-08-28T02:30:00Z","p":-11.121834,"pool":"CYBERLEEK-SOL","v":"v1.0"},
-  {"id":"d231c290-3e10-447b-ad36-1d98d3881c5a","t":"2026-08-28T02:30:03Z","p":-11.860714,"pool":"-SOL","v":"v1.0"},
-  {"id":"8e89e6fe-e594-4a69-979b-d524af3cb596","t":"2026-08-28T04:10:01Z","p":5.38724,"pool":"CYBERLEEK-SOL","v":"v1.0"},
-  {"id":"802dc067-e8c2-433a-ba34-a607fad2c98a","t":"2026-08-28T06:20:00Z","p":6.312218,"pool":"CYBERLEEK-SOL","v":"v1.0"},
-  {"id":"f2253014-c933-43d8-af2f-2d7d3e7c38c8","t":"2026-08-28T19:40:00Z","p":-14.696853,"pool":"CYBERLEEK-SOL","v":"v1.0"},
-  {"id":"fc1c7435-55bb-409f-9f3d-822d39eb9ed4","t":"2026-08-29T00:50:00Z","p":14.982229,"pool":"fone-SOL","v":"v1.0"},
-  {"id":"e7b41831-d895-497f-8ad2-7958705706f2","t":"2026-08-29T01:30:00Z","p":8.047353,"pool":"fone-SOL","v":"v1.0"},
-  {"id":"8a3dc7a2-a4a1-45c0-a27c-3789e3a21db8","t":"2026-08-29T03:20:00Z","p":7.94016,"pool":"fone-SOL","v":"v1.0"},
-  {"id":"a8747976-89b2-451a-b63b-742b786b3ed8","t":"2026-08-29T03:20:02Z","p":5.550063,"pool":"fone-SOL","v":"v1.0"},
-  {"id":"becef76c-1e2e-4627-9b7b-8462f08d0bc1","t":"2026-08-29T04:20:00Z","p":-10.295146,"pool":"fone-SOL","v":"v1.0"},
-  {"id":"3e5b9996-c0ab-4302-960f-4235232f7834","t":"2026-08-29T05:50:01Z","p":-8.952888,"pool":"fone-SOL","v":"v1.0"},
-  {"id":"00615207-59b5-408b-a333-be946e3de168","t":"2026-08-29T09:10:00Z","p":8.249413,"pool":"fone-USDC","v":"v1.0"},
-  {"id":"87b72357-95e3-4fe3-9f4f-5dcc9b804b51","t":"2026-08-29T10:30:00Z","p":-9.115586,"pool":"fone-SOL","v":"v1.0"},
-  {"id":"ce000dce-e091-418f-9853-ae901e61f54d","t":"2026-08-29T12:10:00Z","p":-11.559318,"pool":"Pistacio-SOL","v":"v1.0"},
-  {"id":"8e3506e9-c9a6-4844-bfb4-c2b01dbdbda8","t":"2026-08-29T12:20:00Z","p":-8.997137,"pool":"fone-SOL","v":"v1.0"},
-  {"id":"5fb3ea65-0297-4abe-8e45-6719f8f05c19","t":"2026-08-29T13:30:00Z","p":10.015058,"pool":"fone-SOL","v":"v1.0"},
-  {"id":"4e05b760-b842-4b3f-b583-66e327dd56ac","t":"2026-08-29T13:40:00Z","p":6.709816,"pool":"fone-SOL","v":"v1.0"},
-  {"id":"7458d8d5-7579-43f4-b92e-8e5bdaadfb25","t":"2026-08-29T14:50:00Z","p":5.394618,"pool":"Pistacio-SOL","v":"v1.0"},
-  {"id":"a8260168-0620-44f1-bcdd-7ee7c743b63a","t":"2026-08-29T15:07:17Z","p":5.851585,"pool":"fone-SOL","v":"v1.1"},
-  {"id":"dd8326f5-1c21-40de-91be-fb3d4e0b8829","t":"2026-08-29T15:07:17Z","p":7.065966,"pool":"fone-SOL","v":"v1.1"},
-  {"id":"100f2302-2c93-4790-a007-277896be6af3","t":"2026-08-29T16:45:00Z","p":5.701928,"pool":"Pistacio-SOL","v":"v1.1"},
-  {"id":"0c31e40f-0194-4cc9-b9b5-33d0808d5aad","t":"2026-08-29T18:20:00Z","p":7.617165,"pool":"fone-SOL","v":"v1.1"},
-  {"id":"763f8e3b-06c1-477e-80bc-11aa4a871e3f","t":"2026-08-29T20:14:00Z","p":-8.672687,"pool":"fone-SOL","v":"v1.1"},
-  {"id":"66ad2a98-3f68-4dd5-a2ff-fe191ff08680","t":"2026-08-30T01:14:00Z","p":5.306668,"pool":"Pistacio-SOL","v":"v1.1"},
-  {"id":"4b1f68ce-f38a-4a13-9f94-18ea7cced1ae","t":"2026-08-31T05:17:00Z","p":5.62864,"pool":"fone-USDC","v":"v1.1"},
-  {"id":"fc95267b-021f-42d6-9662-e58bdb8ee1ce","t":"2026-08-31T16:12:00Z","p":5.232607,"pool":"fone-USDC","v":"v1.1"},
-  {"id":"c653a8bc-5616-4e75-a23d-1baf5702976b","t":"2026-09-01T01:51:00Z","p":5.186293,"pool":"fone-USDC","v":"v1.1"},
-  {"id":"d287ab44-f918-4ca3-8750-cff6e9b0c68e","t":"2026-09-01T11:29:01Z","p":5.398871,"pool":"DOGE-1-SOL","v":"v1.1"},
-  {"id":"4f884320-8504-4f71-a9dd-420427cc65f6","t":"2026-09-01T17:24:00Z","p":5.294115,"pool":"fone-SOL","v":"v1.1"},
-  {"id":"367fb3b3-f769-403e-bd08-ed55e9c6319c","t":"2026-09-02T02:33:00Z","p":4.992399,"pool":"DOGE-1-SOL","v":"v1.1"}
+
 ];
 /*
- * DISPLAY MODE (user choice 3 Sep 2026): the paper track (bankrolled at $1000,
- * positions 1 SOL virtual) is displayed scaled onto the operator's REAL wallet value,
- * so the dollars read at the size actually funded. Returns/winrate/drawdown % are
- * unchanged — only the $ figures move. Nothing here is spent and no real trade has
- * happened yet: the header labels the curve as a scaled simulation, never as wallet
- * growth. When the live profile is armed, /api/wallet supplies the real balance
- * (SOL × price) and the page rebases on it every minute; unarmed, it falls back to a
- * flat $100 modal. TRADES / TRADE_DETAILS stay RAW (canonical snapshot + dedupe keys
- * untouched); scaling happens once in buildView.
+ * DISPLAY BASE (3 Sep 2026): STARTING_BALANCE is synced from the engine's resolved
+ * baseline (GET /api/overview?cohort=current → startingBalanceUSD), which the engine
+ * pins from the operator's real wallet (STARTING_BALANCE_USD) or falls back to $1000.
+ * The paper track below is RAW — no scaling layer. KPI cards / equity / this table
+ * show SIMULATION PnL measured against that base, and the main dashboard's portfolio
+ * hero shows the real on-chain wallet as a separate quantity. Never merge the two:
+ * paper equity under a wallet header is a fabricated balance. TRADES / TRADE_DETAILS
+ * are the canonical snapshot; dedupe keys untouched.
  */
-const PAPER_BANKROLL = 1000; // the paper run's original virtual bankroll
-let STARTING_BALANCE = 100;  // display modal — replaced by real wallet USD when armed
-let PAPER_SCALE = 0.1;       // modal / PAPER_BANKROLL — replaced alongside STARTING_BALANCE
+let STARTING_BALANCE = 1000; // replaced by the engine's resolved baseline when reachable
 
 /**
  * Per-trade detail for the archived trades, keyed by position id.
@@ -1384,7 +1343,7 @@ function buildView(range) {
   const anchor = all[all.length - 1].ms;
   const days = RANGE_DAYS[range];
   const from = days === null ? -Infinity : anchor - (days - 1) * MS_DAY;
-  const rows = all.filter(t => t.ms >= from).map(t => ({ ...t, p: t.p * PAPER_SCALE }));
+  const rows = all.filter(t => t.ms >= from);
   if (!rows.length) return null;
 
   const pnls = rows.map(t => t.p);
@@ -2850,28 +2809,27 @@ let firstPaintDone = false;
 let lastWalletSyncMs = 0;
 
 /**
- * Rebase the display modal on the REAL wallet when the live micro-capital profile is
- * armed (GET /api/wallet, read-only). The paper track is then scaled onto the
- * operator's actual funding: STARTING_BALANCE = wallet SOL × price, PAPER_SCALE =
- * wallet / PAPER_BANKROLL. Throttled to ~1/min by the caller; 404 (profile not armed)
- * or an offline engine leaves the current base untouched. Always labeled — the curve
- * is a scaled simulation until real execution exists.
+ * Sync STARTING_BALANCE with the engine's resolved baseline (GET /api/overview?
+ * cohort=current → startingBalanceUSD). The engine pins that number from the
+ * operator's wallet (STARTING_BALANCE_USD) or $1000. Throttled to ~1/min by the
+ * caller; an offline engine keeps the last good base. The PnL shown here is raw
+ * simulation on that base — the real on-chain wallet is the main dashboard's
+ * portfolio hero, a separate quantity that must never be merged with this page.
  */
-async function syncWalletBase() {
+async function syncStartingBase() {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
   try {
-    const res = await fetch(API_BASE + "/api/wallet", { signal: ctrl.signal });
+    const res = await fetch(API_BASE + "/api/overview?cohort=current", { signal: ctrl.signal });
     if (res.ok) {
-      const w = await res.json();
-      if (w.usd && w.usd > 0) {
-        STARTING_BALANCE = w.usd;
-        PAPER_SCALE = w.usd / PAPER_BANKROLL;
+      const ov = await res.json();
+      const base = Number(ov.startingBalanceUSD);
+      if (Number.isFinite(base) && base > 0) {
+        STARTING_BALANCE = base;
         const label = document.getElementById("modal-label");
         if (label) {
-          label.textContent = "Modal = saldo wallet " + w.sol.toFixed(4) + " SOL (~$"
-            + w.usd.toFixed(2) + (w.solPriceUsd ? " @ $" + w.solPriceUsd.toFixed(2) + "/SOL" : "")
-            + ") · kurva = simulasi paper ×" + PAPER_SCALE.toFixed(4) + " — belum ada eksekusi live";
+          label.textContent = "Modal dasar $" + base.toFixed(2)
+            + " · PnL = simulasi paper (DRY RUN — wallet on-chain ada di halaman utama)";
         }
         if (firstPaintDone) paint(currentRange); // silent repaint on the new base
       }
@@ -2952,10 +2910,10 @@ async function refresh(range, { silent = false } = {}) {
       pool: t.pool,
       src: "live",
     }));
-    // First paint always waits for the real-wallet base (no $100 flash); later polls
-    // re-sync it at most once a minute so balance/price drift is followed.
+    // First paint always waits for the engine baseline (no $1000 flash); later polls
+    // re-sync it at most once a minute.
     if (!firstPaintDone || Date.now() - lastWalletSyncMs > 60000) {
-      await syncWalletBase();
+      await syncStartingBase();
     }
     paint(range);
     lastSyncMs = Date.now();

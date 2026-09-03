@@ -50,6 +50,7 @@
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
+    "@types/bs58": "^4.0.4",
     "@types/node": "^22.10.2",
     "@types/node-cron": "^3.0.11",
     "tsx": "^4.19.2",
