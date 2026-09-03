@@ -1756,8 +1756,8 @@ async function refreshPositions() {
 /**
  * Closed trades grouped by calendar month, newest first.
  *
- * Months come from UTC components of the close, the same basis as the heatmap day
- * keys, so a trade cannot sit in September on one panel and August on another.
+ * Months are sliced off the day key, so they use DISPLAY_TZ on the same basis as the
+ * heatmap — a trade cannot sit in September on one panel and August on another.
  */
 function monthlyBuckets(rows) {
   const buckets = new Map();
@@ -2218,7 +2218,7 @@ function paintRpc(rpc, apiRttMs) {
   if (rpc.endpoint) bits.push("node " + rpc.endpoint);
   if (rpc.method) bits.push("probe " + rpc.method);
   if (isNum(rpc.slot)) bits.push("slot " + rpc.slot);
-  if (rpc.checkedAt) bits.push("diukur " + rpc.checkedAt);
+  if (rpc.checkedAt) bits.push("diukur " + stampLabel(rpc.checkedAt));
   if (rpc.detail) bits.push(rpc.detail);
   if (isNum(apiRttMs)) bits.push("round-trip browser→API " + apiRttMs + "ms");
   setTitle(bits.join(" · "));
@@ -2598,11 +2598,51 @@ let lastSyncMs = null;
 let tickTimer = null;
 
 /*
- * UTC, not the viewer's local time, and said so on screen. Every date on this page —
- * heatmap keys, monthly buckets, the trade table — is bucketed in UTC, so a header
- * clock in some other zone would be the one element quietly disagreeing with the rest.
+ * The clock runs in DISPLAY_TZ — the engine's own zone — and names it on screen.
+ *
+ * It printed UTC until now, justified by a comment claiming every date on this page was
+ * bucketed in UTC. That stopped being true when day keys moved to Intl and DISPLAY_TZ:
+ * the heatmap, the monthly buckets, the trade stamps and the Peak Trading Hour card all
+ * read in the engine's zone, which left the header clock as the one element quietly
+ * disagreeing with the rest — the exact failure the old comment was written to prevent.
+ *
+ * The zone label is DERIVED, never hardcoded to WIB. Intl gives WIB for Asia/Jakarta,
+ * WITA and WIT for the other Indonesian zones and UTC for UTC, so an engine configured
+ * elsewhere still labels its own clock truthfully. Digits come from en-GB because it is
+ * colon-separated, 24-hour and zero-padded, giving the pill a fixed width that does not
+ * jitter as the seconds change; id-ID is asked only for the abbreviation, since en-GB
+ * renders Asia/Jakarta as the far less readable "GMT+7".
  */
-const clockLabel = () => new Date().toISOString().slice(11, 19) + " UTC";
+const zoneAbbrev = () => {
+  const part = new Intl.DateTimeFormat("id-ID", { timeZone: DISPLAY_TZ, timeZoneName: "short" })
+    .formatToParts(new Date())
+    .find(p => p.type === "timeZoneName");
+  return part ? part.value : DISPLAY_TZ;
+};
+
+const clockLabel = () =>
+  new Intl.DateTimeFormat("en-GB", {
+    timeZone: DISPLAY_TZ,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(new Date()) + " " + zoneAbbrev();
+
+/** An engine timestamp shown in the display zone; the raw string if it will not parse. */
+const stampLabel = iso => {
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return String(iso);
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: DISPLAY_TZ,
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(new Date(ms)) + " " + zoneAbbrev();
+};
 
 function tickStatus() {
   // Null while showing the archive: that pill carries the reason the engine could not
