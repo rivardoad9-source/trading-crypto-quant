@@ -668,18 +668,18 @@ const TRADES = [
   {"t": "2026-08-29T13:30:00Z", "p": 10.015058, "pool": "fone-SOL", "v": "v1.0"},
   {"t": "2026-08-29T13:40:00Z", "p": 6.709816, "pool": "fone-SOL", "v": "v1.0"},
   {"t": "2026-08-29T14:50:00Z", "p": 5.394618, "pool": "Pistacio-SOL", "v": "v1.0"},
-  {"t": "2026-08-29T15:07:17Z", "p": 7.065966, "pool": "fone-SOL", "v": "v1.1"},
-  {"t": "2026-08-29T15:07:17Z", "p": 5.851585, "pool": "fone-SOL", "v": "v1.1"},
-  {"t": "2026-08-29T16:45:00Z", "p": 5.701928, "pool": "Pistacio-SOL", "v": "v1.1"},
-  {"t": "2026-08-29T18:20:00Z", "p": 7.617165, "pool": "fone-SOL", "v": "v1.1"},
-  {"t": "2026-08-29T20:14:00Z", "p": -8.672687, "pool": "fone-SOL", "v": "v1.1"},
-  {"t": "2026-08-30T01:14:00Z", "p": 5.306668, "pool": "Pistacio-SOL", "v": "v1.1"},
-  {"t": "2026-08-31T05:17:00Z", "p": 5.62864, "pool": "fone-USDC", "v": "v1.1"},
-  {"t": "2026-08-31T16:12:00Z", "p": 5.232607, "pool": "fone-USDC", "v": "v1.1"},
-  {"t": "2026-09-01T01:51:00Z", "p": 5.186293, "pool": "fone-USDC", "v": "v1.1"},
-  {"t": "2026-09-01T11:29:01Z", "p": 5.398871, "pool": "DOGE-1-SOL", "v": "v1.1"},
-  {"t": "2026-09-01T17:24:00Z", "p": 5.294115, "pool": "fone-SOL", "v": "v1.1"},
-  {"t": "2026-09-02T02:33:00Z", "p": 4.992399, "pool": "DOGE-1-SOL", "v": "v1.1"},
+  {"id": "dd8326f5-1c21-40de-91be-fb3d4e0b8829", "t": "2026-08-29T15:07:17Z", "p": 7.065966, "pool": "fone-SOL", "v": "v1.1"},
+  {"id": "a8260168-0620-44f1-bcdd-7ee7c743b63a", "t": "2026-08-29T15:07:17Z", "p": 5.851585, "pool": "fone-SOL", "v": "v1.1"},
+  {"id": "100f2302-2c93-4790-a007-277896be6af3", "t": "2026-08-29T16:45:00Z", "p": 5.701928, "pool": "Pistacio-SOL", "v": "v1.1"},
+  {"id": "0c31e40f-0194-4cc9-b9b5-33d0808d5aad", "t": "2026-08-29T18:20:00Z", "p": 7.617165, "pool": "fone-SOL", "v": "v1.1"},
+  {"id": "763f8e3b-06c1-477e-80bc-11aa4a871e3f", "t": "2026-08-29T20:14:00Z", "p": -8.672687, "pool": "fone-SOL", "v": "v1.1"},
+  {"id": "66ad2a98-3f68-4dd5-a2ff-fe191ff08680", "t": "2026-08-30T01:14:00Z", "p": 5.306668, "pool": "Pistacio-SOL", "v": "v1.1"},
+  {"id": "4b1f68ce-f38a-4a13-9f94-18ea7cced1ae", "t": "2026-08-31T05:17:00Z", "p": 5.62864, "pool": "fone-USDC", "v": "v1.1"},
+  {"id": "fc95267b-021f-42d6-9662-e58bdb8ee1ce", "t": "2026-08-31T16:12:00Z", "p": 5.232607, "pool": "fone-USDC", "v": "v1.1"},
+  {"id": "c653a8bc-5616-4e75-a23d-1baf5702976b", "t": "2026-09-01T01:51:00Z", "p": 5.186293, "pool": "fone-USDC", "v": "v1.1"},
+  {"id": "d287ab44-f918-4ca3-8750-cff6e9b0c68e", "t": "2026-09-01T11:29:01Z", "p": 5.398871, "pool": "DOGE-1-SOL", "v": "v1.1"},
+  {"id": "4f884320-8504-4f71-a9dd-420427cc65f6", "t": "2026-09-01T17:24:00Z", "p": 5.294115, "pool": "fone-SOL", "v": "v1.1"},
+  {"id": "367fb3b3-f769-403e-bd08-ed55e9c6319c", "t": "2026-09-02T02:33:00Z", "p": 4.992399, "pool": "DOGE-1-SOL", "v": "v1.1"},
 ];
 const STARTING_BALANCE = 1000;
 
@@ -1177,7 +1177,30 @@ const spanDaysBetween = (firstMs, lastMs) =>
 
 
 /* ---------- the merged trade list ---------- */
-const archiveTrades = TRADES.map(t => ({ ...t, ms: Date.parse(t.t), src: "archive" }));
+
+/** The cohort this page reports on. Rows from any other engine are not rendered here. */
+const ENGINE_COHORT = "v1.1";
+
+/*
+ * The snapshot may carry BOTH engines, so the cohort filter lives here rather than in
+ * whatever produced the export.
+ *
+ * A snapshot whose rows are labelled is filtered to ENGINE_COHORT. One with no labels at
+ * all is a pre-filtered export from before engine_version was included, and is taken
+ * as-is — that is the shape this page shipped with, and treating an unlabelled row as
+ * V1.1 by default would let a future unlabelled v1.0 row in through the same door.
+ *
+ * Mixing the cohorts is not a display preference. v1.0 booked -$3.34 across 27 trades and
+ * V1.1 booked +$54.60 across 12; averaging them into one headline misstates both engines,
+ * which is the whole reason engine_version exists.
+ */
+const ARCHIVE_IS_LABELLED = TRADES.some(t => t.v !== undefined);
+const archiveTrades = TRADES
+  .filter(t => !ARCHIVE_IS_LABELLED || t.v === ENGINE_COHORT)
+  .map(t => ({ ...t, ms: Date.parse(t.t), src: "archive" }));
+
+/** Excluded by the cohort filter — reported on screen, never silently dropped. */
+const excludedArchiveCount = TRADES.length - archiveTrades.length;
 
 /*
  * Everything on this page is the V1.1 engine and nothing else. The archive above holds
@@ -1198,11 +1221,25 @@ let liveTrades = [];
  * Live wins on a conflict: the database is authoritative, the export is a copy of it
  * taken at some past moment.
  */
+/*
+ * Identity for de-duplication, so a live row supersedes its archive twin instead of being
+ * counted twice.
+ *
+ * This used to key on `t.id` alone. A regenerated snapshot then shipped without an `id`
+ * field, every archive row keyed on `undefined`, and 39 trades collapsed onto one map
+ * entry — the page rendered ONE trade and +$4.99 with no error and no warning. The key is
+ * now derived from what actually identifies a close and what both halves always carry:
+ * the close time, the pool and the realised PnL. The live half is keyed the same way on
+ * purpose; keying it by id while the archive fell back to a signature would match nothing
+ * across the two halves and double-count every trade in the overlap.
+ */
+const tradeKey = t => t.t + "|" + t.pool + "|" + t.p;
+
 function mergedTrades() {
-  const byId = new Map();
-  for (const t of archiveTrades) byId.set(t.id, t);
-  for (const t of liveTrades) byId.set(t.id, t);
-  return [...byId.values()].sort((a, b) => a.ms - b.ms);
+  const byKey = new Map();
+  for (const t of archiveTrades) byKey.set(tradeKey(t), t);
+  for (const t of liveTrades) byKey.set(tradeKey(t), t);
+  return [...byKey.values()].sort((a, b) => a.ms - b.ms);
 }
 
 /** Max drawdown over the realised curve — the same walk as src/services/metrics.ts. */
@@ -1837,20 +1874,40 @@ function renderTrades(v) {
     const src = t.src === "live"
       ? '<span class="text-emerald-500/80">live</span>'
       : '<span class="text-zinc-500">arsip</span>';
-    return '<tr class="trow border-t border-zinc-800/50" data-trade-id="' + esc(t.id) + '" tabindex="0" role="button" aria-expanded="false">'
+    /*
+     * Two different identities, deliberately separated.
+     *
+     * data-row-key pairs a row with its detail panel and is tradeKey(t), which every
+     * trade has. data-position-id is the engine's own id, used to look up the embedded
+     * detail and to ask /api/positions/:id — a live row always has one, and a row from a
+     * snapshot that omitted the field does not.
+     *
+     * They used to be the same attribute, built from t.id alone. A snapshot without ids
+     * then rendered every row as data-trade-id="undefined", which made all of them
+     * collide on one detail panel and sent the fallback fetch to /api/positions/undefined.
+     */
+    const rowKey = tradeKey(t);
+    const posId = t.id === undefined || t.id === null ? "" : String(t.id);
+    return '<tr class="trow border-t border-zinc-800/50" data-row-key="' + esc(rowKey) + '"'
+      + (posId ? ' data-position-id="' + esc(posId) + '"' : "")
+      + ' tabindex="0" role="button" aria-expanded="false">'
       + '<td class="whitespace-nowrap px-4 py-2 font-mono text-[11.5px] text-zinc-400">'
       +   '<span class="tcaret mr-1.5">\u25B8</span>' + esc(stamp) + "</td>"
       + '<td class="max-w-[220px] truncate px-4 py-2 text-zinc-300" title="' + esc(t.pool) + '">' + esc(t.pool) + "</td>"
       + '<td class="whitespace-nowrap px-4 py-2 text-right font-mono ' + tone + '">' + esc(usd(t.p)) + "</td>"
       + '<td class="whitespace-nowrap px-4 py-2 text-right text-[11.5px]">' + src + "</td>"
       + "</tr>"
-      + '<tr class="tdetail hidden" data-detail-for="' + esc(t.id) + '">'
+      + '<tr class="tdetail hidden" data-detail-for="' + esc(rowKey) + '">'
       +   '<td colspan="4" class="bg-black/25 px-4 py-4"></td>'
       + "</tr>";
   }).join("");
 
+  // A filtered count that does not say what it filtered is half a number.
   document.getElementById("trades-sub").textContent =
-    rows.length + " trade V1.1 ditutup · " + v.archiveCount + " arsip + " + v.liveCount + " live";
+    rows.length + " trade V1.1 ditutup · " + v.archiveCount + " arsip + " + v.liveCount + " live"
+    + (excludedArchiveCount > 0
+      ? " · " + excludedArchiveCount + " trade engine lama tidak ditampilkan"
+      : "");
 }
 
 /* ---------- trade detail ---------- */
@@ -1940,8 +1997,10 @@ function detailHtml(t, d) {
  * down; a live-only trade falls back to GET /api/positions/:id.
  */
 async function toggleTradeRow(row) {
-  const id = row.dataset.tradeId;
-  const detailRow = document.querySelector('[data-detail-for="' + id + '"]');
+  // Pairing is by row key, which is always present; the position id may not be.
+  const rowKey = row.dataset.rowKey;
+  const id = row.dataset.positionId || "";
+  const detailRow = document.querySelector('[data-detail-for="' + rowKey + '"]');
   if (!detailRow) return;
 
   const isOpen = !detailRow.classList.contains("hidden");
@@ -1958,8 +2017,17 @@ async function toggleTradeRow(row) {
   row.setAttribute("aria-expanded", "true");
 
   const cell = detailRow.firstElementChild;
-  const trade = mergedTrades().find(t => t.id === id);
-  let detail = TRADE_DETAILS[id] ?? null;
+  const trade = mergedTrades().find(t => tradeKey(t) === rowKey);
+  let detail = id ? (TRADE_DETAILS[id] ?? null) : null;
+
+  // Without a position id there is nothing to ask the API for, and inventing one would
+  // send the fetch to a URL that cannot exist. Say what is missing instead.
+  if (!detail && !id) {
+    cell.innerHTML = '<p class="text-[12.5px] text-zinc-500">Detail tidak tersedia — '
+      + "baris ini tidak menyimpan position id, jadi tidak ada yang bisa dibaca dari arsip "
+      + "maupun ditanyakan ke engine.</p>";
+    return;
+  }
 
   if (!detail) {
     cell.innerHTML = '<p class="text-[12.5px] text-zinc-500">Memuat detail…</p>';
