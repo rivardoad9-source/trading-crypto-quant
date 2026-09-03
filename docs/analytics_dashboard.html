@@ -969,6 +969,26 @@ const dayKeyFmt = () =>
 
 const dayKey = d => dayKeyFmt().format(d);
 
+/**
+ * Adopt the engine's zone only if this runtime can resolve it.
+ *
+ * `Intl.DateTimeFormat` throws a RangeError on an unknown IANA name, and every day
+ * key, hour bucket and month label on this page runs through one. Assigning the zone
+ * unchecked poisoned the next paint AND the fallback repaint inside refresh()'s catch,
+ * so a single bad field in one payload took the whole page down with an uncaught throw.
+ * Verify first; keep the zone we already had otherwise.
+ */
+function adoptTimezone(tz) {
+  if (typeof tz !== "string" || !tz) return false;
+  try {
+    new Intl.DateTimeFormat("en-CA", { timeZone: tz });
+  } catch {
+    return false;
+  }
+  DISPLAY_TZ = tz;
+  return true;
+}
+
 /** Hour of day, 00-23, in the display zone. */
 const zonedHour = d =>
   Number(new Intl.DateTimeFormat("en-GB", { timeZone: DISPLAY_TZ, hour: "2-digit", hour12: false }).format(d));
@@ -1882,14 +1902,18 @@ function paintBrief(report, live) {
   const badge = document.getElementById("brief-bias");
   const body = document.getElementById("brief-body");
 
-  if (!report) {
+  // A report object carrying no markdown is not a report. Rendering it anyway printed
+  // the literal string "undefined" into the brief — absent data is named here, never
+  // faked, the same contract the macro metrics keep with UNAVAILABLE.
+  if (!report || typeof report.markdown !== "string" || !report.markdown.trim()) {
     sub.textContent = "belum ada laporan riset tersimpan";
     badge.classList.add("hidden");
     body.innerHTML = '<p class="text-[13px] text-zinc-500">Macro brief belum tersedia. Agen riset menulisnya sekali sehari; sampai itu terjadi, bagian ini sengaja dibiarkan kosong daripada diisi teks karangan.</p>';
     return;
   }
 
-  sub.textContent = report.reportDate + " · " + (live ? "dari engine" : "arsip beku, bukan hari ini");
+  sub.textContent = (report.reportDate ?? "tanggal tidak tercatat")
+    + " · " + (live ? "dari engine" : "arsip beku, bukan hari ini");
   badge.className = "rounded-md px-2 py-1 text-[11px] font-medium " + (BIAS_TONE[report.bias] ?? BIAS_TONE.SIDEWAYS);
   badge.textContent = report.bias ?? "—";
   badge.classList.remove("hidden");
@@ -2044,7 +2068,7 @@ async function refresh(range, { silent = false } = {}) {
   try {
     const payload = await fetchLive();
     // Follow the engine's own zone rather than assuming it.
-    if (typeof payload.timezone === "string" && payload.timezone) DISPLAY_TZ = payload.timezone;
+    adoptTimezone(payload.timezone);
     liveTrades = (payload.trades ?? []).map(t => ({
       id: t.id,
       t: t.closedAt,
@@ -2060,7 +2084,10 @@ async function refresh(range, { silent = false } = {}) {
     // Graceful fallback: the archive alone still renders a complete page. Never leave
     // the UI blank because an upstream is down.
     liveTrades = [];
-    paint(range);
+    // This catch is the last thing between a bad payload and a blank page, so the
+    // fallback repaint gets its own guard: if even the archive cannot render, keep
+    // whatever the last good paint left on screen and let the pill carry the error.
+    try { paint(range); } catch { /* keep the last good render */ }
     lastSyncMs = null;
     setStatus("archive", String(err && err.message ? err.message : err));
   }
