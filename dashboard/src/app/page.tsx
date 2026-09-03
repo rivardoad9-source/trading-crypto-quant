@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, FileText } from "lucide-react";
 import StatusHeader from "@/components/StatusHeader";
+import PortfolioHero from "@/components/PortfolioHero";
 import KpiCards from "@/components/KpiCards";
 import TradeHistory from "@/components/TradeHistory";
 import PnlCalendar from "@/components/PnlCalendar";
@@ -13,11 +14,13 @@ import {
   fetchOverview,
   fetchPnlCalendar,
   fetchPositionHistory,
+  fetchWallet,
   type CohortId,
   type Overview,
   type PnlCalendar as PnlCalendarData,
   type Position,
   type ResearchReport,
+  type WalletSnapshot,
 } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 10_000;
@@ -33,6 +36,8 @@ export default function CommandCenter() {
   const [history, setHistory] = useState<Position[]>([]);
   const [calendar, setCalendar] = useState<PnlCalendarData | null>(null);
   const [research, setResearch] = useState<ResearchReport | null>(null);
+  const [wallet, setWallet] = useState<WalletSnapshot | null>(null);
+  const [walletRefreshing, setWalletRefreshing] = useState(false);
 
   /*
    * Defaults to the clean v1.1 run. The API defaults to the all-time archive, so this
@@ -66,14 +71,21 @@ export default function CommandCenter() {
     try {
       // Not named `active` — that is the open-positions state in this component.
       const cohortId = cohortRef.current;
-      const [ov, act, hist, cal, res] = await Promise.all([
+      const [ov, act, hist, cal, res, wal] = await Promise.all([
         fetchOverview(cohortId, signal),
         fetchActivePositions(cohortId, signal),
         fetchPositionHistory(cohortId, 100, signal),
         fetchPnlCalendar(cohortId, monthRef.current, signal),
         fetchLatestResearch(signal),
+        /*
+         * Cached read (no ?refresh): the server serves a snapshot for its TTL, so N open
+         * tabs polling on their own clocks still produce roughly one chain read per TTL
+         * rather than N. Only the hero's refresh button forces a real one.
+         */
+        fetchWallet(false, signal),
       ]);
 
+      setWallet(wal);
       setOverview(ov);
       setActive(act);
       setHistory(hist);
@@ -92,6 +104,23 @@ export default function CommandCenter() {
       );
     } finally {
       if (!signal.aborted) setLoading(false);
+    }
+  }, []);
+
+  /**
+   * The hero's refresh button. Forces a genuine chain read, unlike the poll loop.
+   *
+   * Deliberately not wired to the whole dashboard refresh: re-pulling five trade
+   * endpoints because someone wanted a current balance is work nobody asked for.
+   */
+  const refreshWallet = useCallback(async () => {
+    setWalletRefreshing(true);
+    try {
+      setWallet(await fetchWallet(true));
+    } catch {
+      /* the poll loop owns connection-error reporting; leave the last good reading up */
+    } finally {
+      setWalletRefreshing(false);
     }
   }, []);
 
@@ -156,6 +185,13 @@ export default function CommandCenter() {
   return (
     <div className="grid-backdrop min-h-screen">
       <StatusHeader overview={overview} connected={connected} lastUpdated={lastUpdated} />
+
+      <PortfolioHero
+        wallet={wallet}
+        overview={overview}
+        onRefresh={() => void refreshWallet()}
+        refreshing={walletRefreshing}
+      />
 
       <main className="mx-auto max-w-[1600px] space-y-5 px-6 py-6">
         {error && (

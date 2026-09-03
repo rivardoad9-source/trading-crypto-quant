@@ -24,6 +24,26 @@ export interface CohortMeta {
   filtered: boolean;
 }
 
+/** Live on-chain wallet reading. `null` figures mean UNKNOWN, never zero. */
+export interface WalletSnapshot {
+  status: "ok" | "unavailable" | "unconfigured";
+  /** Whether the live micro-capital profile is armed. Reported, not a gate. */
+  armed: boolean;
+  /** LIVE_MIN_WALLET_SOL, the startup floor. */
+  floorSol: number;
+  address: string | null;
+  label: string;
+  /** SOL held. null when the balance could not be read — do not render as 0. */
+  sol: number | null;
+  lamports: number | null;
+  usd: number | null;
+  solPriceUsd: number | null;
+  /** RPC host only; the full URL can embed an API key and never leaves the server. */
+  endpoint: string;
+  checkedAt: string;
+  detail: string | null;
+}
+
 export interface Overview {
   cohort: CohortMeta;
   /** Closed trades the cohort filter removed. 0 when unfiltered. */
@@ -170,6 +190,17 @@ export const fetchPnlCalendar = (cohort: CohortId, month?: string, signal?: Abor
 
 export const fetchLatestResearch = (signal?: AbortSignal) =>
   get<{ report: ResearchReport | null }>("/research/latest", signal).then((r) => r.report);
+
+/**
+ * The LIVE on-chain wallet. A different quantity from `Overview.currentBalanceUSD`,
+ * which is a simulation baseline plus paper PnL — never render the two as the same
+ * thing.
+ *
+ * `refresh` forces a genuine chain read and is for the manual refresh button only; the
+ * poll loop must use the cached path or every open tab probes the RPC on its own clock.
+ */
+export const fetchWallet = (refresh = false, signal?: AbortSignal) =>
+  get<WalletSnapshot>(`/wallet${refresh ? "?refresh=1" : ""}`, signal);
 
 /* ------------------------------------------------------------------ */
 /* Formatting                                                          */

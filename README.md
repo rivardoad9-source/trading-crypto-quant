@@ -322,8 +322,8 @@ for an execution path.
 | Guardrail | Value | Key |
 |---|---|---|
 | Capital base | 1 SOL | `LIVE_CAPITAL_SOL` |
-| Position size | 0.20 SOL | `LIVE_MAX_POSITION_SOL` |
-| Concurrent positions | 3 (0.60 SOL max exposure) | `LIVE_MAX_CONCURRENT_POSITIONS` |
+| Position size | 0.50 SOL | `LIVE_MAX_POSITION_SOL` |
+| Concurrent positions | 1 (0.50 SOL max exposure) | `LIVE_MAX_CONCURRENT_POSITIONS` |
 | Untouchable reserve | 0.15 SOL (0.85 deployable) | `LIVE_MIN_RESERVE_SOL` |
 | Round-trip gas floor | 0.008 SOL | `LIVE_ROUND_TRIP_GAS_SOL` |
 | Net PnL floor | $1.50 / 24h | `LIVE_MIN_NET_PNL_USD` |
@@ -339,13 +339,20 @@ when it is higher, and an unavailable estimate is never priced at zero. The `$1.
 absolute dollar floor stacked **on top of** the V1.1 `MIN_FEE_COST_COVERAGE` 2.5x ratio gate, not
 a replacement for it; a candidate must clear both.
 
-**Expect it to reject nearly everything, by design.** At $20 of notional the friction is $1.20
-(gas $0.80 + 2% slippage $0.40), so clearing a $1.50 net floor needs $2.70 of 24h fees — about
-13.5% fee/TVL, roughly 17x `MIN_FEE_TVL_RATIO` and inside the band this README elsewhere treats as
-unrealisable. The engine prints the implied requirement and a warning at boot, so an empty
-candidate list reads as the configured outcome rather than a bug. The lever for the on-chain
-transition is `LIVE_MAX_POSITION_SOL` — slippage scales with notional, gas does not, so a larger
-position lowers the required yield. Loosening the gate is not the lever.
+**Two gates apply, and the stricter one is the real bar.** At $50 of notional the friction is
+$1.80 (gas $0.80 + 2% slippage $1.00). The $1.50 net floor then needs $3.30 of 24h fees — 6.6%
+fee/TVL — while the V1.1 2.5x coverage gate independently needs $4.50, or 9.0%. A pool must clear
+both, so **9.0%** is the requirement. Which gate binds flips with position size, so
+`describeLiveEnvelope` prints both plus the binding one at boot; an empty candidate list then
+reads as the configured outcome rather than a bug.
+
+**This is what raising the position size bought.** At the previous 0.20 SOL x 3 the bar was 15%
+fee/TVL — inside the band this README elsewhere treats as unrealisable. Concentrating the same
+book into one 0.50 SOL position drops it to 9% with **no guardrail moved**: gas is per transaction
+and does not shrink with the position, so a larger notional dilutes a fixed cost, while slippage
+scales and stays proportional. Splitting into three positions had been paying three sets of
+round-trip gas against a third of the notional each. `LIVE_MAX_POSITION_SOL` remains the lever;
+loosening the gates is not.
 
 **Startup gas gate.** `runLivePreflight` runs before the database, the API and every scheduler.
 A wallet below `LIVE_MIN_WALLET_SOL` refuses the start and sends a Telegram
@@ -357,6 +364,98 @@ read only by the env schema and no function returns it.
 **Arming the profile does not enable live trading.** `DRY_RUN=false` still refuses to boot and
 nothing in this repository signs a Solana transaction. The profile changes sizing and screening
 only, so the dry run rehearses the live envelope before any execution code exists.
+
+---
+
+### On-chain execution (Stage 1) — isolated from the engine
+
+`src/services/onchainExecutor.ts` can load a wallet, sign a transaction and submit it to
+mainnet. **The engine cannot reach it.** Nothing under `src/agents`, `src/api` or `src/index.ts`
+imports it, and `src/tests/onchainExecutor.test.ts` walks the import graph from `src/index.ts`
+and fails the build if it ever appears. That test is verified to bite: adding a single import to
+`index.ts` fails it.
+
+Three locks, at deliberately different levels:
+
+| Lock | Mechanism |
+|---|---|
+| Type | Every fund-moving function needs an `ExecutionAuthorization`, obtainable only from `authorizeExecution()`. No overload without it. |
+| Config | `ONCHAIN_EXECUTION_ARMED` defaults false; arming also needs a key and a lamport ceiling (default 0.02 SOL). |
+| Import graph | A test fails if the engine can reach the module at all. |
+
+`isLiveTradingEnabled` stays `false as const` in `src/config/env.ts`, `DRY_RUN=false` still
+refuses to boot, and arming the executor does **not** make the engine trade live — the engine
+has no code path that calls it.
+
+**What works today (Stage 1):** wallet loading from base58, signing, dynamic priority fees with
+escalation, send-and-confirm, and Jupiter swaps (`lite-api.jup.ag/swap/v1` — the old
+`quote-api.jup.ag/v6` host no longer resolves).
+
+**What does not (Stage 2):** `dlmmExecutor.openPosition` / `claimFees` / `closePosition` all
+throw `NotImplementedError`. They are deliberately not stubbed — a no-op returning a plausible
+success shape reads as a working integration until the engine books a position it never opened.
+Stage 2 must build these against real `@meteora-ag/dlmm` types, never guessed account layouts.
+
+**Retry semantics prevent a double spend.** An unconfirmed transaction may still be in flight,
+so the same signed bytes are *rebroadcast unchanged* while the blockhash lives — identical bytes
+means an identical signature, so redelivery is idempotent. A new transaction is built only after
+the block height passes `lastValidBlockHeight`, which makes the old signature permanently
+unlandable; the priority fee escalates on that rebuild. Any non-expiry error checks
+`getSignatureStatus` before reporting failure.
+
+**Slippage is capped at 0.5%** by `HARD_MAX_SLIPPAGE_BPS`, a constant. `ONCHAIN_MAX_SLIPPAGE_BPS`
+may only lower it. The quote's own `slippageBps` is re-validated before signing rather than
+trusted, and Jupiter's `otherAmountThreshold` enforces the minimum-out on-chain.
+
+#### Proof of concept
+
+```bash
+npm run test:swap                 # dry run: quote + fee probe, signs nothing, needs no key
+npm run test:swap -- --execute    # SPENDS REAL SOL (default 0.01 SOL, ~$1)
+npm run test:swap -- --amount 0.02 --execute
+```
+
+Dry run is the default because the opposite default makes a mistyped command cost money. On an
+ambiguous failure the script prints the signature and tells you to check the chain **before**
+retrying — that instruction is what prevents a manual double spend.
+
+---
+
+### Portfolio hero & the live wallet endpoint
+
+`GET /api/wallet` returns the real on-chain balance of `SOLANA_WALLET_ADDRESS`:
+
+```json
+{ "status": "ok", "label": "Zemiz", "address": "5rCf…AS6", "sol": 1.15,
+  "usd": 116.08, "solPriceUsd": 100.94, "endpoint": "mainnet.helius-rpc.com" }
+```
+
+This is **not** the same number as `/api/overview`'s `currentBalanceUSD`, which is
+`STARTING_BALANCE_USD` plus realised paper PnL — a simulation baseline, not custody. The
+dashboard's `PortfolioHero` renders the wallet figure labelled "on-chain" and tags the PnL row
+"paper" while the engine is in dry run, so the two can never be read as one account.
+
+- **Cached + single-flighted** (30s TTL). The dashboard polls per open tab; `?refresh=1` forces a
+  genuine chain read and is wired only to the hero's refresh button.
+- **`null` means unknown, never zero.** An unreadable balance renders as an em dash with the
+  reason; a genuine 0 SOL still reads as 0.
+- **Only the RPC host is published** — the configured URL can embed a provider API key.
+- A SOL/USD price outage nulls the USD figure alone; the SOL reading survives.
+
+Set `WALLET_LABEL` for the display name (default `Main Wallet`). It is configured, never derived
+from the address.
+
+### Clean slate
+
+```bash
+npm run db:reset                  # back up to data/backups/, then clear
+npm run db:reset -- --no-backup   # unrecoverable
+```
+
+Empties `simulated_positions`, `daily_pnl_snapshots` and `daily_research_logs`, resets the
+AUTOINCREMENT counters, and `VACUUM`s so the deleted rows leave the file. It prints the row
+counts it cleared and the exact restore command. `exports/` and `reports/` are **not** touched —
+the 27-trade dry-run archive behind the churn and stop-loss findings lives there as files.
 
 ---
 
@@ -685,7 +784,8 @@ src/
   services/   meteora.ts (screener + position maths), deepseek.ts, marketData.ts,
               solana.ts (RPC: priority fees, mint authorities, holder concentration,
               wallet balance), livePreflight.ts (startup gas-reserve gate — INERT
-              by default), metrics.ts (drawdown, profit factor), telegram.ts,
+              by default), onchainExecutor.ts (STAGE 1 signer — NOT imported by the
+              engine), metrics.ts (drawdown, profit factor), telegram.ts,
               http.ts (retry/soft-fail)
   agents/     researcherAgent.ts, dlmmTraderAgent.ts, postMortemAgent.ts, snapshotJob.ts
   api/        server.ts
