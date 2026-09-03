@@ -93,11 +93,16 @@ export const COOLDOWN_STATUSES: PositionStatus[] = CLOSED_STATUSES.filter(
 );
 
 /**
- * The dashboard's (and Telegram /status) notional starting balance. The engine
- * deploys zero capital, so "balance" is a simulation baseline plus realised PnL,
- * not a custodial figure.
+ * FALLBACK starting balance for the dashboard and Telegram /status.
+ *
+ * The engine deploys zero capital, so "balance" is a simulation baseline plus realised
+ * PnL, never a custodial figure. This is only the default: the effective value is
+ * resolved at boot by `src/config/startingBalance.ts`, which prefers an explicit
+ * STARTING_BALANCE_USD or a live wallet seed. Read it through
+ * `getStartingBalanceUsd()` — importing this constant directly pins a caller to $1,000
+ * while the rest of the process reports against the operator's real funding.
  */
-export const STARTING_BALANCE_USD = 1000;
+export const DEFAULT_STARTING_BALANCE_USD = 1000;
 
 export const STRATEGY_TYPES = ["SPOT", "BID_ASK", "CURVE"] as const;
 export type StrategyType = (typeof STRATEGY_TYPES)[number];

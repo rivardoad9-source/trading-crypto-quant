@@ -10,6 +10,8 @@ import { startTelegramCommands, stopTelegramCommands } from "./services/telegram
 import { liveMicroCapital } from "./config/liveConfig.js";
 import { InsufficientGasReserveError, runLivePreflight } from "./services/livePreflight.js";
 import { fetchSolPriceUsd } from "./services/marketData.js";
+import { getClosedPositions } from "./database/repositories.js";
+import { describeStartingBalance } from "./config/startingBalance.js";
 
 /**
  * Serialises cron jobs. A DLMM cycle that overruns its window must not overlap the
@@ -46,6 +48,7 @@ function banner(): void {
   console.log(`  telegram    : ${hasTelegram ? "configured" : "not configured (alerts logged only)"}`);
   console.log(`  position    : ${env.VIRTUAL_SOL_PER_POSITION} SOL virtual, max ${env.MAX_CONCURRENT_POSITIONS} concurrent`);
   console.log(`  exits       : TP ${env.TAKE_PROFIT_PCT}% / SL ${env.STOP_LOSS_PCT}% / age ${env.MAX_POSITION_AGE_HOURS}h`);
+  for (const line of describeStartingBalance()) console.log(`  ${line}`);
   if (liveMicroCapital.enabled) {
     console.log(
       `  live profile: ARMED — ${liveMicroCapital.maxPositionSol} SOL x ` +
@@ -69,7 +72,9 @@ async function preflight(): Promise<void> {
   const solPriceUsd = await fetchSolPriceUsd().catch(() => null);
 
   try {
-    await runLivePreflight({ solPriceUsd });
+    // The seed only applies on a clean slate, so the preflight needs the trade count.
+    const existingTrades = getClosedPositions(1, 0).length;
+    await runLivePreflight({ solPriceUsd, existingTrades });
   } catch (err) {
     if (err instanceof InsufficientGasReserveError) {
       console.error(`\n${err.message}\n`);

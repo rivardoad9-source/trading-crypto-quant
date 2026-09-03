@@ -9,7 +9,7 @@ import {
 import { computeMaxDrawdown, computeProfitFactor } from "./metrics.js";
 import { defaultCohort, type Cohort } from "./cohort.js";
 import { localDateString } from "../agents/researcherAgent.js";
-import { STARTING_BALANCE_USD } from "../config/constants.js";
+import { getStartingBalanceUsd } from "../config/startingBalance.js";
 import { env } from "../config/env.js";
 
 /**
@@ -86,7 +86,8 @@ export function computeOverview(cohort: Cohort = defaultCohort()): Overview {
   const excludedTrades = allTime.totalClosed - lifetime.totalClosed;
   const excludedRealizedPnLUSD = allTime.realizedPnlUsd - lifetime.realizedPnlUsd;
 
-  const currentBalanceUSD = STARTING_BALANCE_USD + lifetime.realizedPnlUsd;
+  const startingBalanceUsd = getStartingBalanceUsd();
+  const currentBalanceUSD = startingBalanceUsd + lifetime.realizedPnlUsd;
   const currentEquityUSD = currentBalanceUSD + floating;
 
   const activeNotional = active.reduce(
@@ -101,7 +102,7 @@ export function computeOverview(cohort: Cohort = defaultCohort()): Overview {
   // drawdown is the drawdown THIS engine version produced from a standing start —
   // not the account's real peak-to-trough, which the archive cohort still reports.
   const pnlSeries = getRealisedPnlSeries(filter);
-  const drawdown = computeMaxDrawdown(pnlSeries, STARTING_BALANCE_USD);
+  const drawdown = computeMaxDrawdown(pnlSeries, startingBalanceUsd);
   const profit = computeProfitFactor(pnlSeries);
 
   return {
@@ -126,7 +127,7 @@ export function computeOverview(cohort: Cohort = defaultCohort()): Overview {
     totalLosses: lifetime.losses,
     unclaimedFeesUSD: unclaimedFees,
     activePositionsCount: active.length,
-    startingBalanceUSD: STARTING_BALANCE_USD,
+    startingBalanceUSD: startingBalanceUsd,
 
     // Risk metrics over closed trades.
     maxDrawdownPct: drawdown.maxDrawdownPct,
