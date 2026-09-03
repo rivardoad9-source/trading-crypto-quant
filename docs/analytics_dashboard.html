@@ -429,7 +429,7 @@
         <span class="sysdot bg-slate-500"></span>DRY RUN Mode
       </span>
       <span class="sysitem sysitem-quiet">
-        <span class="sysdot bg-slate-600"></span>Saldo awal $1.000 — bukan saldo akun
+        <span class="sysdot bg-slate-600"></span>Modal tampilan $100 — paper diskalakan ×0.1 (hipotetis, bukan saldo wallet)
       </span>
       <button id="reason-open" type="button" class="sysitem sysitem-btn"
               aria-expanded="false" aria-controls="reason-drawer">&gt;_ AI Reasoning Stream</button>
@@ -681,7 +681,17 @@ const TRADES = [
   {"id":"4f884320-8504-4f71-a9dd-420427cc65f6","t":"2026-09-01T17:24:00Z","p":5.294115,"pool":"fone-SOL","v":"v1.1"},
   {"id":"367fb3b3-f769-403e-bd08-ed55e9c6319c","t":"2026-09-02T02:33:00Z","p":4.992399,"pool":"DOGE-1-SOL","v":"v1.1"}
 ];
-const STARTING_BALANCE = 1000;
+/*
+ * HYPOTHETICAL DISPLAY MODE (user choice 3 Sep 2026): the paper track (bankrolled at
+ * $1000, positions 1 SOL virtual) is displayed scaled ×0.1 onto a $100 modal, so the
+ * dollars read at the size the operator is actually funding. Returns/winrate/drawdown %
+ * are unchanged — only the $ figures move. This is NOT the wallet balance: real wallet
+ * SOL is checked separately by the engine's live preflight, and nothing here is spent.
+ * TRADES / TRADE_DETAILS stay RAW (canonical snapshot + dedupe keys untouched); the
+ * scaling happens once in buildView.
+ */
+const STARTING_BALANCE = 100; // hypothetical display modal
+const PAPER_SCALE = 0.1;      // $100 / $1000 paper bankroll
 
 /**
  * Per-trade detail for the archived trades, keyed by position id.
@@ -1371,7 +1381,7 @@ function buildView(range) {
   const anchor = all[all.length - 1].ms;
   const days = RANGE_DAYS[range];
   const from = days === null ? -Infinity : anchor - (days - 1) * MS_DAY;
-  const rows = all.filter(t => t.ms >= from);
+  const rows = all.filter(t => t.ms >= from).map(t => ({ ...t, p: t.p * PAPER_SCALE }));
   if (!rows.length) return null;
 
   const pnls = rows.map(t => t.p);
