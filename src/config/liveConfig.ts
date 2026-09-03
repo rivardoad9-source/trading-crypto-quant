@@ -66,10 +66,27 @@ const LiveConfigSchema = z
     /* ---- Capital & position sizing ---- */
     /** Total capital base, in SOL. The account, not a notional baseline. */
     LIVE_CAPITAL_SOL: numeric(1.0),
-    /** Ceiling on one position, in SOL. 0.20 = 20% of a 1 SOL book. */
-    LIVE_MAX_POSITION_SOL: numeric(0.2),
-    /** Concurrency ceiling. 3 x 0.20 = 0.60 SOL of maximum simultaneous exposure. */
-    LIVE_MAX_CONCURRENT_POSITIONS: numeric(3),
+    /**
+     * Ceiling on one position, in SOL. 0.50 = 50% of a 1 SOL book.
+     *
+     * This is the lever for micro-capital friction, and it is the RIGHT one. Gas is
+     * per transaction and does not shrink with the position, so a bigger position
+     * dilutes a fixed cost; slippage scales with notional and so stays proportional.
+     * Concentrating the book into one larger position therefore lowers the fee yield
+     * a pool must show, without touching a single guardrail. Loosening the gates would
+     * have bought the same candidate count by lowering the bar instead.
+     */
+    LIVE_MAX_POSITION_SOL: numeric(0.5),
+    /**
+     * Concurrency ceiling. 1 x 0.50 = 0.50 SOL of maximum simultaneous exposure.
+     *
+     * One position, not three. At 1 SOL of capital, three concurrent positions means
+     * three sets of round-trip gas against a third of the notional each — the split
+     * multiplies the fixed cost the size increase above exists to dilute. It also
+     * matches `defaultBacktestConfig()`'s `maxConcurrentPositions: 1`, so the harness
+     * and the live envelope now describe the same shape of book.
+     */
+    LIVE_MAX_CONCURRENT_POSITIONS: numeric(1),
     /**
      * Untouchable reserve, in SOL, for network fees and rent-exempt minimums.
      *
@@ -87,7 +104,7 @@ const LiveConfigSchema = z
      * is present.
      *
      * A floor, not merely a fallback. The documented way this strategy churned itself
-     * into a loss was treating a round trip as cheaper than it was, and at 0.20 SOL of
+     * into a loss was treating a round trip as cheaper than it was, and at micro
      * notional there is no margin to absorb that error. Erring high skips trades;
      * erring low takes trades that cannot pay for themselves.
      */
@@ -381,11 +398,15 @@ export interface MicroCapitalFrictionAssessment {
  * top of the V1.1 `MIN_FEE_COST_COVERAGE` ratio, not a replacement for it.
  *
  * The ratio gate asks "do fees beat friction by 2.5x?", which is scale-free and stays
- * satisfiable at any notional. At 0.20 SOL that is no longer the binding question:
+ * satisfiable at any notional. At micro size that is no longer the binding question:
  * 2.5x of a cost measured in cents is still cents, and a trade netting $0.04 has
  * consumed a real entry slot, a real 4h cooldown, and real operator attention. This
  * gate asks the second question — "is the projected result large enough to be worth
  * the trip at all?" — and a candidate must answer yes to both.
+ *
+ * Which of the two BINDS depends on notional, so neither can be dropped. At 0.50 SOL
+ * the ratio gate is stricter (9% vs 6.6% fee/TVL); shrink the position and the dollar
+ * floor overtakes it. `describeLiveEnvelope` reports whichever is currently binding.
  *
  * Gas is charged at `max(live estimate, LIVE_ROUND_TRIP_GAS_SOL x SOL/USD)`. The floor
  * wins ties and wins whenever the live estimate is missing: unknown cost is never
@@ -456,6 +477,64 @@ export function requiredFeeTvlRatio24h(
 }
 
 /**
+ * The 24h fee/TVL ratio the V1.1 `MIN_FEE_COST_COVERAGE` gate demands at a given
+ * notional. Uses the same gas floor as the micro gate, so the two are comparable.
+ */
+export function requiredFeeTvlRatioForCoverage(
+  notionalUsd: number,
+  solPriceUsd: number,
+  config: LiveMicroCapitalConfig = liveMicroCapital,
+  slippagePct: number = env.FORCED_EXIT_SLIPPAGE_PCT,
+): number {
+  if (!(notionalUsd > 0)) return Infinity;
+  const gasUsd = config.roundTripGasSol * solPriceUsd;
+  const frictionUsd = gasUsd + notionalUsd * (slippagePct / 100);
+  return (env.MIN_FEE_COST_COVERAGE * frictionUsd) / notionalUsd;
+}
+
+export interface EffectiveFeeRequirement {
+  /** What the absolute $ floor demands. */
+  dollarFloor: number;
+  /** What the 2.5x V1.1 coverage ratio demands. */
+  coverageRatio: number;
+  /** The higher of the two — the bar a pool actually has to clear. */
+  binding: number;
+  /** Which gate is currently the binding constraint. */
+  bindingGate: "dollar floor" | "coverage ratio";
+}
+
+/**
+ * The requirement a pool ACTUALLY has to clear, which is the stricter of the two gates.
+ *
+ * Reporting only the dollar floor understates the bar whenever the ratio gate is
+ * stricter, and which one binds flips with notional: at 0.20 SOL the floor wanted
+ * 13.5% while coverage wanted 15%; at 0.50 SOL it is 6.6% against 9%. A boot line
+ * quoting the lower number would have the operator expecting candidates at 7% and
+ * finding none, which reads as a broken screener rather than a working gate.
+ */
+export function effectiveFeeRequirement(
+  notionalUsd: number,
+  solPriceUsd: number,
+  config: LiveMicroCapitalConfig = liveMicroCapital,
+  slippagePct: number = env.FORCED_EXIT_SLIPPAGE_PCT,
+): EffectiveFeeRequirement {
+  const dollarFloor = requiredFeeTvlRatio24h(notionalUsd, solPriceUsd, config, slippagePct);
+  const coverageRatio = requiredFeeTvlRatioForCoverage(
+    notionalUsd,
+    solPriceUsd,
+    config,
+    slippagePct,
+  );
+  const binding = Math.max(dollarFloor, coverageRatio);
+  return {
+    dollarFloor,
+    coverageRatio,
+    binding,
+    bindingGate: coverageRatio >= dollarFloor ? "coverage ratio" : "dollar floor",
+  };
+}
+
+/**
  * Human-readable summary of the armed envelope, including the implied fee yield the
  * $ floor demands and an explicit warning when that lands above `MAX_FEE_TVL_RATIO`
  * (i.e. the screener's own outlier ceiling would reject every pool that could pass).
@@ -465,7 +544,8 @@ export function describeLiveEnvelope(
   config: LiveMicroCapitalConfig = liveMicroCapital,
 ): string[] {
   const notionalUsd = config.maxPositionSol * solPriceUsd;
-  const required = requiredFeeTvlRatio24h(notionalUsd, solPriceUsd, config);
+  const req = effectiveFeeRequirement(notionalUsd, solPriceUsd, config);
+  const pct = (r: number): string => `${(r * 100).toFixed(2)}%`;
   const lines = [
     `capital    : ${config.capitalSol} SOL (~$${(config.capitalSol * solPriceUsd).toFixed(2)})`,
     `position   : ${config.maxPositionSol} SOL (~$${notionalUsd.toFixed(2)}) x ` +
@@ -474,20 +554,22 @@ export function describeLiveEnvelope(
       `${config.deployableSol.toFixed(2)} SOL deployable`,
     `friction   : ${config.roundTripGasSol} SOL round-trip gas floor, ` +
       `net PnL floor $${config.minNetPnlUsd.toFixed(2)} over ${config.pnlHorizonHours}h`,
-    `implies    : a pool must show >= ${(required * 100).toFixed(2)}% fee/TVL in 24h ` +
-      `to clear the $${config.minNetPnlUsd.toFixed(2)} floor at this size`,
+    `gates      : $${config.minNetPnlUsd.toFixed(2)} floor needs ${pct(req.dollarFloor)} fee/TVL, ` +
+      `${env.MIN_FEE_COST_COVERAGE}x coverage needs ${pct(req.coverageRatio)}`,
+    `implies    : a pool must show >= ${pct(req.binding)} fee/TVL in 24h at this size ` +
+      `(binding gate: ${req.bindingGate})`,
   ];
 
-  if (required > env.MAX_FEE_TVL_RATIO) {
+  if (req.binding > env.MAX_FEE_TVL_RATIO) {
     lines.push(
-      `WARNING    : that exceeds MAX_FEE_TVL_RATIO (${(env.MAX_FEE_TVL_RATIO * 100).toFixed(2)}%), ` +
-        `so the screener's outlier ceiling rejects every pool that could clear the floor. ` +
-        `No entry can be opened under this profile.`,
+      `WARNING    : that exceeds MAX_FEE_TVL_RATIO (${pct(env.MAX_FEE_TVL_RATIO)}), so the ` +
+        `screener's outlier ceiling rejects every pool that could clear it. No entry can ` +
+        `be opened under this profile.`,
     );
-  } else if (required > env.MIN_FEE_TVL_RATIO * 10) {
+  } else if (req.binding > env.MIN_FEE_TVL_RATIO * 10) {
     lines.push(
-      `WARNING    : that is ${(required / env.MIN_FEE_TVL_RATIO).toFixed(0)}x MIN_FEE_TVL_RATIO ` +
-        `(${(env.MIN_FEE_TVL_RATIO * 100).toFixed(2)}%); expect very few or no candidates.`,
+      `WARNING    : that is ${(req.binding / env.MIN_FEE_TVL_RATIO).toFixed(0)}x ` +
+        `MIN_FEE_TVL_RATIO (${pct(env.MIN_FEE_TVL_RATIO)}); expect very few candidates.`,
     );
   }
 

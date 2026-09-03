@@ -33,12 +33,15 @@
     "report:final": "node --import tsx scripts/render-report.ts",
     "sweep:exits": "node --import tsx src/scripts/sweepExits.ts",
     "sweep:entry": "node --import tsx src/scripts/sweepEntry.ts",
-    "sweep:rr": "node --import tsx src/scripts/sweepRiskReward.ts"
+    "sweep:rr": "node --import tsx src/scripts/sweepRiskReward.ts",
+    "test:swap": "node --import tsx scripts/testMicroSwap.ts"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.1",
+    "@solana/web3.js": "^1.98.4",
     "axios": "^1.7.9",
     "better-sqlite3": "^11.7.0",
+    "bs58": "^6.0.0",
     "fastify": "^5.2.0",
     "node-cron": "^3.0.3",
     "openai": "^4.77.0",

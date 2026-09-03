@@ -39,6 +39,11 @@ pre-V1.1 behaviour reintroduced through configuration.
   not neglect — the same inert-default discipline `defaultBacktestConfig()` uses. They are the
   reviewed envelope the engine will size and screen against when real capital is deployed; see
   "The live micro-capital profile is inert by default" below before touching either file.
+- `src/services/onchainExecutor.ts` and `scripts/testMicroSwap.ts` are STAGE 1 of the on-chain
+  path. Nothing in the engine imports them — by design, and enforced by a test — so they look
+  unreachable and their coverage looks dead. Deleting them as unused removes the only reviewed
+  signing path; wiring them into the engine to make them "used" defeats the isolation they
+  exist to provide. See "`src/services/onchainExecutor.ts` can sign real transactions" below.
 
 ## Commands
 
@@ -101,6 +106,9 @@ read-only view and holds no trading logic.
   capital, the reserve, and the absolute-dollar friction floor. Inert unless armed.
 - `src/services/livePreflight.ts` — the startup gas-reserve gate. Runs before the database, the
   API and every scheduler, so a refusal leaves nothing half-started. Inert unless armed.
+- `src/services/onchainExecutor.ts` — STAGE 1 on-chain execution: wallet loading, signing,
+  dynamic priority fees, send/confirm, Jupiter swaps. **Not imported by the engine, and a test
+  enforces that.** Armed by its own switch, exercised only via `scripts/testMicroSwap.ts`.
 - `src/services/metrics.ts` — max drawdown and profit factor as pure functions over an ordered PnL
   array, so they are testable without a database.
 - `src/services/http.ts` — `getJson` retries 429/5xx and fails fast on 4xx; `getJsonSafe` never
@@ -389,7 +397,7 @@ built from UTC components so a local-clock box cannot slide a close into the wro
 month or year. Do not "improve" the curve by adding floating PnL.
 
 **The live micro-capital profile is inert by default, and that is the whole point.**
-`src/config/liveConfig.ts` holds the 1 SOL live envelope (0.20 SOL x 3 positions, 0.15 SOL
+`src/config/liveConfig.ts` holds the 1 SOL live envelope (0.50 SOL x 1 position, 0.15 SOL
 reserve, 0.008 SOL round-trip gas floor, $1.50 net-PnL floor, 0.20 SOL startup gate). Every one
 of those values is gated behind `LIVE_MICRO_CAPITAL`, which defaults to **false**. With the flag
 off, `seekNewEntry` sizes from `VIRTUAL_SOL_PER_POSITION` exactly as before, the micro friction
@@ -410,7 +418,7 @@ Four properties inside it are load-bearing:
 - **`LIVE_ROUND_TRIP_GAS_SOL` is a FLOOR, not a fallback.** The live p75 estimate is used only
   when it is *higher*; a missing estimate is priced at the floor, never at zero. Treating a
   round trip as free is the documented mechanism by which this strategy churned itself into a
-  loss, and at 0.20 SOL there is no margin to absorb the error.
+  loss, and at micro notional there is no margin to absorb the error.
 - **The preflight fails CLOSED.** A balance that could not be READ is treated exactly like a
   balance that is too low — "the RPC was down" is not evidence of solvency. Same rule as
   `screenTokenSafety`, and deliberately the opposite of `assessPoolCooldown`, which fails open
@@ -427,15 +435,24 @@ making one an alternative path, would let a $2 net win through on 1.1x coverage.
 cap); there is a test for that too, because two copies of a guardrail means "V1.1" would name two
 different configurations depending on a flag.
 
-**The $1.50 floor at 0.20 SOL demands ~13.5% fee/TVL in 24h, and that is expected to reject
-almost everything.** Notional $20, friction $1.20 (gas $0.80 + 2% slippage $0.40), so fees must
-reach $2.70; the 2.5x gate independently wants ~15%, and `MAX_FEE_TVL_RATIO` rejects above 25%.
-The usable window is roughly 15-25%/24h — the same band this file elsewhere calls yields no
-position could actually realise. `describeLiveEnvelope` prints the implied requirement and this
-warning at boot, so an empty candidate list reads as the configured outcome rather than as a bug.
-**This is deliberate and was reaffirmed after being measured: do not "fix" it by loosening the
-gate.** The agreed lever for the on-chain transition is raising `LIVE_MAX_POSITION_SOL`, which
-shrinks the required yield because slippage scales with notional while gas does not.
+**TWO gates set the entry bar, and which one BINDS flips with position size — always report the
+stricter.** At $50 notional (0.50 SOL) friction is $1.80, so the $1.50 floor needs 6.6% fee/TVL
+while the V1.1 2.5x coverage gate needs 9.0%; a pool must clear both, so the real bar is 9.0%.
+Shrink the position and the dollar floor overtakes the ratio. `effectiveFeeRequirement` returns
+both plus `bindingGate`, and `describeLiveEnvelope` prints all three at boot. **Do not go back to
+quoting `requiredFeeTvlRatio24h` alone** — it answers only what the dollar floor demands, so
+whenever coverage is stricter it advertises a bar lower than the screener actually enforces, and
+the operator reads the resulting rejections as a broken screener rather than a working gate.
+
+**Raising `LIVE_MAX_POSITION_SOL` is the sanctioned lever, and it was used.** 0.20 SOL x 3 put
+the bar at 15% fee/TVL — inside the band this file elsewhere calls yields no position could
+actually realise. The same book as one 0.50 SOL position puts it at 9%, with NO guardrail moved:
+gas is per transaction and does not shrink with the position, so a larger notional dilutes a
+fixed cost, while slippage scales and stays proportional. Three concurrent positions had been
+paying three sets of round-trip gas against a third of the notional each. Concurrency is now 1,
+matching `defaultBacktestConfig()`. If the bar needs to come down further, raise the position
+size again — **do not loosen `MIN_FEE_COST_COVERAGE` or `LIVE_MIN_NET_PNL_USD`**, which buys the
+same candidate count by lowering the bar instead of by improving the economics.
 
 **`SOLANA_PRIVATE_KEY` is read only by the env schema, and nothing returns it.** There is
 deliberately no accessor for the key: nothing in this repository can sign a transaction, so such
@@ -447,9 +464,90 @@ base58 literal appears anywhere in `src/`.
 
 **Arming the live profile does NOT enable live trading, and must never be described as if it
 does.** `env.ts` still refuses to boot on `DRY_RUN=false`, `isLiveTradingEnabled` is a `false`
-literal, and no code path here signs, serialises or submits a Solana transaction. The profile
-changes SIZING and SCREENING only, so the dry run rehearses the live envelope before any
-execution code exists. The preflight logs this explicitly at boot for the same reason.
+literal, and the ENGINE has no code path that signs a Solana transaction. The profile changes
+SIZING and SCREENING only, so the dry run rehearses the live envelope before any execution code
+is wired in. The preflight logs this explicitly at boot for the same reason.
+
+**`src/services/onchainExecutor.ts` can sign real transactions, and the engine must never be
+able to reach it.** It is STAGE 1 of the on-chain path, built and armed separately from the
+trading engine. Three independent locks keep them apart, and they are deliberately at different
+levels so one mistake cannot defeat all three:
+
+- **Type level.** Every fund-moving function requires an `ExecutionAuthorization`, a branded
+  type obtainable only from `authorizeExecution()`. There is no overload without it, so
+  "did anyone check we are allowed to spend?" is a compile error rather than a code-review
+  question. Do not add an unauthenticated convenience wrapper.
+- **Configuration.** `ONCHAIN_EXECUTION_ARMED` defaults to false, and arming additionally needs
+  a key and a per-transaction lamport ceiling (default 0.02 SOL — a bug's blast radius, not a
+  position size).
+- **Import graph.** `onchainExecutor.test.ts` walks every relative import reachable from
+  `src/index.ts` and FAILS if this module appears. Verified to bite: adding one import to
+  `index.ts` fails both isolation tests. If you are wiring execution into the engine, that test
+  failing is the review gate, not an obstacle to route around.
+
+`authorizeExecution` reads `isLiveTradingEnabled` only to REFUSE — if that literal ever becomes
+true without this module being reviewed, it throws rather than inheriting the change as consent.
+The executor is never armed by proxy.
+
+**The rebroadcast rule in `sendAndConfirm` prevents a double spend, and is the opposite of the
+obvious retry.** An unconfirmed transaction may still be in flight, so retrying with a fresh
+blockhash can land BOTH — the same swap executed twice, or two positions opened. Therefore: the
+same signed bytes are rebroadcast unchanged while the blockhash lives (identical bytes means an
+identical signature, so redelivery is idempotent), and a NEW transaction is built only once the
+block height has passed `lastValidBlockHeight`, which makes the old signature permanently
+unlandable. The priority fee escalates on that rebuild, never per rebroadcast — a rebroadcast
+cannot change the fee of bytes already signed. Any error that is NOT blockhash expiry checks
+`getSignatureStatus` before reporting failure, because "the RPC threw" is not evidence the
+transaction did not land. Reversing this ordering trades a hung transaction for a double spend.
+
+**`HARD_MAX_SLIPPAGE_BPS` is a constant, not a setting.** `ONCHAIN_MAX_SLIPPAGE_BPS` may lower
+it and may never raise it; a bound configuration can widen is not a bound. The quote's
+`slippageBps` is re-validated against the authorization before signing rather than trusted,
+so the 0.5% cap does not depend on a third party's response body, and Jupiter's
+`otherAmountThreshold` is what enforces it on-chain — a client-side check would be advisory
+while the swap executed at whatever rate it got.
+
+**The DLMM adapter throws instead of stubbing.** `dlmmExecutor` is Stage 2: `openPosition`,
+`claimFees` and `closePosition` all raise `NotImplementedError`. A no-op stub returning a
+plausible success shape would read as a working integration in every log and every test, right
+up until the engine books a position it never opened. When Stage 2 lands, build the instructions
+against the real `@meteora-ag/dlmm` types — never against guessed account layouts, because a
+wrong account order does not throw, it moves funds.
+
+**`scripts/testMicroSwap.ts` is run by hand and by nothing else.** Dry run is the DEFAULT
+(`npm run test:swap` quotes and signs nothing, and needs no key on the box); spending requires
+`-- --execute`. It exists to answer the one question no unit test can — whether wallet loading,
+signing, the priority-fee handler and RPC submission actually work together against mainnet.
+On an ambiguous failure it prints the signature and tells the operator to check the chain
+BEFORE retrying; keep that, it is the instruction that prevents a manual double spend.
+
+**The portfolio hero shows the WALLET; the KPI cards show the SIMULATION. Never merge
+them.** `GET /api/wallet` (`src/services/walletBalance.ts`) reads the real on-chain balance;
+`/api/overview`'s `currentBalanceUSD` is `STARTING_BALANCE_USD + realised paper PnL`, a
+simulation baseline with no custody behind it. They are different quantities that both render
+as dollars, so `PortfolioHero` labels its figure "on-chain" and tags the PnL row "paper" while
+`isDryRun`. An unlabelled paper equity under a wallet header is the fabricated-balance problem
+the cohort rules already forbid, wearing a nicer font.
+
+The balance read follows `readRpcHealth`'s three rules for the same reasons: **cached and
+single-flighted** (the dashboard polls per open tab, and a chain read per request would
+rate-limit the endpoint the widget reports on — `?refresh=1` is the manual button's escape
+hatch and must never become the poll path); **null is not zero** (an unreadable wallet renders
+as an em dash, because "$0.00" is indistinguishable from a drained account, and a genuine
+zero must stay distinguishable from an unknown); and **only the RPC host is published**, since
+`SOLANA_RPC_URL` carries the provider API key on Helius and this payload reaches a browser. A
+SOL/USD outage nulls the USD figure only — it never discards the SOL reading, which is the
+number that matters.
+
+**`npm run db:reset` backs up before it destroys.** It writes a timestamped copy to
+`data/backups/` (gitignored, never auto-pruned) and prints the restore command. That backup is
+why the script needs no confirmation prompt: a mistaken run costs a file copy, not the history.
+The copy is taken BEFORE `initDatabase()` — move it after and it silently becomes a copy of a
+checkpointed-but-not-current file, missing WAL content. Deletes run in one transaction, then
+`VACUUM` outside it, so a "reset" file does not still hold the old trades in free pages. It does
+NOT touch `exports/` or `reports/`, which hold the 27-trade dry-run archive behind the churn and
+stop-loss findings — those are files, not rows, and the reset must never be read as having
+erased them.
 
 **Undefined metrics stay null.** `profitFactor` is null when there are no losing trades; returning
 `Infinity` or `0` would render on the dashboard as a real measurement. Max drawdown runs over the

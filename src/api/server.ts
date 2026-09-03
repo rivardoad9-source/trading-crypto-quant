@@ -15,9 +15,8 @@ import { computeOverview } from "../services/overview.js";
 import { computeLiveAnalytics } from "../services/analytics.js";
 import { DEFAULT_COHORT_ID, isCohortId, resolveCohort } from "../services/cohort.js";
 import { localDateString } from "../agents/researcherAgent.js";
-import { getWalletBalanceSol, readRpcHealth } from "../services/solana.js";
-import { fetchSolPriceUsd } from "../services/marketData.js";
-import { liveMicroCapital } from "../config/liveConfig.js";
+import { readRpcHealth } from "../services/solana.js";
+import { readWalletBalance, resetWalletBalanceCache } from "../services/walletBalance.js";
 import type { SimulatedPositionRow } from "../database/types.js";
 
 const serverStartedAt = Date.now();
@@ -156,6 +155,22 @@ export function buildServer(): FastifyInstance {
     isDryRun: env.DRY_RUN,
     solanaRpc: await readRpcHealth(),
   }));
+
+  /*
+   * The LIVE on-chain wallet, which is a different quantity from /api/overview's
+   * currentBalanceUSD (STARTING_BALANCE_USD + realised paper PnL — a simulation
+   * baseline, not custody). Anything rendering both must say which is which.
+   *
+   * ?refresh=1 drops the cache for ONE read, so the dashboard's manual refresh button
+   * gets a genuine chain read. It is not the default: the polling path must keep
+   * serving the cache, or every open tab would probe the endpoint on its own clock.
+   */
+  app.get<{ Querystring: { refresh?: string } }>("/api/wallet", async (req) => {
+    if (req.query.refresh === "1" || req.query.refresh === "true") {
+      resetWalletBalanceCache();
+    }
+    return readWalletBalance();
+  });
 
   app.get<{ Querystring: { cohort?: string } }>("/api/overview", async (req, reply) => {
     const cohort = readCohort(req.query.cohort);
@@ -322,37 +337,6 @@ export function buildServer(): FastifyInstance {
     } catch {
       // A missing page is a deployment problem, not a server fault worth a 500 stack.
       return reply.code(404).send({ error: "analytics dashboard is not present in this build" });
-    }
-  });
-
-  app.get("/api/wallet", async (_req, reply) => {
-    /*
-     * Real wallet read for the dashboard's display base (armed profile only).
-     *
-     * Returns the PUBLIC wallet's SOL balance plus a SOL/USD price so the page can
-     * base its display modal on the operator's actual funding. Read-only: nothing
-     * here signs or moves funds. A paper-only install (profile not armed) gets a 404
-     * — there is no wallet to report, and an invented one would be a fake figure.
-     */
-    if (!liveMicroCapital.enabled || !liveMicroCapital.walletAddress) {
-      return reply.code(404).send({ error: "live micro-capital profile is not armed" });
-    }
-    try {
-      const [balance, solPriceUsd] = await Promise.all([
-        getWalletBalanceSol(liveMicroCapital.walletAddress),
-        fetchSolPriceUsd().catch(() => null),
-      ]);
-      const usd = solPriceUsd && solPriceUsd > 0 ? balance.sol * solPriceUsd : null;
-      return reply.header("cache-control", "no-store").send({
-        armed: true,
-        address: balance.address,
-        sol: balance.sol,
-        solPriceUsd,
-        usd,
-        floorSol: liveMicroCapital.minWalletSol,
-      });
-    } catch (err) {
-      return reply.code(502).send({ error: (err as Error).message });
     }
   });
 
