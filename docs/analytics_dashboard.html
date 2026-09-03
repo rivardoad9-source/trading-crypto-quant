@@ -414,11 +414,12 @@
       <span id="dual-clock" class="sysitem">
         <span class="sysdot bg-slate-600"></span>Dual-Clock 30m / 1m &mdash; tidak terpantau
       </span>
-      <!-- Round-trip to THIS engine's /api/health, measured in the browser. It is not an
-           RPC probe; see refreshHealth(). -->
-      <span class="sysitem">
-        <span class="sysdot bg-slate-500"></span>Engine API
-        <span id="api-latency" class="sysnum text-slate-500">&mdash;</span>
+      <!-- Solana RPC, measured SERVER-SIDE by /api/health's getSlot probe. The browser
+           cannot reach the node itself, and its own round-trip to our API would be a
+           different quantity wearing an RPC label. -->
+      <span id="rpc-item" class="sysitem">
+        <span id="rpc-dot" class="sysdot bg-slate-500"></span>Solana RPC
+        <span id="rpc-latency" class="sysnum text-slate-500">&mdash;</span>
       </span>
       <span class="sysitem sysitem-accent">
         <span class="sysdot bg-emerald-400"></span>V1.1 Official Baseline
@@ -2129,13 +2130,74 @@ const fmtUptime = sec => {
   return m + "m";
 };
 
-// The latency shown here is the browser's measured round-trip to THIS engine's
-// /api/health. It is deliberately NOT labelled as Solana RPC latency: nothing the page
-// can reach reports that number, and printing an API round-trip under an RPC label would
-// be inventing a measurement — the same thing the macro metrics refuse to do when they
-// print UNAVAILABLE. Unreachable is reported as unreachable, never as a stale duration.
+// The RPC figure comes from the ENGINE, not from here: /api/health runs a getSlot probe
+// against its configured Solana node and reports the round-trip it measured. A browser
+// cannot reach that node, so timing our own API and calling the result "RPC latency"
+// would have been inventing a measurement. Three states stay distinct, because they are
+// three different facts:
+//
+//   engine unreachable  we could not ask, and say so
+//   RPC unreachable     the node never answered; there is no number, and none is shown
+//   RPC degraded        the node answered and refused (a JSON-RPC error, or a 429)
+//
+// The browser round-trip is still measured, but it is demoted to the tooltip where it is
+// labelled for what it is.
+function paintRpc(rpc, apiRttMs) {
+  const lat = document.getElementById("rpc-latency");
+  const dot = document.getElementById("rpc-dot");
+  const item = document.getElementById("rpc-item");
+  if (!lat) return;
+
+  const setDot = tone => { if (dot) dot.className = "sysdot " + tone; };
+  const setTitle = t => { if (item) item.setAttribute("title", t); };
+
+  if (!rpc) {
+    // Not knowing is not the same as the node being down, so these read differently.
+    const cannotAsk = apiRttMs === null;
+    lat.textContent = cannotAsk ? "tak terjangkau" : "tidak dilaporkan";
+    lat.className = "sysnum text-slate-500";
+    setDot("bg-slate-600");
+    setTitle(cannotAsk
+      ? "Engine tak terjangkau, jadi status RPC tidak bisa ditanyakan."
+      : "Engine ini tidak melaporkan probe RPC pada /api/health.");
+    return;
+  }
+
+  // typeof, not Number(): Number(null) is 0 and passes Number.isFinite, which would turn
+  // an unmeasured latency into "healthy 0ms" — an impossibly fast node invented out of a
+  // null. Same rule as the three-state booleans: null means not measured, never zero.
+  const isNum = v => typeof v === "number" && Number.isFinite(v);
+  const ms = rpc.latencyMs;
+  const timed = isNum(ms);
+
+  if (rpc.status === "ok") {
+    lat.textContent = timed ? "healthy " + ms + "ms" : "healthy";
+    lat.className = "sysnum " + (!timed ? "text-slate-400"
+      : ms < 200 ? "text-emerald-300/90"
+      : ms < 600 ? "text-amber-400/90" : "text-red-400/90");
+    setDot(timed && ms < 600 ? "bg-emerald-400/70" : "bg-amber-400/70");
+  } else if (rpc.status === "degraded") {
+    // It answered, quickly, to say no — a 429 is the likeliest cause on the public node.
+    lat.textContent = timed ? "menolak · " + ms + "ms" : "menolak";
+    lat.className = "sysnum text-amber-400/90";
+    setDot("bg-amber-400/70");
+  } else {
+    lat.textContent = "tak terjangkau";
+    lat.className = "sysnum text-red-400/90";
+    setDot("bg-red-500/70");
+  }
+
+  const bits = [];
+  if (rpc.endpoint) bits.push("node " + rpc.endpoint);
+  if (rpc.method) bits.push("probe " + rpc.method);
+  if (isNum(rpc.slot)) bits.push("slot " + rpc.slot);
+  if (rpc.checkedAt) bits.push("diukur " + rpc.checkedAt);
+  if (rpc.detail) bits.push(rpc.detail);
+  if (isNum(apiRttMs)) bits.push("round-trip browser→API " + apiRttMs + "ms");
+  setTitle(bits.join(" · "));
+}
+
 async function refreshHealth() {
-  const lat = document.getElementById("api-latency");
   const up = document.getElementById("engine-uptime");
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
@@ -2147,18 +2209,13 @@ async function refreshHealth() {
     });
     if (!res.ok) throw new Error("HTTP " + res.status);
     const payload = await res.json();
-    const rtt = Date.now() - t0;
-    if (lat) {
-      lat.textContent = rtt + "ms";
-      lat.className = "sysnum " + (rtt < 150 ? "text-emerald-300/90"
-        : rtt < 500 ? "text-amber-400/90" : "text-red-400/90");
-    }
+    paintRpc(payload ? payload.solanaRpc : null, Date.now() - t0);
     if (up) {
       up.textContent = "up " + fmtUptime(payload && payload.uptimeSeconds);
       up.className = "sysnum text-slate-400";
     }
   } catch {
-    if (lat) { lat.textContent = "tak terjangkau"; lat.className = "sysnum text-slate-500"; }
+    paintRpc(null, null);
     if (up) { up.textContent = "—"; up.className = "sysnum text-slate-500"; }
   } finally {
     clearTimeout(timer);

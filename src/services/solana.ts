@@ -29,17 +29,196 @@ export class SolanaRpcError extends Error {
 
 let requestId = 0;
 
-async function rpc<T>(method: string, params: unknown[]): Promise<T> {
+async function rpc<T>(
+  method: string,
+  params: unknown[],
+  timeoutMs: number = HTTP_TIMEOUT_MS,
+): Promise<T> {
   const res = await axios.post(
     env.SOLANA_RPC_URL,
     { jsonrpc: "2.0", id: ++requestId, method, params },
-    { timeout: HTTP_TIMEOUT_MS, headers: { "Content-Type": "application/json" } },
+    { timeout: timeoutMs, headers: { "Content-Type": "application/json" } },
   );
 
   const body = res.data as { result?: T; error?: RpcError };
   if (body.error) throw new SolanaRpcError(method, body.error);
   if (body.result === undefined) throw new Error(`[solana] ${method} returned no result`);
   return body.result;
+}
+
+/* ------------------------------------------------------------------ */
+/* RPC health probe                                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * "ok"          the node answered and reported a slot.
+ * "degraded"    the node ANSWERED but refused — a JSON-RPC error, or an HTTP status
+ *               such as 429. Reachable and unusable is a different fact from
+ *               unreachable, and the dashboard shows it differently.
+ * "unreachable" nothing came back: DNS, connection, or timeout.
+ */
+export type RpcHealthStatus = "ok" | "degraded" | "unreachable";
+
+export interface RpcHealth {
+  status: RpcHealthStatus;
+  /**
+   * Round-trip in milliseconds, or null when the call never completed. Never 0 —
+   * an unmeasured latency reported as zero would render as an impossibly fast node,
+   * the same reason est_gas_cost_usd stays null rather than becoming 0.
+   */
+  latencyMs: number | null;
+  /** The slot the node served, which is what makes this a liveness check and not a ping. */
+  slot: number | null;
+  /**
+   * HOST ONLY. `SOLANA_RPC_URL` carries the provider API key in its path or query on
+   * Helius, Triton and QuickNode, and this value is served over HTTP to a browser.
+   */
+  endpoint: string;
+  method: "getSlot";
+  checkedAt: string;
+  /** Why it is not ok; null when it is. */
+  detail: string | null;
+}
+
+/**
+ * `getSlot`, not `getHealth`.
+ *
+ * `getHealth` is the method named for this job, but a provider that does not expose it
+ * answers with a JSON-RPC error that is indistinguishable from an unhealthy node — the
+ * widget would read "degraded" forever against a perfectly good endpoint. `getSlot` is
+ * universally supported, just as cheap, and its answer additionally proves the node is
+ * following the chain rather than merely accepting connections.
+ */
+const RPC_PROBE_METHOD = "getSlot" as const;
+
+/** Short on purpose: /api/health must not be able to hang behind a slow provider. */
+const RPC_PROBE_TIMEOUT_MS = 2500;
+
+/** How long one measurement is allowed to answer for. */
+export const RPC_PROBE_TTL_MS = 15_000;
+
+/** The configured URL can embed an API key, so only the host ever leaves this process. */
+function rpcEndpointHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "unparseable-url";
+  }
+}
+
+/**
+ * True when the endpoint answered us, whatever it said.
+ *
+ * A 429 is not "unreachable" — it is a node that replied, quickly, to say no. Filing
+ * rate limiting under "unreachable" would hide the single most likely thing to be wrong
+ * with the default public endpoint, which already refuses getTokenLargestAccounts.
+ */
+function endpointAnswered(err: unknown): boolean {
+  if (err instanceof SolanaRpcError) return true;
+  return axios.isAxiosError(err) && err.response !== undefined;
+}
+
+export async function measureRpcHealth(): Promise<RpcHealth> {
+  const startedAt = Date.now();
+  const base = {
+    endpoint: rpcEndpointHost(env.SOLANA_RPC_URL),
+    method: RPC_PROBE_METHOD,
+    checkedAt: new Date().toISOString(),
+  };
+
+  try {
+    const slot = await rpc<number>(
+      RPC_PROBE_METHOD,
+      [{ commitment: "processed" }],
+      RPC_PROBE_TIMEOUT_MS,
+    );
+    return {
+      ...base,
+      status: "ok",
+      latencyMs: Date.now() - startedAt,
+      slot: typeof slot === "number" ? slot : null,
+      detail: null,
+    };
+  } catch (err) {
+    const answered = endpointAnswered(err);
+    return {
+      ...base,
+      status: answered ? "degraded" : "unreachable",
+      // A refusal was still timed. A timeout was not, and stays null.
+      latencyMs: answered ? Date.now() - startedAt : null,
+      slot: null,
+      detail: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+export type RpcProbe = () => Promise<RpcHealth>;
+
+let rpcHealthCache: RpcHealth | null = null;
+let rpcHealthInFlight: Promise<RpcHealth> | null = null;
+
+/** Single-flight: concurrent readers share one measurement instead of racing the node. */
+function startProbe(probe: RpcProbe): Promise<RpcHealth> {
+  rpcHealthInFlight ??= probe()
+    .then((result) => {
+      rpcHealthCache = result;
+      return result;
+    })
+    .finally(() => {
+      rpcHealthInFlight = null;
+    });
+  return rpcHealthInFlight;
+}
+
+/**
+ * The RPC health behind /api/health, cached and refreshed lazily.
+ *
+ * The dashboard polls that route once a minute PER OPEN TAB, and the default public
+ * endpoint rate-limits hard, so probing on every request would turn a status widget into
+ * a generator of 429s — it would report the outage it caused. Reads come from a
+ * short-lived cache instead.
+ *
+ * Only the very first read waits for the network. After that a stale cache is served
+ * immediately and the refresh lands in the background, because a liveness endpoint must
+ * not block on a third party. Nothing here schedules a timer: an interval would be a
+ * live handle for the smoke test to drain, and a node nobody is watching is not worth
+ * probing.
+ */
+export async function readRpcHealth(probe: RpcProbe = measureRpcHealth): Promise<RpcHealth> {
+  const cached = rpcHealthCache;
+  const fresh = cached !== null && Date.now() - Date.parse(cached.checkedAt) <= RPC_PROBE_TTL_MS;
+  if (fresh) return cached;
+
+  const running = startProbe(probe);
+  if (cached !== null) {
+    // measureRpcHealth resolves on failure rather than rejecting, but a caller-supplied
+    // probe might not, and an unhandled rejection must not come out of a health read.
+    running.catch(() => undefined);
+    return cached;
+  }
+
+  // Nothing has been measured yet, so this one read waits. It still cannot fail: a
+  // liveness route that 500s because a third-party probe threw would announce an outage
+  // of the wrong system. The reading is deliberately not cached, so the next read retries.
+  try {
+    return await running;
+  } catch (err) {
+    return {
+      status: "unreachable",
+      latencyMs: null,
+      slot: null,
+      endpoint: rpcEndpointHost(env.SOLANA_RPC_URL),
+      method: RPC_PROBE_METHOD,
+      checkedAt: new Date().toISOString(),
+      detail: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+/** Test seam, and the honest way to drop a measurement that is no longer about this process. */
+export function resetRpcHealthCache(): void {
+  rpcHealthCache = null;
+  rpcHealthInFlight = null;
 }
 
 /* ------------------------------------------------------------------ */

@@ -247,6 +247,20 @@ returned exit code 127, which makes the smoke test useless as a deploy gate. `cl
 drains the pool, the loop empties, and `process.exitCode` carries the verdict. The 10s unref'd
 timer is a hang guard, not the normal path; if it ever fires, something new leaked a handle.
 
+**The RPC health probe is a status widget, not a monitor, and must not become either a
+leak or a rate limiter.** `/api/health` reports `solanaRpc` from a `getSlot` probe in
+`solana.ts`. Three things there are load-bearing. It publishes `new URL(SOLANA_RPC_URL).host`
+and nothing else, because that URL carries the provider API key in its query on Helius and
+the payload is served to a browser. An endpoint that never answered reports `latencyMs:
+null`, never 0 — and the dashboard guards it with `typeof v === "number"`, because
+`Number(null)` is 0 and passes `Number.isFinite`, which rendered as "healthy 0ms". And the
+reading is cached for `RPC_PROBE_TTL_MS` and single-flighted: the dashboard polls that route
+once a minute PER OPEN TAB, so a probe per request would make the widget generate the 429s
+it then reports. `getSlot` rather than `getHealth` because a provider that does not expose
+`getHealth` answers with an error indistinguishable from an unhealthy node. Only the first
+read after boot waits on the network, and a probe that throws still yields a reading — a
+liveness route that 500s because a third party threw announces the wrong outage.
+
 **The anti-churn gate fails OPEN, unlike every safety gate.** `assessPoolCooldown` treats an
 unparseable timestamp as an expired bench, not an indefinite ban, and a pool with no history is
 never blocked. That is the opposite of `screenTokenSafety`, and deliberate: cooldown protects
