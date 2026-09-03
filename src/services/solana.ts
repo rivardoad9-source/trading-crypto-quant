@@ -500,3 +500,43 @@ export async function screenTokenSafety(mint: string): Promise<TokenSafetyReport
 
   return report;
 }
+
+/* ------------------------------------------------------------------ */
+/* Wallet balance                                                      */
+/* ------------------------------------------------------------------ */
+
+export interface WalletBalance {
+  address: string;
+  lamports: number;
+  sol: number;
+  readAt: string;
+}
+
+/**
+ * Reads a wallet's SOL balance. PUBLIC address only — this never sees, needs or
+ * derives the signing key.
+ *
+ * Throws rather than returning a fallback. Every caller is a safety gate, and a
+ * balance that could not be read is not a balance of zero, nor of "enough": the
+ * three-state rule this codebase applies to authority flags and gas estimates applies
+ * here too. `runLivePreflight` turns the throw into a refusal to start.
+ */
+export async function getWalletBalanceSol(address: string): Promise<WalletBalance> {
+  const result = await rpc<{ value: number } | number>("getBalance", [address]);
+
+  // Every mainstream provider returns the RpcResponse envelope { context, value }.
+  // A bare number is tolerated so an unusual provider degrades to working, not to
+  // NaN — which would silently read as "balance unknown" downstream.
+  const lamports = typeof result === "number" ? result : result?.value;
+
+  if (typeof lamports !== "number" || !Number.isFinite(lamports) || lamports < 0) {
+    throw new Error(`[solana] getBalance returned no usable value for ${address}`);
+  }
+
+  return {
+    address,
+    lamports,
+    sol: lamports / LAMPORTS_PER_SOL,
+    readAt: new Date().toISOString(),
+  };
+}

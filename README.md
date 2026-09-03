@@ -311,6 +311,55 @@ bound (pool-level, no concentration multiplier, zero while out of range), so abs
 profitability is understated. That does not rescue the comparison — every cell shares the
 same fee model, so the ranking between settings still holds.
 
+### Live micro-capital profile (1 SOL) — present, and switched off
+
+`src/config/liveConfig.ts` describes the envelope the engine would size and screen against on a
+real 1 SOL wallet. It is gated behind `LIVE_MICRO_CAPITAL`, which **defaults to false**. With the
+flag off the engine behaves exactly as the paper build does — same sizing, same candidate list,
+no network call at boot. The files are not dead code; they are a reviewed configuration waiting
+for an execution path.
+
+| Guardrail | Value | Key |
+|---|---|---|
+| Capital base | 1 SOL | `LIVE_CAPITAL_SOL` |
+| Position size | 0.20 SOL | `LIVE_MAX_POSITION_SOL` |
+| Concurrent positions | 3 (0.60 SOL max exposure) | `LIVE_MAX_CONCURRENT_POSITIONS` |
+| Untouchable reserve | 0.15 SOL (0.85 deployable) | `LIVE_MIN_RESERVE_SOL` |
+| Round-trip gas floor | 0.008 SOL | `LIVE_ROUND_TRIP_GAS_SOL` |
+| Net PnL floor | $1.50 / 24h | `LIVE_MIN_NET_PNL_USD` |
+| Startup wallet floor | 0.20 SOL | `LIVE_MIN_WALLET_SOL` |
+
+Positions are sized from **free capital** (`capital - reserve - open notional`), never from the
+capital base — sizing three positions off the base would deploy the same SOL three times over. A
+profile whose full book could reach the reserve is rejected at boot with the arithmetic printed,
+rather than silently truncated at sizing time.
+
+The gas figure is a **floor, not a fallback**: the live p75 priority-fee estimate is used only
+when it is higher, and an unavailable estimate is never priced at zero. The `$1.50` rule is an
+absolute dollar floor stacked **on top of** the V1.1 `MIN_FEE_COST_COVERAGE` 2.5x ratio gate, not
+a replacement for it; a candidate must clear both.
+
+**Expect it to reject nearly everything, by design.** At $20 of notional the friction is $1.20
+(gas $0.80 + 2% slippage $0.40), so clearing a $1.50 net floor needs $2.70 of 24h fees — about
+13.5% fee/TVL, roughly 17x `MIN_FEE_TVL_RATIO` and inside the band this README elsewhere treats as
+unrealisable. The engine prints the implied requirement and a warning at boot, so an empty
+candidate list reads as the configured outcome rather than a bug. The lever for the on-chain
+transition is `LIVE_MAX_POSITION_SOL` — slippage scales with notional, gas does not, so a larger
+position lowers the required yield. Loosening the gate is not the lever.
+
+**Startup gas gate.** `runLivePreflight` runs before the database, the API and every scheduler.
+A wallet below `LIVE_MIN_WALLET_SOL` refuses the start and sends a Telegram
+`INSUFFICIENT_GAS_RESERVE` alert. A balance that could not be **read** is treated identically —
+an unverified wallet is not a funded one — and a failed Telegram dispatch never converts the
+refusal into a start. The probe uses `SOLANA_WALLET_ADDRESS` (public); `SOLANA_PRIVATE_KEY` is
+read only by the env schema and no function returns it.
+
+**Arming the profile does not enable live trading.** `DRY_RUN=false` still refuses to boot and
+nothing in this repository signs a Solana transaction. The profile changes sizing and screening
+only, so the dry run rehearses the live envelope before any execution code exists.
+
+---
+
 ### Backtest (survivorship-bias controlled)
 
 ```bash
@@ -630,11 +679,14 @@ listed in the prompt as `UNAVAILABLE` with an explicit instruction not to invent
 
 ```
 src/
-  config/     env.ts (Zod-validated), constants.ts (cron, endpoints, thresholds)
+  config/     env.ts (Zod-validated), constants.ts (cron, endpoints, thresholds),
+              liveConfig.ts (1 SOL live micro-capital profile — INERT by default)
   database/   db.ts (SQLite + auto-migration), schema.sql, repositories.ts (all SQL)
   services/   meteora.ts (screener + position maths), deepseek.ts, marketData.ts,
-              solana.ts (RPC: priority fees, mint authorities, holder concentration),
-              metrics.ts (drawdown, profit factor), telegram.ts, http.ts (retry/soft-fail)
+              solana.ts (RPC: priority fees, mint authorities, holder concentration,
+              wallet balance), livePreflight.ts (startup gas-reserve gate — INERT
+              by default), metrics.ts (drawdown, profit factor), telegram.ts,
+              http.ts (retry/soft-fail)
   agents/     researcherAgent.ts, dlmmTraderAgent.ts, postMortemAgent.ts, snapshotJob.ts
   api/        server.ts
   scripts/    manual triggers, demo seed, smoke test

@@ -1,0 +1,169 @@
+import { env } from "../config/env.js";
+import {
+  describeLiveEnvelope,
+  hasLiveSigningKey,
+  liveMicroCapital,
+  type LiveMicroCapitalConfig,
+} from "../config/liveConfig.js";
+import { getWalletBalanceSol, type WalletBalance } from "./solana.js";
+import { sendMessage } from "./telegram.js";
+
+/**
+ * Startup gate for the live micro-capital profile.
+ *
+ * The engine must not start with a wallet that cannot fund its own exits. A DLMM
+ * position is opened and closed by two separate transactions; a wallet that can afford
+ * the first but not the second turns the fast monitor's stop-loss into a suggestion,
+ * because there is no gas left to act on it. Refusing to start is the only outcome
+ * that leaves the operator's capital where they can still reach it.
+ *
+ * The whole module is inert unless `LIVE_MICRO_CAPITAL=true`. With the flag off,
+ * `runLivePreflight` returns `{ status: "skipped" }` without touching the network,
+ * so the paper engine's boot is unchanged.
+ */
+
+/** The alert code the operator's Telegram runbook keys on. Do not reword it. */
+export const INSUFFICIENT_GAS_RESERVE = "INSUFFICIENT_GAS_RESERVE" as const;
+
+export class InsufficientGasReserveError extends Error {
+  readonly code = INSUFFICIENT_GAS_RESERVE;
+  /** null when the balance could not be read at all. */
+  readonly balanceSol: number | null;
+  readonly requiredSol: number;
+
+  constructor(message: string, balanceSol: number | null, requiredSol: number) {
+    super(message);
+    this.name = "InsufficientGasReserveError";
+    this.balanceSol = balanceSol;
+    this.requiredSol = requiredSol;
+  }
+}
+
+export type PreflightStatus = "skipped" | "ok";
+
+export interface PreflightResult {
+  status: PreflightStatus;
+  /** Present only when a balance was actually read. */
+  balance?: WalletBalance;
+  /** Lines describing the armed envelope, already logged. */
+  envelope: string[];
+}
+
+export interface PreflightDeps {
+  config?: LiveMicroCapitalConfig;
+  /** Injected for tests; defaults to the real RPC read. */
+  readBalance?: (address: string) => Promise<WalletBalance>;
+  /** Injected for tests; defaults to the real Telegram dispatch. */
+  alert?: (text: string) => Promise<unknown>;
+  /** SOL/USD, used only to render the envelope summary. */
+  solPriceUsd?: number | null;
+  log?: (line: string) => void;
+}
+
+/**
+ * Fires the operator alert. Never throws: a Telegram outage must not mask the
+ * underlying refusal, which the caller is about to surface anyway.
+ */
+async function raiseAlert(
+  alert: (text: string) => Promise<unknown>,
+  detail: string,
+): Promise<void> {
+  try {
+    await alert(`🚨 ${INSUFFICIENT_GAS_RESERVE}\n\n${detail}\n\nEngine start REFUSED.`);
+  } catch (err) {
+    console.error(`[preflight] alert dispatch failed: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * Runs the live-capital startup checks.
+ *
+ * Resolves when the engine may start. Throws `InsufficientGasReserveError` — after
+ * sending the Telegram alert — when it may not.
+ *
+ * A balance that could not be READ is treated exactly like a balance that is too low.
+ * Starting on an unverified wallet is the failure this gate exists to prevent, and
+ * "the RPC was down" is not evidence of solvency. Same fail-closed rule as
+ * `screenTokenSafety`, and the opposite of the anti-churn gates, which fail open
+ * because they only protect returns.
+ */
+export async function runLivePreflight(deps: PreflightDeps = {}): Promise<PreflightResult> {
+  const config = deps.config ?? liveMicroCapital;
+  const log = deps.log ?? ((line: string) => console.log(line));
+
+  if (!config.enabled) {
+    return { status: "skipped", envelope: [] };
+  }
+
+  const readBalance = deps.readBalance ?? getWalletBalanceSol;
+  const alert = deps.alert ?? ((text: string) => sendMessage(text, false));
+
+  const envelope =
+    deps.solPriceUsd && deps.solPriceUsd > 0 ? describeLiveEnvelope(deps.solPriceUsd, config) : [];
+
+  log("[preflight] LIVE micro-capital profile ARMED");
+  for (const line of envelope) log(`[preflight]   ${line}`);
+
+  /*
+   * Stated, not enforced. `env.ts` still refuses DRY_RUN=false and nothing here signs
+   * a transaction, so the absence of a key blocks nothing today. Saying so at boot is
+   * what stops "live profile armed" from being misread as "live execution running".
+   */
+  log(
+    `[preflight]   signing key: ${
+      hasLiveSigningKey() ? "present in env (unused: no execution path exists)" : "not configured"
+    }`,
+  );
+  if (!env.DRY_RUN) {
+    // Unreachable while env.ts refuses to boot on DRY_RUN=false; kept as a tripwire in
+    // case that refusal is ever relaxed before an execution path is reviewed.
+    log("[preflight]   WARNING: DRY_RUN is false but this build cannot sign transactions");
+  }
+
+  if (!config.walletAddress) {
+    const detail =
+      `SOLANA_WALLET_ADDRESS is not set, so the ${config.minWalletSol} SOL startup floor ` +
+      `cannot be verified. Set the wallet's PUBLIC address in .env.`;
+    await raiseAlert(alert, detail);
+    throw new InsufficientGasReserveError(
+      `[preflight] ${INSUFFICIENT_GAS_RESERVE}: ${detail}`,
+      null,
+      config.minWalletSol,
+    );
+  }
+
+  let balance: WalletBalance;
+  try {
+    balance = await readBalance(config.walletAddress);
+  } catch (err) {
+    const detail =
+      `Could not read the balance of ${config.walletAddress}: ${(err as Error).message}. ` +
+      `An unverified wallet is treated as an empty one.`;
+    await raiseAlert(alert, detail);
+    throw new InsufficientGasReserveError(
+      `[preflight] ${INSUFFICIENT_GAS_RESERVE}: ${detail}`,
+      null,
+      config.minWalletSol,
+    );
+  }
+
+  if (balance.sol < config.minWalletSol) {
+    const detail =
+      `Wallet ${balance.address} holds ${balance.sol.toFixed(6)} SOL, below the ` +
+      `${config.minWalletSol} SOL startup floor. The engine will not open a position it ` +
+      `cannot afford to close.`;
+    await raiseAlert(alert, detail);
+    throw new InsufficientGasReserveError(
+      `[preflight] ${INSUFFICIENT_GAS_RESERVE}: ${detail}`,
+      balance.sol,
+      config.minWalletSol,
+    );
+  }
+
+  log(
+    `[preflight]   wallet ${balance.address}: ${balance.sol.toFixed(6)} SOL ` +
+      `(floor ${config.minWalletSol} SOL) — OK`,
+  );
+
+  return { status: "ok", balance, envelope };
+}
