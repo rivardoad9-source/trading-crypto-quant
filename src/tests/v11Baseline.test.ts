@@ -27,6 +27,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { env } from "../config/env.js";
+import { liveMicroCapital } from "../config/liveConfig.js";
 import { CRON } from "../config/constants.js";
 import { REASONER_MAX_TOKENS, MAX_STRUCTURED_ATTEMPTS } from "../services/deepseek.js";
 
@@ -131,5 +132,64 @@ describe("V1.1 baseline — no pre-V1.1 live path", () => {
         `${forbidden} would let the live engine run pre-V1.1 behaviour`,
       );
     }
+  });
+});
+
+describe("V1.1 baseline — the live micro-capital profile does not touch it", () => {
+  /*
+   * The 1 SOL live profile adds SIZING and an extra friction layer. It is allowed to
+   * make entry harder; it is not allowed to move a V1.1 guardrail. The risk is not
+   * that someone edits `env.ts` — the tests above catch that — but that the live
+   * profile grows its own copy of a guardrail and the two silently disagree, at which
+   * point "V1.1" names two different configurations depending on a flag.
+   */
+  const liveSource = read("../config/liveConfig.ts");
+
+  it("declares no cooldown, lockout, coverage or clock of its own", () => {
+    for (const forbidden of [
+      "POOL_COOLDOWN_HOURS",
+      "POOL_LOCKOUT_CONSECUTIVE_FAILURES",
+      "POOL_LOCKOUT_HOURS",
+      "MIN_FEE_COST_COVERAGE",
+      "REASONER_MAX_TOKENS",
+      "DLMM_LOOP",
+      "FAST_MONITOR",
+    ]) {
+      assert.ok(
+        !new RegExp(`LIVE_${forbidden}|${forbidden}:\s*numeric`).test(liveSource),
+        `liveConfig.ts declares its own ${forbidden}; V1.1 would then depend on a flag`,
+      );
+    }
+  });
+
+  it("leaves the V1.1 values untouched on this machine", () => {
+    assert.equal(env.POOL_COOLDOWN_HOURS, 4);
+    assert.equal(env.POOL_LOCKOUT_CONSECUTIVE_FAILURES, 2);
+    assert.equal(env.POOL_LOCKOUT_HOURS, 24);
+    assert.equal(env.MIN_FEE_COST_COVERAGE, 2.5);
+    assert.equal(REASONER_MAX_TOKENS, 16_000);
+  });
+
+  it("keeps the micro-capital gate ADDITIVE — it never relaxes the 2.5x ratio", () => {
+    // The micro gate runs only after the breakeven filter has already narrowed the
+    // list, so a candidate must clear both. A refactor that made it an alternative
+    // path would let a $2 net win through on 1.1x coverage.
+    const agent = read("../agents/dlmmTraderAgent.ts");
+    const breakevenAt = agent.indexOf("assessBreakeven({");
+    const microAt = agent.indexOf("assessMicroCapitalFriction({");
+    assert.ok(breakevenAt > 0 && microAt > 0, "one of the two friction gates is gone");
+    assert.ok(
+      breakevenAt < microAt,
+      "the micro-capital gate no longer runs after the 2.5x coverage gate",
+    );
+  });
+
+  it("stays inert unless explicitly armed", () => {
+    assert.match(
+      liveSource,
+      /LIVE_MICRO_CAPITAL: booleanish\(false\)/,
+      "the live profile no longer defaults to off",
+    );
+    assert.equal(liveMicroCapital.enabled, false, "this machine has the live profile armed");
   });
 });

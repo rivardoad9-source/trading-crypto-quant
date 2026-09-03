@@ -7,6 +7,9 @@ import { runDlmmTradingCycle, runFastPositionMonitor } from "./agents/dlmmTrader
 import { runDailySnapshot } from "./agents/snapshotJob.js";
 import { startApiServer, stopApiServer } from "./api/server.js";
 import { startTelegramCommands, stopTelegramCommands } from "./services/telegramCommands.js";
+import { liveMicroCapital } from "./config/liveConfig.js";
+import { InsufficientGasReserveError, runLivePreflight } from "./services/livePreflight.js";
+import { fetchSolPriceUsd } from "./services/marketData.js";
 
 /**
  * Serialises cron jobs. A DLMM cycle that overruns its window must not overlap the
@@ -43,11 +46,43 @@ function banner(): void {
   console.log(`  telegram    : ${hasTelegram ? "configured" : "not configured (alerts logged only)"}`);
   console.log(`  position    : ${env.VIRTUAL_SOL_PER_POSITION} SOL virtual, max ${env.MAX_CONCURRENT_POSITIONS} concurrent`);
   console.log(`  exits       : TP ${env.TAKE_PROFIT_PCT}% / SL ${env.STOP_LOSS_PCT}% / age ${env.MAX_POSITION_AGE_HOURS}h`);
+  if (liveMicroCapital.enabled) {
+    console.log(
+      `  live profile: ARMED — ${liveMicroCapital.maxPositionSol} SOL x ` +
+        `${liveMicroCapital.maxConcurrentPositions}, ${liveMicroCapital.minReserveSol} SOL reserved ` +
+        `(sizing + friction only; this build still signs nothing)`,
+    );
+  }
   console.log("");
+}
+
+/**
+ * Live-capital startup gate. Runs BEFORE the database, the API and every scheduler,
+ * so a refusal leaves nothing half-started. Entirely inert unless LIVE_MICRO_CAPITAL
+ * is on — the paper engine never reaches the network here.
+ */
+async function preflight(): Promise<void> {
+  if (!liveMicroCapital.enabled) return;
+
+  // Best-effort, and only to render the envelope summary. A missing price must not
+  // itself block a start: the balance floor is denominated in SOL, not USD.
+  const solPriceUsd = await fetchSolPriceUsd().catch(() => null);
+
+  try {
+    await runLivePreflight({ solPriceUsd });
+  } catch (err) {
+    if (err instanceof InsufficientGasReserveError) {
+      console.error(`\n${err.message}\n`);
+      console.error("[main] refusing to start. Top the wallet up, or unset LIVE_MICRO_CAPITAL.\n");
+      process.exit(1);
+    }
+    throw err;
+  }
 }
 
 async function main(): Promise<void> {
   banner();
+  await preflight();
   initDatabase();
 
   await startApiServer();

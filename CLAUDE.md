@@ -31,6 +31,15 @@ pre-V1.1 behaviour reintroduced through configuration.
   ARM of the anti-churn A/B that `backtest:micro` and `backtest:annual` run. They are measurement
   scaffolding, not a legacy fallback; see "The backtest's V1.1 guardrails default to OFF" below.
 
+**A third thing looks unused and is not. Do not delete it.**
+
+- `src/config/liveConfig.ts` and `src/services/livePreflight.ts` are the LIVE MICRO-CAPITAL
+  PROFILE (1 SOL). Every value in them is inert behind `LIVE_MICRO_CAPITAL=false`, so with the
+  flag off nothing they contain executes and coverage over them looks dead. That is the design,
+  not neglect — the same inert-default discipline `defaultBacktestConfig()` uses. They are the
+  reviewed envelope the engine will size and screen against when real capital is deployed; see
+  "The live micro-capital profile is inert by default" below before touching either file.
+
 ## Commands
 
 ```bash
@@ -86,7 +95,12 @@ read-only view and holds no trading logic.
 - `src/services/meteora.ts` — pool fetching, screening, and **all position maths** (IL, fee accrual,
   valuation). The agent orchestrates; the maths lives here and is unit-tested.
 - `src/services/solana.ts` — JSON-RPC helper: priority-fee estimation, mint/freeze authority,
-  holder concentration. Method availability differs by provider (see below).
+  holder concentration, and `getWalletBalanceSol` (PUBLIC address only). Method availability
+  differs by provider (see below).
+- `src/config/liveConfig.ts` — the 1 SOL live micro-capital profile: capital, sizing against free
+  capital, the reserve, and the absolute-dollar friction floor. Inert unless armed.
+- `src/services/livePreflight.ts` — the startup gas-reserve gate. Runs before the database, the
+  API and every scheduler, so a refusal leaves nothing half-started. Inert unless armed.
 - `src/services/metrics.ts` — max drawdown and profit factor as pure functions over an ordered PnL
   array, so they are testable without a database.
 - `src/services/http.ts` — `getJson` retries 429/5xx and fails fast on 4xx; `getJsonSafe` never
@@ -373,6 +387,69 @@ active, those ratios are indicative only; the trade-level statistics are the pri
 evidence. `activeDays` is reported next to them for exactly that reason, and the day key is
 built from UTC components so a local-clock box cannot slide a close into the wrong day,
 month or year. Do not "improve" the curve by adding floating PnL.
+
+**The live micro-capital profile is inert by default, and that is the whole point.**
+`src/config/liveConfig.ts` holds the 1 SOL live envelope (0.20 SOL x 3 positions, 0.15 SOL
+reserve, 0.008 SOL round-trip gas floor, $1.50 net-PnL floor, 0.20 SOL startup gate). Every one
+of those values is gated behind `LIVE_MICRO_CAPITAL`, which defaults to **false**. With the flag
+off, `seekNewEntry` sizes from `VIRTUAL_SOL_PER_POSITION` exactly as before, the micro friction
+block does not run, `runLivePreflight` returns `skipped` without touching the network, and the
+candidate list reaching the LLM is byte-identical to the pre-profile engine. Same reasoning as
+`defaultBacktestConfig()`: a live-capital rule that switched itself on would silently rewrite
+every dry run and every sweep result. **Do not "activate" these defaults to make the code look
+used, and do not delete them as dead code — they are neither.**
+
+Four properties inside it are load-bearing:
+
+- **Sizing runs off FREE capital**, `capital - reserve - open notional`, never off the capital
+  base. Sizing three concurrent positions at `capital x pct` deploys the same SOL three times
+  over. In the backtest that only flatters a number; on a real 1 SOL wallet it is an overdraft.
+- **The reserve is unreachable by construction, not by clamping.** `parseLiveConfig` REFUSES a
+  profile where `maxPosition x concurrent` could reach the reserve, and prints the arithmetic.
+  A runtime clamp would truncate the last position silently and nobody would read the log.
+- **`LIVE_ROUND_TRIP_GAS_SOL` is a FLOOR, not a fallback.** The live p75 estimate is used only
+  when it is *higher*; a missing estimate is priced at the floor, never at zero. Treating a
+  round trip as free is the documented mechanism by which this strategy churned itself into a
+  loss, and at 0.20 SOL there is no margin to absorb the error.
+- **The preflight fails CLOSED.** A balance that could not be READ is treated exactly like a
+  balance that is too low — "the RPC was down" is not evidence of solvency. Same rule as
+  `screenTokenSafety`, and deliberately the opposite of `assessPoolCooldown`, which fails open
+  because it only protects returns. A failed Telegram dispatch never converts the refusal into
+  a start.
+
+**The micro-capital dollar floor is ADDITIVE to the V1.1 ratio gate, never a replacement.**
+`assessBreakeven` (2.5x `MIN_FEE_COST_COVERAGE`) is scale-free and stays satisfiable at any
+notional; `assessMicroCapitalFriction` asks the second question, "is the projected result large
+enough to be worth the trip at all". A candidate must clear BOTH, and `v11Baseline.test.ts`
+asserts the micro gate still runs *after* the ratio gate in `seekNewEntry` — reordering them, or
+making one an alternative path, would let a $2 net win through on 1.1x coverage. Nothing in
+`liveConfig.ts` may redeclare a V1.1 guardrail (cooldown, lockout, coverage, the clocks, the 16k
+cap); there is a test for that too, because two copies of a guardrail means "V1.1" would name two
+different configurations depending on a flag.
+
+**The $1.50 floor at 0.20 SOL demands ~13.5% fee/TVL in 24h, and that is expected to reject
+almost everything.** Notional $20, friction $1.20 (gas $0.80 + 2% slippage $0.40), so fees must
+reach $2.70; the 2.5x gate independently wants ~15%, and `MAX_FEE_TVL_RATIO` rejects above 25%.
+The usable window is roughly 15-25%/24h — the same band this file elsewhere calls yields no
+position could actually realise. `describeLiveEnvelope` prints the implied requirement and this
+warning at boot, so an empty candidate list reads as the configured outcome rather than as a bug.
+**This is deliberate and was reaffirmed after being measured: do not "fix" it by loosening the
+gate.** The agreed lever for the on-chain transition is raising `LIVE_MAX_POSITION_SOL`, which
+shrinks the required yield because slippage scales with notional while gas does not.
+
+**`SOLANA_PRIVATE_KEY` is read only by the env schema, and nothing returns it.** There is
+deliberately no accessor for the key: nothing in this repository can sign a transaction, so such
+a function would exist purely as a route for the secret to reach a log line — `hasLiveSigningKey()`
+answers the only question anyone needs. The balance probe takes `SOLANA_WALLET_ADDRESS` (public)
+instead of deriving a pubkey, so it never touches secret material. `liveConfig.test.ts` fails the
+build if any file under `src/` outside the env schema references the key, or if an 86-90 character
+base58 literal appears anywhere in `src/`.
+
+**Arming the live profile does NOT enable live trading, and must never be described as if it
+does.** `env.ts` still refuses to boot on `DRY_RUN=false`, `isLiveTradingEnabled` is a `false`
+literal, and no code path here signs, serialises or submits a Solana transaction. The profile
+changes SIZING and SCREENING only, so the dry run rehearses the live envelope before any
+execution code exists. The preflight logs this explicitly at boot for the same reason.
 
 **Undefined metrics stay null.** `profitFactor` is null when there are no losing trades; returning
 `Infinity` or `0` would render on the dashboard as a real measurement. Max drawdown runs over the

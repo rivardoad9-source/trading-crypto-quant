@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { env } from "../config/env.js";
+import {
+  assessMicroCapitalFriction,
+  liveMicroCapital,
+  sizeNextPositionSol,
+} from "../config/liveConfig.js";
 import { MAX_CANDIDATE_POOLS, POSITION_STATUS, type PositionStatus } from "../config/constants.js";
 import {
   assessBreakeven,
@@ -166,12 +171,17 @@ export function buildCandidatePrompt(
   solPriceUsd: number,
   priorityFee: PriorityFeeEstimate | null,
   lossHistory: SimulatedPositionRow[] = [],
+  /**
+   * SOL actually being deployed on this entry. Defaults to the paper size so existing
+   * callers are unchanged; the live profile passes its free-capital size instead.
+   * Quoting a size the engine will not use would have the model reason about fee
+   * income and range width against the wrong notional.
+   */
+  sizeSol: number = env.VIRTUAL_SOL_PER_POSITION,
 ): string {
   const lines: string[] = [
     `SOL/USD: $${solPriceUsd.toFixed(2)}`,
-    `Position size per entry: ${env.VIRTUAL_SOL_PER_POSITION} SOL (virtual, $${(
-      env.VIRTUAL_SOL_PER_POSITION * solPriceUsd
-    ).toFixed(2)})`,
+    `Position size per entry: ${sizeSol} SOL (virtual, $${(sizeSol * solPriceUsd).toFixed(2)})`,
   ];
 
   if (priorityFee) {
@@ -969,10 +979,65 @@ export interface EntrySummary {
     expectedFee24hUsd: number;
     roundTripCostUsd: number;
   }>;
+  /**
+   * Candidates dropped by the live micro-capital dollar floor. Always empty unless
+   * LIVE_MICRO_CAPITAL is armed — this gate does not exist in paper mode.
+   */
+  microFrictionRejected: Array<{
+    pairName: string;
+    projectedNetPnlUsd: number;
+    roundTripCostUsd: number;
+  }>;
   priorityFee: PriorityFeeEstimate | null;
   decision: DLMMPoolDecision | null;
   opened: boolean;
   skipReason?: string;
+}
+
+interface EntrySizing {
+  /** SOL to deploy on this entry. 0 means no entry may be opened. */
+  sizeSol: number;
+  maxConcurrent: number;
+  skipReason?: string;
+}
+
+/**
+ * Position size and concurrency for the next entry.
+ *
+ * Paper mode is untouched: the fixed VIRTUAL_SOL_PER_POSITION against
+ * MAX_CONCURRENT_POSITIONS, byte-identical to before this function existed.
+ *
+ * With the live micro-capital profile armed, size comes from FREE capital instead —
+ * the capital base, minus the untouchable reserve, minus the SOL already committed to
+ * open positions. Sizing three concurrent positions off the capital base would deploy
+ * the same SOL three times over; the backtest documents that exact trap, and on a real
+ * 1 SOL wallet it is not merely a flattered number, it is an overdraft.
+ */
+function resolveEntrySizing(): EntrySizing {
+  if (!liveMicroCapital.enabled) {
+    const active = countActivePositions();
+    if (active >= env.MAX_CONCURRENT_POSITIONS) {
+      return {
+        sizeSol: 0,
+        maxConcurrent: env.MAX_CONCURRENT_POSITIONS,
+        skipReason: `at capacity (${active}/${env.MAX_CONCURRENT_POSITIONS} positions)`,
+      };
+    }
+    return {
+      sizeSol: env.VIRTUAL_SOL_PER_POSITION,
+      maxConcurrent: env.MAX_CONCURRENT_POSITIONS,
+    };
+  }
+
+  const open = getActivePositions();
+  const openSol = open.reduce((sum, p) => sum + (p.virtual_sol_amount ?? 0), 0);
+  const decision = sizeNextPositionSol(openSol, open.length);
+
+  return {
+    sizeSol: decision.sizeSol,
+    maxConcurrent: liveMicroCapital.maxConcurrentPositions,
+    skipReason: decision.sizeSol > 0 ? undefined : decision.reason,
+  };
 }
 
 async function seekNewEntry(): Promise<EntrySummary> {
@@ -984,14 +1049,15 @@ async function seekNewEntry(): Promise<EntrySummary> {
     rugRejected: [],
     volatilityRejected: [],
     breakevenRejected: [],
+    microFrictionRejected: [],
     priorityFee: null,
     decision: null,
     opened: false,
   };
 
-  const activeCount = countActivePositions();
-  if (activeCount >= env.MAX_CONCURRENT_POSITIONS) {
-    summary.skipReason = `at capacity (${activeCount}/${env.MAX_CONCURRENT_POSITIONS} positions)`;
+  const sizing = resolveEntrySizing();
+  if (sizing.sizeSol <= 0) {
+    summary.skipReason = sizing.skipReason ?? "no capital available for a new position";
     return summary;
   }
 
@@ -1181,7 +1247,7 @@ async function seekNewEntry(): Promise<EntrySummary> {
    * rather than treating the trip as free — assuming zero cost is what let the
    * strategy churn itself into a loss in the first place.
    */
-  const notionalUsd = env.VIRTUAL_SOL_PER_POSITION * solPriceUsd;
+  const notionalUsd = sizing.sizeSol * solPriceUsd;
   const gasRoundTripUsd =
     priorityFee?.totalUsd !== null && priorityFee?.totalUsd !== undefined
       ? priorityFee.totalUsd * 2
@@ -1227,6 +1293,51 @@ async function seekNewEntry(): Promise<EntrySummary> {
   top.push(...affordable);
 
   /*
+   * Second friction layer, live micro-capital only: an ABSOLUTE dollar floor on the
+   * projected net result, stacked on the 2.5x ratio gate above rather than replacing
+   * it. The ratio is scale-free — 2.5x of a cost measured in cents is still cents —
+   * and at 0.20 SOL of notional that is the wrong question to stop at. Gas is charged
+   * at the higher of the live estimate and LIVE_ROUND_TRIP_GAS_SOL, so an unavailable
+   * estimate never reads as a free trip.
+   *
+   * Inert in paper mode: with the flag off this block does not run and the candidate
+   * list reaching the LLM is exactly what it was before.
+   */
+  if (liveMicroCapital.enabled) {
+    const worthwhile: typeof top = [];
+    for (const entry of top) {
+      const micro = assessMicroCapitalFriction({
+        notionalUsd,
+        feeTvlRatio24h: entry.pool.feeTvlRatio24h,
+        gasRoundTripUsd: priorityFee?.totalUsd ?? null,
+        solPriceUsd,
+      });
+
+      if (micro.passes) {
+        worthwhile.push(entry);
+        continue;
+      }
+
+      summary.microFrictionRejected.push({
+        pairName: entry.pool.pairName,
+        projectedNetPnlUsd: micro.projectedNetPnlUsd,
+        roundTripCostUsd: micro.roundTripCostUsd,
+      });
+      console.warn(`[friction/micro] rejected ${entry.pool.pairName}: ${micro.reason}`);
+    }
+
+    if (worthwhile.length === 0) {
+      summary.skipReason =
+        `no candidate clears the $${liveMicroCapital.minNetPnlUsd.toFixed(2)} net PnL floor ` +
+        `at ${sizing.sizeSol} SOL notional`;
+      return summary;
+    }
+
+    top.length = 0;
+    top.push(...worthwhile);
+  }
+
+  /*
    * A reasoner that burns its whole budget on chain-of-thought and returns nothing is
    * an expected outcome, not a fault: there is no decision to act on, and no amount of
    * retrying inside one tick produces one. Skip the cycle and let the next screener
@@ -1248,6 +1359,7 @@ async function seekNewEntry(): Promise<EntrySummary> {
          * candidate from a blank slate.
          */
         getRecentFailurePostMortems(env.LOSS_CONTEXT_TRADES),
+        sizing.sizeSol,
       ),
       schema: DLMMPoolDecisionSchema,
       reasoning: true,
@@ -1306,7 +1418,7 @@ async function seekNewEntry(): Promise<EntrySummary> {
    */
   const openedUnderLock = await positionMutex.run(async () => {
     const live = countActivePositions();
-    if (live >= env.MAX_CONCURRENT_POSITIONS) {
+    if (live >= sizing.maxConcurrent) {
       return false;
     }
 
@@ -1318,7 +1430,7 @@ async function seekNewEntry(): Promise<EntrySummary> {
       entryPrice: chosen.currentPrice,
       lowerBinPrice: lower,
       upperBinPrice: upper,
-      virtualSolAmount: env.VIRTUAL_SOL_PER_POSITION,
+      virtualSolAmount: sizing.sizeSol,
       entryTvl: chosen.tvlUsd,
       entry24hVolume: chosen.volume24hUsd,
       confidenceScore: decision.confidenceScore,
@@ -1339,7 +1451,7 @@ async function seekNewEntry(): Promise<EntrySummary> {
   });
 
   if (!openedUnderLock) {
-    summary.skipReason = `filled to capacity (${env.MAX_CONCURRENT_POSITIONS}) while deciding`;
+    summary.skipReason = `filled to capacity (${sizing.maxConcurrent}) while deciding`;
     console.warn(`[dlmm] ${summary.skipReason}`);
     return summary;
   }
@@ -1428,6 +1540,7 @@ export async function runDlmmTradingCycle(
           rugRejected: [],
           volatilityRejected: [],
           breakevenRejected: [],
+          microFrictionRejected: [],
           priorityFee: null,
           decision: null,
           opened: false,
@@ -1445,6 +1558,9 @@ export async function runDlmmTradingCycle(
         `safe ${entry.safeCandidates}, rug-rejected ${entry.rugRejected.length}, ` +
         `vol-rejected ${entry.volatilityRejected.length}, ` +
         `cost-rejected ${entry.breakevenRejected.length}, ` +
+        (entry.microFrictionRejected.length > 0
+          ? `micro-rejected ${entry.microFrictionRejected.length}, `
+          : "") +
         `opened ${entry.opened ? "yes" : `no (${entry.skipReason ?? "n/a"})`}`,
     );
 
