@@ -429,7 +429,7 @@
         <span class="sysdot bg-slate-500"></span>DRY RUN Mode
       </span>
       <span class="sysitem sysitem-quiet">
-        <span class="sysdot bg-slate-600"></span>Modal tampilan $100 — paper diskalakan ×0.1 (hipotetis, bukan saldo wallet)
+        <span class="sysdot bg-slate-600"></span><span id="modal-label">Modal awal $100 — simulasi paper (menunggu /api/wallet)</span>
       </span>
       <button id="reason-open" type="button" class="sysitem sysitem-btn"
               aria-expanded="false" aria-controls="reason-drawer">&gt;_ AI Reasoning Stream</button>
@@ -682,16 +682,19 @@ const TRADES = [
   {"id":"367fb3b3-f769-403e-bd08-ed55e9c6319c","t":"2026-09-02T02:33:00Z","p":4.992399,"pool":"DOGE-1-SOL","v":"v1.1"}
 ];
 /*
- * HYPOTHETICAL DISPLAY MODE (user choice 3 Sep 2026): the paper track (bankrolled at
- * $1000, positions 1 SOL virtual) is displayed scaled ×0.1 onto a $100 modal, so the
- * dollars read at the size the operator is actually funding. Returns/winrate/drawdown %
- * are unchanged — only the $ figures move. This is NOT the wallet balance: real wallet
- * SOL is checked separately by the engine's live preflight, and nothing here is spent.
- * TRADES / TRADE_DETAILS stay RAW (canonical snapshot + dedupe keys untouched); the
- * scaling happens once in buildView.
+ * DISPLAY MODE (user choice 3 Sep 2026): the paper track (bankrolled at $1000,
+ * positions 1 SOL virtual) is displayed scaled onto the operator's REAL wallet value,
+ * so the dollars read at the size actually funded. Returns/winrate/drawdown % are
+ * unchanged — only the $ figures move. Nothing here is spent and no real trade has
+ * happened yet: the header labels the curve as a scaled simulation, never as wallet
+ * growth. When the live profile is armed, /api/wallet supplies the real balance
+ * (SOL × price) and the page rebases on it every minute; unarmed, it falls back to a
+ * flat $100 modal. TRADES / TRADE_DETAILS stay RAW (canonical snapshot + dedupe keys
+ * untouched); scaling happens once in buildView.
  */
-const STARTING_BALANCE = 100; // hypothetical display modal
-const PAPER_SCALE = 0.1;      // $100 / $1000 paper bankroll
+const PAPER_BANKROLL = 1000; // the paper run's original virtual bankroll
+let STARTING_BALANCE = 100;  // display modal — replaced by real wallet USD when armed
+let PAPER_SCALE = 0.1;       // modal / PAPER_BANKROLL — replaced alongside STARTING_BALANCE
 
 /**
  * Per-trade detail for the archived trades, keyed by position id.
@@ -2844,6 +2847,42 @@ function startTicker() {
 let currentRange = "all";
 let pollTimer = null;
 let firstPaintDone = false;
+let lastWalletSyncMs = 0;
+
+/**
+ * Rebase the display modal on the REAL wallet when the live micro-capital profile is
+ * armed (GET /api/wallet, read-only). The paper track is then scaled onto the
+ * operator's actual funding: STARTING_BALANCE = wallet SOL × price, PAPER_SCALE =
+ * wallet / PAPER_BANKROLL. Throttled to ~1/min by the caller; 404 (profile not armed)
+ * or an offline engine leaves the current base untouched. Always labeled — the curve
+ * is a scaled simulation until real execution exists.
+ */
+async function syncWalletBase() {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    const res = await fetch(API_BASE + "/api/wallet", { signal: ctrl.signal });
+    if (res.ok) {
+      const w = await res.json();
+      if (w.usd && w.usd > 0) {
+        STARTING_BALANCE = w.usd;
+        PAPER_SCALE = w.usd / PAPER_BANKROLL;
+        const label = document.getElementById("modal-label");
+        if (label) {
+          label.textContent = "Modal = saldo wallet " + w.sol.toFixed(4) + " SOL (~$"
+            + w.usd.toFixed(2) + (w.solPriceUsd ? " @ $" + w.solPriceUsd.toFixed(2) + "/SOL" : "")
+            + ") · kurva = simulasi paper ×" + PAPER_SCALE.toFixed(4) + " — belum ada eksekusi live";
+        }
+        if (firstPaintDone) paint(currentRange); // silent repaint on the new base
+      }
+    }
+  } catch {
+    /* engine unreachable: a stale base beats a dead page */
+  } finally {
+    clearTimeout(timer);
+    lastWalletSyncMs = Date.now();
+  }
+}
 
 async function fetchLive() {
   /*
@@ -2913,6 +2952,11 @@ async function refresh(range, { silent = false } = {}) {
       pool: t.pool,
       src: "live",
     }));
+    // First paint always waits for the real-wallet base (no $100 flash); later polls
+    // re-sync it at most once a minute so balance/price drift is followed.
+    if (!firstPaintDone || Date.now() - lastWalletSyncMs > 60000) {
+      await syncWalletBase();
+    }
     paint(range);
     lastSyncMs = Date.now();
     setStatus("live", clockLabel());
