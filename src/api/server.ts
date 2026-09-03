@@ -15,6 +15,7 @@ import { computeOverview } from "../services/overview.js";
 import { computeLiveAnalytics } from "../services/analytics.js";
 import { DEFAULT_COHORT_ID, isCohortId, resolveCohort } from "../services/cohort.js";
 import { localDateString } from "../agents/researcherAgent.js";
+import { readRpcHealth } from "../services/solana.js";
 import type { SimulatedPositionRow } from "../database/types.js";
 
 const serverStartedAt = Date.now();
@@ -141,10 +142,17 @@ export function buildServer(): FastifyInstance {
     void reply.code(404).send({ error: `no route for ${req.method} ${req.url}`, statusCode: 404 });
   });
 
+  /*
+   * The Solana probe is additive: status, uptime and isDryRun are computed locally and
+   * are never gated on it, so this stays usable as a liveness check even with the RPC
+   * down. readRpcHealth() serves a cache and only ever blocks on the first call after
+   * boot, bounded by its own short timeout.
+   */
   app.get("/api/health", async () => ({
     status: "ok",
     uptimeSeconds: Math.floor((Date.now() - serverStartedAt) / 1000),
     isDryRun: env.DRY_RUN,
+    solanaRpc: await readRpcHealth(),
   }));
 
   app.get<{ Querystring: { cohort?: string } }>("/api/overview", async (req, reply) => {
