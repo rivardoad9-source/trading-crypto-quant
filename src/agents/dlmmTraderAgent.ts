@@ -7,6 +7,12 @@ import {
   liveMicroCapital,
   sizeNextPositionSol,
 } from "../config/liveConfig.js";
+import {
+  closeLivePosition,
+  isLiveExecutionActive,
+  openLivePosition,
+  type LiveOpenOutcome,
+} from "../services/liveExecution.js";
 import { MAX_CANDIDATE_POOLS, POSITION_STATUS, type PositionStatus } from "../config/constants.js";
 import {
   assessBreakeven,
@@ -484,6 +490,44 @@ interface DeferredCloseWork {
 }
 
 /**
+ * A LIVE position the monitor has decided to exit but has NOT yet closed.
+ *
+ * Live exits are two-phase because of the lock rule: the on-chain close is several
+ * confirmed transactions, and nothing that does I/O may hold `positionMutex` — holding
+ * it across a close would freeze the 60-second monitor for every other position, which
+ * is the exact guarantee the fast monitor exists to provide.
+ *
+ * So phase one decides under the lock and writes NOTHING; the row stays ACTIVE. Phase
+ * two settles on-chain with the lock released, and only a confirmed close re-acquires
+ * the lock to mark the row closed. The ordering is deliberate: a row marked closed
+ * before the chain agrees is a position the engine has stopped watching but still
+ * owns, and the stop-loss it stops enforcing is the reason the position was being
+ * closed in the first place.
+ */
+interface PendingLiveClose {
+  row: SimulatedPositionRow;
+  status: PositionStatus;
+  closeReason: string;
+  exitPrice: number;
+  realizedPnlUsd: number;
+  realizedPnlPct: number;
+  unclaimedFeeUsd: number;
+  divergenceVsHoldUsd: number;
+  notify: Parameters<typeof sendPositionClosed>[0];
+}
+
+/**
+ * Positions with an on-chain close in flight.
+ *
+ * The row stays ACTIVE across phase two, so without this the next 60-second tick would
+ * read it as open, decide to exit it again and submit a SECOND close for a position
+ * already being closed. In-memory is the right scope: it is a property of this
+ * process's in-flight work, and a restart correctly forgets it — after a restart
+ * nothing is in flight, and the chain is re-read.
+ */
+const closingOnChain = new Set<string>();
+
+/**
  * Valuates a position at a given price: accrues this interval's fees on top of
  * the stored running total, then applies the LP value change. Shared by the
  * monitor's exit rules and the Telegram emergency /close_all so both always use
@@ -586,11 +630,13 @@ function reportRecovered(positionId: string, pairName: string): void {
 async function monitorOpenPositions(): Promise<{
   summary: MonitorSummary;
   deferred: DeferredCloseWork[];
+  pendingLiveCloses: PendingLiveClose[];
 }> {
   const positions = getActivePositions();
   const summary: MonitorSummary = { checked: 0, closed: 0, stale: 0, reflected: 0 };
   const deferred: DeferredCloseWork[] = [];
-  if (positions.length === 0) return { summary, deferred };
+  const pendingLiveCloses: PendingLiveClose[] = [];
+  if (positions.length === 0) return { summary, deferred, pendingLiveCloses };
 
   const pools = await fetchPoolsByAddresses(positions.map((p) => p.pool_address));
   const now = new Date();
@@ -631,6 +677,40 @@ async function monitorOpenPositions(): Promise<{
         positionValueChangeUsd: totals.netPnlUsd - totals.totalFeeUsd,
         floatingPnlUsd: totals.netPnlUsd,
       });
+      continue;
+    }
+
+    /*
+     * A live position is not closed by writing a row. Defer it to phase two, leaving
+     * the row ACTIVE so that if the on-chain close fails the monitor keeps watching a
+     * position that still exists.
+     */
+    if (isLivePosition(row)) {
+      if (!closingOnChain.has(row.position_id)) {
+        closingOnChain.add(row.position_id);
+        pendingLiveCloses.push({
+          row,
+          status: exit.status,
+          closeReason: exit.reason,
+          exitPrice: pool.currentPrice,
+          realizedPnlUsd: totals.netPnlUsd,
+          realizedPnlPct: totals.netPnlPct,
+          unclaimedFeeUsd: totals.totalFeeUsd,
+          divergenceVsHoldUsd: totals.divergenceVsHoldUsd,
+          notify: {
+            pairName: row.pair_name,
+            status: exit.status,
+            reason: exit.reason,
+            entryPrice: row.entry_price,
+            exitPrice: pool.currentPrice,
+            feeUsd: totals.totalFeeUsd,
+            ilUsd: totals.netPnlUsd - totals.totalFeeUsd,
+            netPnlUsd: totals.netPnlUsd,
+            netPnlPct: totals.netPnlPct,
+            heldHours: totals.ageHours,
+          },
+        });
+      }
       continue;
     }
 
@@ -687,7 +767,78 @@ async function monitorOpenPositions(): Promise<{
     });
   }
 
-  return { summary, deferred };
+  return { summary, deferred, pendingLiveCloses };
+}
+
+/** True when this row describes a real on-chain position rather than a simulated one. */
+function isLivePosition(row: SimulatedPositionRow): boolean {
+  return row.execution_mode === "LIVE" && Boolean(row.position_address);
+}
+
+/**
+ * Phase two of a live exit: close on-chain, and only then mark the row closed.
+ *
+ * Must be called with `positionMutex` RELEASED — it is several confirmed transactions.
+ *
+ * A failure here leaves the row ACTIVE on purpose. The position still exists, so the
+ * monitor should keep watching it and retry the exit on the next tick; the alternative
+ * — recording a close that did not happen — would strand real capital in a position
+ * the engine no longer believes it holds. `DlmmPartialExecutionError` is treated the
+ * same way, but paged, because a half-withdrawn position needs a human to look at the
+ * chain before anything retries.
+ */
+async function settleLiveCloses(
+  pending: PendingLiveClose[],
+): Promise<{ closed: number; deferred: DeferredCloseWork[] }> {
+  const deferred: DeferredCloseWork[] = [];
+  let closed = 0;
+
+  for (const item of pending) {
+    const { row } = item;
+    try {
+      const { closeSignature } = await closeLivePosition({
+        poolAddress: row.pool_address,
+        positionAddress: row.position_address ?? "",
+        pairName: row.pair_name,
+      });
+
+      // Confirmed. Now — and only now — does the database agree.
+      await positionMutex.run(async () => {
+        closePosition({
+          positionId: row.position_id,
+          status: item.status,
+          exitPrice: item.exitPrice,
+          realizedPnlUsd: item.realizedPnlUsd,
+          realizedPnlPct: item.realizedPnlPct,
+          unclaimedFeeUsd: item.unclaimedFeeUsd,
+          impermanentLossUsd: item.divergenceVsHoldUsd,
+          positionValueChangeUsd: item.realizedPnlUsd - item.unclaimedFeeUsd,
+          closeReason: item.closeReason,
+          closeSignature,
+        });
+      });
+
+      closed++;
+      deferred.push({ positionId: row.position_id, notify: item.notify });
+      console.log(
+        `[dlmm] closed ${row.pair_name} — ${item.status} — ` +
+          `net $${item.realizedPnlUsd.toFixed(2)} (${item.realizedPnlPct.toFixed(2)}%) ` +
+          `— ${closeSignature}`,
+      );
+    } catch (err) {
+      console.error(
+        `[live] on-chain close FAILED for ${row.pair_name} (${row.position_address}); ` +
+          `the row stays ACTIVE and the next tick will retry: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+      await sendError("settleLiveCloses", err).catch(() => undefined);
+    } finally {
+      // Released whatever happened, so a failed close can be retried next tick.
+      closingOnChain.delete(row.position_id);
+    }
+  }
+
+  return { closed, deferred };
 }
 
 /**
@@ -764,7 +915,19 @@ export async function runFastPositionMonitor(): Promise<FastMonitorResult> {
 
   if (!outcome.ran || outcome.value === null) return idle;
 
-  const { summary, deferred } = outcome.value;
+  const { summary, deferred, pendingLiveCloses } = outcome.value;
+
+  /*
+   * Live exits settle here, with the lock released. Ordered before the notifications
+   * because a live close is only real once the chain says so — settleLiveCloses is
+   * what actually writes those rows, and it returns their notify work to be handled
+   * alongside the paper closes below.
+   */
+  if (pendingLiveCloses.length > 0) {
+    const live = await settleLiveCloses(pendingLiveCloses);
+    summary.closed += live.closed;
+    deferred.push(...live.deferred);
+  }
 
   // Outside the lock by design: these are network calls, and the next tick is 60s away.
   summary.reflected = await settleClosedPositions(deferred);
@@ -1451,6 +1614,51 @@ async function seekNewEntry(): Promise<EntrySummary> {
     priorityFee && priorityFee.totalUsd !== null ? priorityFee.totalUsd * 2 : null;
 
   /*
+   * LIVE EXECUTION. The chain decides; the database records.
+   *
+   * Deliberately OUTSIDE positionMutex. Opening a position is three confirmed
+   * transactions — a swap and up to two DLMM sends — and holding the lock across them
+   * would block the 60-second fast monitor for the duration, which is precisely the
+   * exit-timing guarantee the monitor exists to provide. Same rule that keeps
+   * `sendPositionClosed` and `reflectOnPosition` out of the locked section.
+   *
+   * The capacity check therefore happens twice: once here, before spending anything,
+   * and again under the lock below. `maxConcurrentPositions` is 1, so the window is
+   * narrow, but a second entry racing this one would be a real double spend rather
+   * than a duplicated row.
+   */
+  let liveOutcome: LiveOpenOutcome | null = null;
+  if (isLiveExecutionActive()) {
+    if (countActivePositions() >= sizing.maxConcurrent) {
+      summary.skipReason = `filled to capacity (${sizing.maxConcurrent}) before executing`;
+      console.warn(`[dlmm] ${summary.skipReason}`);
+      return summary;
+    }
+
+    try {
+      liveOutcome = await openLivePosition({
+        poolAddress: chosen.address,
+        pairName: chosen.pairName,
+        sizeSol: sizing.sizeSol,
+        lowerBinPrice: lower,
+        upperBinPrice: upper,
+        strategy: decision.strategy,
+      });
+    } catch (err) {
+      /*
+       * No row is written. A failed open means there is no position, and a row
+       * describing one would be a fabricated holding that the monitor would then
+       * "value", "accrue fees" on and eventually "close" — all of it about nothing.
+       * StrandedSwapError has already paged the operator; this only records the skip.
+       */
+      summary.skipReason = `live execution failed: ${err instanceof Error ? err.message : String(err)}`;
+      console.error(`[dlmm] ${summary.skipReason}`);
+      await sendError("seekNewEntry/liveExecution", err);
+      return summary;
+    }
+  }
+
+  /*
    * The one write this function makes, taken under the shared lock so the invariant
    * stays simple and auditable: every mutation of simulated_positions happens with
    * positionMutex held. The capacity re-check inside is not redundant — minutes of LLM
@@ -1458,8 +1666,25 @@ async function seekNewEntry(): Promise<EntrySummary> {
    */
   const openedUnderLock = await positionMutex.run(async () => {
     const live = countActivePositions();
-    if (live >= sizing.maxConcurrent) {
+    if (live >= sizing.maxConcurrent && liveOutcome === null) {
       return false;
+    }
+
+    /*
+     * Note the `liveOutcome === null` above. In PAPER mode a full book means drop the
+     * entry, which costs nothing. In LIVE mode the position ALREADY EXISTS on-chain by
+     * this point, and refusing to record it would leave real capital in a position the
+     * monitor cannot see, cannot value and will never close. The capacity rule governs
+     * whether to OPEN; it cannot un-open. The chain is the source of truth, so the row
+     * is written and the ceiling is reported as breached rather than enforced by
+     * amnesia.
+     */
+    if (live >= sizing.maxConcurrent) {
+      console.error(
+        `[live] capacity (${sizing.maxConcurrent}) filled while opening ` +
+          `${chosen.pairName}; recording position ${liveOutcome?.positionAddress} anyway ` +
+          `— it exists on-chain and must be monitored`,
+      );
     }
 
     insertPosition({
@@ -1486,6 +1711,14 @@ async function seekNewEntry(): Promise<EntrySummary> {
       estPriorityMicroLamports: priorityFee?.microLamportsPerCu ?? null,
       breakevenCoverageRatio: chosenEntry?.breakeven?.coverageRatio ?? null,
       expectedFee24hUsd: chosenEntry?.breakeven?.expectedFee24hUsd ?? null,
+      // On-chain identity. All null on a paper row, and `executionMode` is what tells
+      // the two apart — a LIVE row without a position address describes nothing.
+      executionMode: liveOutcome ? "LIVE" : "PAPER",
+      positionAddress: liveOutcome?.positionAddress ?? null,
+      openSignature: liveOutcome?.openSignature ?? null,
+      swapSignature: liveOutcome?.swapSignature ?? null,
+      depositedSolLamports: liveOutcome?.depositedSolLamports ?? null,
+      depositedPairedAmount: liveOutcome?.depositedPairedAmount ?? null,
     });
     return true;
   });
@@ -1627,7 +1860,13 @@ export async function runDlmmTradingCycle(
     if (!options.skipMonitor) {
       const pass = await positionMutex.run(monitorOpenPositions);
       monitor = pass.summary;
-      // Same rule as the fast monitor: notify and reflect with the lock released.
+      // Same rule as the fast monitor: settle on-chain, notify and reflect with the
+      // lock released.
+      if (pass.pendingLiveCloses.length > 0) {
+        const live = await settleLiveCloses(pass.pendingLiveCloses);
+        monitor.closed += live.closed;
+        pass.deferred.push(...live.deferred);
+      }
       monitor.reflected = await settleClosedPositions(pass.deferred);
     }
 

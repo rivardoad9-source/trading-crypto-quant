@@ -88,6 +88,27 @@ export function initDatabase(): void {
   addColumnIfMissing("simulated_positions", "breakeven_coverage_ratio", "REAL");
   addColumnIfMissing("simulated_positions", "expected_fee_24h_usd", "REAL");
 
+  /*
+   * On-chain execution. Every one of these is NULL on a paper row, and that is the
+   * point: `execution_mode` is what separates a row describing a real position from a
+   * row describing a simulated one, and the two must never be summed as if they were
+   * the same kind of fact. A LIVE row without a `position_address` and an
+   * `open_signature` describes a position nothing can prove exists.
+   *
+   * Amounts are recorded as DEPOSITED, in base units, from the confirmed transaction —
+   * not from what the engine intended to deposit. The paper columns
+   * (`virtual_sol_amount`, `entry_price`) keep their simulated meaning so historical
+   * rows stay readable; these sit alongside rather than replacing them.
+   */
+  addColumnIfMissing("simulated_positions", "execution_mode", "TEXT DEFAULT 'PAPER'");
+  addColumnIfMissing("simulated_positions", "position_address", "TEXT");
+  addColumnIfMissing("simulated_positions", "open_signature", "TEXT");
+  addColumnIfMissing("simulated_positions", "close_signature", "TEXT");
+  addColumnIfMissing("simulated_positions", "swap_signature", "TEXT");
+  addColumnIfMissing("simulated_positions", "deposited_sol_lamports", "INTEGER");
+  addColumnIfMissing("simulated_positions", "deposited_paired_amount", "TEXT");
+  addColumnIfMissing("simulated_positions", "rent_paid_lamports", "INTEGER");
+
   initialised = true;
   console.log(`[db] ready at ${dbPath}`);
 }

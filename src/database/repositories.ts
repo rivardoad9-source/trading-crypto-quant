@@ -86,7 +86,9 @@ export function insertPosition(input: NewPositionInput): void {
        reasoning_log, entry_sol_price_usd, current_price, last_checked_at,
        top10_holder_pct, mint_authority_revoked, freeze_authority_revoked,
        safety_verdict, est_gas_cost_usd, est_priority_micro_lamports,
-       breakeven_coverage_ratio, expected_fee_24h_usd
+       breakeven_coverage_ratio, expected_fee_24h_usd,
+       execution_mode, position_address, open_signature, swap_signature,
+       deposited_sol_lamports, deposited_paired_amount
      ) VALUES (
        @positionId, @poolAddress, @pairName, @strategyType,
        @entryPrice, @lowerBinPrice, @upperBinPrice, @virtualSolAmount,
@@ -94,7 +96,9 @@ export function insertPosition(input: NewPositionInput): void {
        @reasoningLog, @entrySolPriceUsd, @entryPrice, CURRENT_TIMESTAMP,
        @top10HolderPct, @mintAuthorityRevoked, @freezeAuthorityRevoked,
        @safetyVerdict, @estGasCostUsd, @estPriorityMicroLamports,
-       @breakevenCoverageRatio, @expectedFee24hUsd
+       @breakevenCoverageRatio, @expectedFee24hUsd,
+       @executionMode, @positionAddress, @openSignature, @swapSignature,
+       @depositedSolLamports, @depositedPairedAmount
      )`,
   ).run({
     ...input,
@@ -104,6 +108,14 @@ export function insertPosition(input: NewPositionInput): void {
     estPriorityMicroLamports: input.estPriorityMicroLamports ?? null,
     breakevenCoverageRatio: input.breakevenCoverageRatio ?? null,
     expectedFee24hUsd: input.expectedFee24hUsd ?? null,
+    // Paper rows carry nulls here on purpose; execution_mode is what distinguishes a
+    // simulated row from one backed by a confirmed transaction.
+    executionMode: input.executionMode ?? "PAPER",
+    positionAddress: input.positionAddress ?? null,
+    openSignature: input.openSignature ?? null,
+    swapSignature: input.swapSignature ?? null,
+    depositedSolLamports: input.depositedSolLamports ?? null,
+    depositedPairedAmount: input.depositedPairedAmount ?? null,
     // SQLite has no boolean type; store 1 / 0 / null so "unknown" stays distinct
     // from "checked and still live".
     mintAuthorityRevoked:
@@ -286,10 +298,11 @@ export function closePosition(input: ClosePositionInput): void {
             position_value_change_usd = @positionValueChangeUsd,
             floating_pnl_usd = 0,
             close_reason = @closeReason,
+            close_signature = @closeSignature,
             closed_at = CURRENT_TIMESTAMP,
             last_checked_at = CURRENT_TIMESTAMP
       WHERE position_id = @positionId`,
-  ).run(input);
+  ).run({ ...input, closeSignature: input.closeSignature ?? null });
 }
 
 export function getClosedPositions(

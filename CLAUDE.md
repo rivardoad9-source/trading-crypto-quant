@@ -93,8 +93,10 @@ read-only view and holds no trading logic.
 
 - `src/config/env.ts` — Zod-validated env, parsed once at import. Placeholder values matching
   `/^(your_|<|changeme|...)/` count as unset, so a stale `.env.example` value doesn't read as
-  configured. **Boot fails if `DRY_RUN=false`** — live execution is unimplemented and must not be
-  half-armed.
+  configured. **`DRY_RUN=false` is supported and means REAL MONEY.** Boot now fails only on a
+  HALF-armed configuration: `DRY_RUN=false` without `ONCHAIN_EXECUTION_ARMED=true`, or without
+  `SOLANA_PRIVATE_KEY`. Same reasoning the blanket refusal had — an engine that believes it
+  trades live while nothing can sign would decide entries and fail every execution.
 - `src/database/repositories.ts` — every SQL statement in the project. Agents and the API share it;
   don't write queries elsewhere.
 - `src/database/db.ts` — `initDatabase()` applies `schema.sql` then runs `addColumnIfMissing`
@@ -408,9 +410,14 @@ built from UTC components so a local-clock box cannot slide a close into the wro
 month or year. Do not "improve" the curve by adding floating PnL.
 
 **The live micro-capital profile is inert by default, and that is the whole point.**
-`src/config/liveConfig.ts` holds the 1 SOL live envelope (0.50 SOL x 1 position, 0.15 SOL
-reserve, 0.008 SOL round-trip gas floor, $1.50 net-PnL floor, 0.20 SOL startup gate). Every one
-of those values is gated behind `LIVE_MICRO_CAPITAL`, which defaults to **false**. With the flag
+`src/config/liveConfig.ts` holds the 1.15 SOL live envelope (0.80 SOL x 1 position, 0.15 SOL
+reserve, 0.008 SOL round-trip gas floor, $1.50 net-PnL floor, 0.20 SOL startup gate). The
+capital base is 1.15 rather than 1.00 because a live open pays RENT before it deposits
+anything — 0.0574 SOL for the position account, 0.0714 per uninitialised bin array, 0.0020 for
+the paired token's ATA — so the 0.20 SOL between exposure and deployable is rent headroom, not
+spare capital.
+
+Every one of those values is gated behind `LIVE_MICRO_CAPITAL`, which defaults to **false**. With the flag
 off, `seekNewEntry` sizes from `VIRTUAL_SOL_PER_POSITION` exactly as before, the micro friction
 block does not run, `runLivePreflight` returns `skipped` without touching the network, and the
 candidate list reaching the LLM is byte-identical to the pre-profile engine. Same reasoning as
@@ -447,8 +454,9 @@ cap); there is a test for that too, because two copies of a guardrail means "V1.
 different configurations depending on a flag.
 
 **TWO gates set the entry bar, and which one BINDS flips with position size — always report the
-stricter.** At $50 notional (0.50 SOL) friction is $1.80, so the $1.50 floor needs 6.6% fee/TVL
-while the V1.1 2.5x coverage gate needs 9.0%; a pool must clear both, so the real bar is 9.0%.
+stricter.** At $80 notional (0.80 SOL) the $1.50 floor needs 4.88% fee/TVL while the V1.1 2.5x
+coverage gate needs 7.50%; a pool must clear both, so the real bar is 7.50%. (At the earlier
+0.50 SOL it was 6.6% against 9.0%.)
 Shrink the position and the dollar floor overtakes the ratio. `effectiveFeeRequirement` returns
 both plus `bindingGate`, and `describeLiveEnvelope` prints all three at boot. **Do not go back to
 quoting `requiredFeeTvlRatio24h` alone** — it answers only what the dollar floor demands, so
@@ -502,16 +510,25 @@ instead of deriving a pubkey, so it never touches secret material. `liveConfig.t
 build if any file under `src/` outside the env schema references the key, or if an 86-90 character
 base58 literal appears anywhere in `src/`.
 
-**Arming the live profile does NOT enable live trading, and must never be described as if it
-does.** `env.ts` still refuses to boot on `DRY_RUN=false`, `isLiveTradingEnabled` is a `false`
-literal, and the ENGINE has no code path that signs a Solana transaction. The profile changes
-SIZING and SCREENING only, so the dry run rehearses the live envelope before any execution code
-is wired in. The preflight logs this explicitly at boot for the same reason.
+**Arming the live profile is ONE of three switches, and alone it still trades nothing.**
+`LIVE_MICRO_CAPITAL=true` changes SIZING and SCREENING only. Real money additionally needs
+`DRY_RUN=false` (the engine should trade for real) and `ONCHAIN_EXECUTION_ARMED=true` (the
+executor may sign); `isLiveTradingEnabled` is the AND of the last two, and `env.ts` refuses to
+boot on either one alone. With the profile armed but `DRY_RUN=true` the engine still only
+rehearses the envelope — which is what it did for the 67h in `reports/DRY_RUN_72H_REPORT.md`.
 
-**`src/services/onchainExecutor.ts` can sign real transactions, and the engine must never be
-able to reach it.** It is the on-chain path, built and armed separately from the trading
-engine. Stage 2 landing did not change this: implemented is not armed. Three independent locks
-keep them apart, deliberately at different levels so one mistake cannot defeat all three:
+**`src/services/onchainExecutor.ts` can sign real transactions, and the engine reaches it
+through EXACTLY ONE module.** That rule replaced "the engine must never reach it", which live
+execution made false by design. The narrowing is the point: `src/services/liveExecution.ts` is
+the single edge, so "can this spend money, and under what conditions" has one place to review
+instead of a signer reachable from wherever an import was convenient.
+`onchainExecutor.test.ts` walks the graph from `src/index.ts`, asserts the bridge is reachable,
+then re-walks with the bridge CUT and asserts the signer is not — that second walk is what
+makes "and nothing else" a test rather than a claim. The allowlist of files that may import the
+executor has four entries; a fifth is the moment to ask whether it should call the bridge
+instead.
+
+Two of the three original locks are unchanged, and they are what still hold:
 
 - **Type level.** Every fund-moving function requires an `ExecutionAuthorization`, a branded
   type obtainable only from `authorizeExecution()`. There is no overload without it, so
@@ -520,14 +537,62 @@ keep them apart, deliberately at different levels so one mistake cannot defeat a
 - **Configuration.** `ONCHAIN_EXECUTION_ARMED` defaults to false, and arming additionally needs
   a key and a per-transaction lamport ceiling (default 0.02 SOL — a bug's blast radius, not a
   position size).
-- **Import graph.** `onchainExecutor.test.ts` walks every relative import reachable from
-  `src/index.ts` and FAILS if this module appears. Verified to bite: adding one import to
-  `index.ts` fails both isolation tests. If you are wiring execution into the engine, that test
-  failing is the review gate, not an obstacle to route around.
+- **The per-transaction ceiling is the blast radius.** `ONCHAIN_MAX_LAMPORTS_PER_TX` bounds any
+  single transaction regardless of what the engine asks for. Live mode needs it raised to at
+  least `LIVE_MAX_POSITION_SOL`, and `describeLiveExecutionBlockers()` REFUSES TO BOOT when it
+  is lower rather than letting every entry pass screening and then fail on the last step.
 
-`authorizeExecution` reads `isLiveTradingEnabled` only to REFUSE — if that literal ever becomes
-true without this module being reviewed, it throws rather than inheriting the change as consent.
-The executor is never armed by proxy.
+**`authorizeExecution` no longer reads `isLiveTradingEnabled`, and that is not a weakening.**
+The old tripwire refused to sign whenever that flag was anything but false, which was right
+while it was a `false` literal — an unexplained `true` could only mean an unreviewed change. It
+cannot survive live mode: the flag is now legitimately true whenever the operator set
+`DRY_RUN=false` and armed the module, so keeping it would refuse every live signature.
+`config.armed` is still the real gate and still defaults to false, and "armed by proxy" is now
+prevented by construction: the flag is the AND of two switches and `env.ts` will not boot on
+either alone.
+
+**LIVE EXECUTION: the chain decides, the database records.** `src/services/liveExecution.ts`
+is the bridge, and every rule in it exists because the alternative loses money quietly:
+
+- **No row is written until the open confirms.** A failed open means there is no position, and
+  a row describing one would be a fabricated holding the monitor would then "value", "accrue
+  fees" on and eventually "close" — all of it about nothing.
+- **No row is marked closed until the close confirms.** A row closed early is a position the
+  engine has stopped watching but still owns, and the stop-loss it stops enforcing is the
+  reason the position was being exited. A failed close leaves the row ACTIVE so the next tick
+  retries.
+- **Live exits are TWO-PHASE, because nothing that does I/O may hold `positionMutex`.** The
+  monitor decides under the lock and writes nothing; `settleLiveCloses` closes on-chain with
+  the lock released, then re-acquires it to record. `closingOnChain` (in-memory) stops the next
+  60s tick submitting a second close for a position already being closed — the row is still
+  ACTIVE while that is in flight, which is exactly what makes the guard necessary.
+- **Every entry SWAPS half the SOL into the pool's other token first.** The range brackets the
+  active bin, and a bracketing range is only two-sided if both tokens are supplied. Funding it
+  with SOL alone lands a real but ONE-SIDED position, while the engine's PnL model
+  (`lpValueReturnFraction`, sqrt(r) - 1) is the balanced-LP formula — the numbers would not
+  describe the position. The swap is what makes the existing accounting true rather than
+  approximately true, at the cost of one extra leg per entry.
+- **The paired amount is read from the chain, never from the quote.** The quote says what
+  Jupiter expected to deliver; only the account says what arrived. Depositing the quoted figure
+  would, on any adverse fill, ask the program to move tokens the wallet does not have.
+- **`StrandedSwapError` is the failure that costs money silently.** Swap confirmed, open
+  failed: the wallet now holds a memecoin it acquired only to provide liquidity, and nothing
+  unwinds it automatically. It names the mint, the amount and the signature, and pages the
+  operator. Do not downgrade it to a warning.
+- **A capacity race records the position anyway.** If the book fills while an open is in
+  flight, the position EXISTS; refusing to record it would leave real capital somewhere the
+  monitor cannot see. The capacity rule governs whether to OPEN — it cannot un-open.
+- **`/claim` is operator-only and off the automatic path.** `closeLivePosition` already claims
+  atomically via `shouldClaimAndClose`, so claiming on a schedule pays a second set of gas for
+  fees the close collects anyway.
+
+**Still true after going live, and still unverified: the DLMM path has never executed against a
+cluster.** `npm run test:swap -- --execute` verifies STAGE 1 only — wallet, signing, priority
+fees, submit — and it passed on mainnet (0.01 SOL, confirmed first attempt). It does not touch
+`openPosition`/`claimFees`/`closePosition`. The first real DLMM execution will be the engine's
+own, unattended, on the 30-minute cron. That was an explicit operator decision, not an
+oversight; if it needs revisiting, the cheapest change is a manual PoC script in the shape of
+`testMicroSwap.ts`.
 
 **The rebroadcast rule in `sendAndConfirm` prevents a double spend, and is the opposite of the
 obvious retry.** An unconfirmed transaction may still be in flight, so retrying with a fresh

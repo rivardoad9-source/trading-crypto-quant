@@ -2,6 +2,13 @@ import type { PositionStatus, StrategyType } from "../config/constants.js";
 
 export interface SimulatedPositionRow {
   id: number;
+  execution_mode?: string | null;
+  position_address?: string | null;
+  open_signature?: string | null;
+  close_signature?: string | null;
+  swap_signature?: string | null;
+  deposited_sol_lamports?: number | null;
+  deposited_paired_amount?: string | null;
   position_id: string;
   pool_address: string;
   pair_name: string;
@@ -93,6 +100,19 @@ export interface NewPositionInput {
   /* Friction gate recorded at entry. */
   breakevenCoverageRatio?: number | null;
   expectedFee24hUsd?: number | null;
+  /**
+   * On-chain execution. Absent (or "PAPER") describes a simulated position; "LIVE"
+   * describes one backed by a confirmed transaction, and every field below it is then
+   * required in practice — a LIVE row without a `positionAddress` names a position
+   * nothing can claim, close or prove exists.
+   */
+  executionMode?: "PAPER" | "LIVE";
+  positionAddress?: string | null;
+  openSignature?: string | null;
+  swapSignature?: string | null;
+  depositedSolLamports?: number | null;
+  /** Base units. String because a token amount can exceed 2^53. */
+  depositedPairedAmount?: string | null;
 }
 
 export interface PositionUpdateInput {
@@ -118,4 +138,9 @@ export interface ClosePositionInput {
   /** LP value change vs capital. realizedPnlUsd = fees + this. */
   positionValueChangeUsd: number;
   closeReason: string;
+  /**
+   * The transaction that actually closed the position on-chain. Absent for paper
+   * closes. A LIVE row closed without one would assert an exit nothing can verify.
+   */
+  closeSignature?: string | null;
 }

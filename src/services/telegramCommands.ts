@@ -3,6 +3,7 @@ import { env, hasTelegram } from "../config/env.js";
 import { getTelegramBot, sanitize, chunk } from "./telegram.js";
 import { computeOverview } from "./overview.js";
 import { isEnginePaused, setEnginePaused } from "./engineControl.js";
+import { claimLiveFees, isLiveExecutionActive } from "./liveExecution.js";
 import { forceCloseAllPositions } from "../agents/dlmmTraderAgent.js";
 import { addDaysToDayKey, currentZonedDay } from "./timezone.js";
 import {
@@ -29,6 +30,7 @@ import {
  *   /position  — full detail for one position (usage: /position <id>)
  *   /research  — latest macro research report
  *   /close_all — emergency force-close of every active position (paper trading)
+ *   /claim     — realise fees on open LIVE positions without closing them
  *   /pause     — stop scanning for new positions (monitoring keeps running)
  *   /resume    — re-enable scanning
  *   /help      — command list
@@ -254,6 +256,7 @@ export function buildHelpText(): string {
     `/position <id> — full detail for one position`,
     `/research — latest macro research report`,
     `/close_all — force-close all active positions`,
+    `/claim — claim fees on open LIVE positions without closing them`,
     `/pause — stop scanning for new positions`,
     `/resume — resume scanning`,
     `/help — this list`,
@@ -358,6 +361,52 @@ export function startTelegramCommands(): void {
       ctx,
       "⏸️ **Engine paused.**\nScanning for new positions is stopped. Open positions are still monitored and can still close normally.\nUse /resume to restart scanning.",
     );
+  });
+
+  /*
+   * Realises fees WITHOUT closing. Operator-only and deliberately not on any schedule:
+   * `closeLivePosition` claims atomically through `shouldClaimAndClose`, so claiming
+   * on a timer would pay a second set of gas for fees the close collects anyway — the
+   * churn the friction gates exist to prevent. The one case where it earns its gas is
+   * a position held through a long in-range stretch, and that is a judgement call.
+   */
+  bot.command("claim", async (ctx) => {
+    if (!isCommandAuthorized(ctx.from?.id)) return deny(ctx, "claim");
+
+    if (!isLiveExecutionActive()) {
+      await replyMarkdown(
+        ctx,
+        "⚠️ **Not live.** There are no on-chain fees to claim — this engine is paper trading.",
+      );
+      return;
+    }
+
+    const live = getActivePositions().filter(
+      (p) => p.execution_mode === "LIVE" && p.position_address,
+    );
+    if (live.length === 0) {
+      await replyMarkdown(ctx, "No open live positions to claim from.");
+      return;
+    }
+
+    for (const p of live) {
+      try {
+        const { signatures } = await claimLiveFees({
+          poolAddress: p.pool_address,
+          positionAddress: p.position_address as string,
+        });
+        await replyMarkdown(
+          ctx,
+          `✅ **Claimed ${p.pair_name}**\n${signatures.length} tx: ${signatures.join(", ")}`,
+        );
+      } catch (err) {
+        // Reported per position: one failure must not hide the others' outcomes.
+        await replyMarkdown(
+          ctx,
+          `❌ **Claim failed for ${p.pair_name}**\n${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
   });
 
   bot.command("resume", async (ctx) => {

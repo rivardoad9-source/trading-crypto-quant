@@ -42,12 +42,12 @@ const srcDir = fileURLToPath(new URL("..", import.meta.url));
 function profile(overrides: Partial<LiveMicroCapitalConfig> = {}): LiveMicroCapitalConfig {
   return {
     enabled: true,
-    capitalSol: 1.0,
-    maxPositionSol: 0.5,
+    capitalSol: 1.15,
+    maxPositionSol: 0.8,
     maxConcurrentPositions: 1,
     minReserveSol: 0.15,
-    deployableSol: 0.85,
-    maxExposureSol: 0.5,
+    deployableSol: 1.0,
+    maxExposureSol: 0.8,
     roundTripGasSol: 0.008,
     minNetPnlUsd: 1.5,
     pnlHorizonHours: 24,
@@ -69,6 +69,11 @@ function multiPositionProfile(
   overrides: Partial<LiveMicroCapitalConfig> = {},
 ): LiveMicroCapitalConfig {
   return profile({
+    // Pinned, not inherited: this fixture exists to exercise the free-capital
+    // arithmetic at a concurrency the shipped profile does not use, so it must not
+    // move every time the live position size is retuned.
+    capitalSol: 1.0,
+    deployableSol: 0.85,
     maxPositionSol: 0.2,
     maxConcurrentPositions: 3,
     maxExposureSol: 0.6,
@@ -82,10 +87,10 @@ const ok = (r: ReturnType<typeof parseLiveConfig>): LiveMicroCapitalConfig => {
 };
 
 describe("live micro-capital — shipped defaults", () => {
-  it("ships the requested 1 SOL profile with no configuration at all", () => {
+  it("ships the requested 1.15 SOL profile with no configuration at all", () => {
     const cfg = ok(parseLiveConfig({}));
-    assert.equal(cfg.capitalSol, 1.0);
-    assert.equal(cfg.maxPositionSol, 0.5);
+    assert.equal(cfg.capitalSol, 1.15);
+    assert.equal(cfg.maxPositionSol, 0.8);
     assert.equal(cfg.maxConcurrentPositions, 1);
     assert.equal(cfg.minReserveSol, 0.15);
     assert.equal(cfg.roundTripGasSol, 0.008);
@@ -98,23 +103,28 @@ describe("live micro-capital — shipped defaults", () => {
     assert.equal(liveMicroCapital.enabled, false, "this machine has the live profile armed");
   });
 
-  it("derives 0.85 SOL deployable and 0.50 SOL of maximum exposure", () => {
+  it("derives 1.00 SOL deployable and 0.80 SOL of maximum exposure", () => {
     const cfg = ok(parseLiveConfig({}));
-    assert.equal(cfg.deployableSol, 0.85);
-    assert.ok(Math.abs(cfg.maxExposureSol - 0.5) < 1e-9);
+    assert.ok(Math.abs(cfg.deployableSol - 1.0) < 1e-9);
+    assert.ok(Math.abs(cfg.maxExposureSol - 0.8) < 1e-9);
   });
 
-  it("verifies at boot that 0.50 x 1 fits inside 0.85 deployable SOL", () => {
-    // The arithmetic the profile change turns on: one 0.50 SOL position against a
-    // 1 SOL book with 0.15 SOL reserved. 0.50 <= 0.85, with 0.35 SOL of slack.
+  it("verifies at boot that 0.80 x 1 fits inside 1.00 deployable SOL", () => {
+    /*
+     * One 0.80 SOL position against a 1.15 SOL book with 0.15 SOL reserved: 0.80 <=
+     * 1.00, leaving 0.20 SOL of slack. That slack is not spare capital — it is the
+     * rent a live open pays before it deposits anything (0.0574 position account,
+     * 0.0714 per uninitialised bin array, 0.0020 ATA). A profile that consumed it
+     * would pass this check and still fail to open.
+     */
     const cfg = ok(parseLiveConfig({}));
     const deployable = cfg.capitalSol - cfg.minReserveSol;
-    assert.ok(Math.abs(deployable - 0.85) < 1e-9);
+    assert.ok(Math.abs(deployable - 1.0) < 1e-9);
     assert.ok(
       cfg.maxPositionSol * cfg.maxConcurrentPositions <= deployable + 1e-9,
       "the full book reaches into the reserve",
     );
-    assert.ok(Math.abs(deployable - cfg.maxExposureSol - 0.35) < 1e-9, "expected 0.35 SOL slack");
+    assert.ok(Math.abs(deployable - cfg.maxExposureSol - 0.2) < 1e-9, "expected 0.20 SOL slack");
   });
 
   it("reads LIVE_MICRO_CAPITAL as a boolean opt-in", () => {
@@ -126,7 +136,7 @@ describe("live micro-capital — shipped defaults", () => {
 
 describe("live micro-capital — the reserve is unreachable by construction", () => {
   it("refuses a profile whose full book would spend the reserve", () => {
-    // 4 x 0.20 = 0.80 fits in 0.85, but 5 x 0.20 = 1.00 does not.
+    // 5 x the shipped 0.80 position is 4.00 SOL against 1.00 deployable.
     const r = parseLiveConfig({ LIVE_MAX_CONCURRENT_POSITIONS: "5" });
     assert.equal(r.ok, false);
     assert.ok(
@@ -136,13 +146,15 @@ describe("live micro-capital — the reserve is unreachable by construction", ()
   });
 
   it("refuses a single position larger than the deployable capital", () => {
-    const r = parseLiveConfig({ LIVE_MAX_POSITION_SOL: "0.9" });
+    // 1.10 > the 1.00 deployable after the 0.15 reserve. (0.90 now FITS: it is the
+    // profile change that moved this boundary, not a loosened rule.)
+    const r = parseLiveConfig({ LIVE_MAX_POSITION_SOL: "1.1" });
     assert.equal(r.ok, false);
     assert.ok(!r.ok && r.issues.some((i) => i.includes("LIVE_MAX_POSITION_SOL")));
   });
 
   it("refuses a reserve that consumes the whole book", () => {
-    const r = parseLiveConfig({ LIVE_MIN_RESERVE_SOL: "1.0" });
+    const r = parseLiveConfig({ LIVE_MIN_RESERVE_SOL: "1.2" });
     assert.equal(r.ok, false);
     assert.ok(!r.ok && r.issues.some((i) => i.includes("nothing deployable")));
   });
@@ -168,16 +180,17 @@ describe("live micro-capital — sizing runs off free capital, not the capital b
     assert.equal(d.freeSol, 0.85);
   });
 
-  it("deploys 0.50 SOL once, then refuses, under the SHIPPED single-position profile", () => {
+  it("deploys 0.80 SOL once, then refuses, under the SHIPPED single-position profile", () => {
     const shipped = profile();
-    assert.equal(sizeNextPositionSol(0, 0, shipped).sizeSol, 0.5);
+    assert.equal(sizeNextPositionSol(0, 0, shipped).sizeSol, 0.8);
 
-    // One position open is the ceiling now, and 0.35 SOL of free capital stays unused
-    // rather than being opened as a stub that cannot clear its own gas.
-    const second = sizeNextPositionSol(0.5, 1, shipped);
+    // One position open is the ceiling, and the remaining 0.20 SOL stays unused rather
+    // than being opened as a stub that cannot clear its own gas. That 0.20 is the rent
+    // headroom a live open needs anyway.
+    const second = sizeNextPositionSol(0.8, 1, shipped);
     assert.equal(second.sizeSol, 0);
     assert.match(second.reason ?? "", /at capacity/);
-    assert.ok(Math.abs(second.freeSol - 0.35) < 1e-9);
+    assert.ok(Math.abs(second.freeSol - 0.2) < 1e-9);
   });
 
   it("subtracts open notional, so three positions cannot spend the same SOL", () => {
@@ -371,10 +384,17 @@ describe("live micro-capital — the binding gate is reported, not the friendlie
   });
 
   it("surfaces the binding number and both gates in the boot summary", () => {
+    /*
+     * At the shipped 0.80 SOL the bar is 7.50%, down from 9.00% at 0.50 — the whole
+     * point of the size increase, and achieved with no guardrail moved: gas is per
+     * transaction, so a larger notional dilutes a fixed cost while slippage scales
+     * and stays proportional. Coverage still binds (7.50% against the floor's 4.88%),
+     * so the boot line must keep naming the stricter of the two.
+     */
     const lines = describeLiveEnvelope(SOL, cfg).join(" | ");
-    assert.match(lines, /0\.5 SOL \(~\$50\.00\) x 1 max = 0\.50 SOL exposure/);
-    assert.match(lines, /gates      :.*floor needs 6\.60%.*coverage needs 9\.00%/);
-    assert.match(lines, /implies    : a pool must show >= 9\.00%/);
+    assert.match(lines, /0\.8 SOL \(~\$80\.00\) x 1 max = 0\.80 SOL exposure/);
+    assert.match(lines, /gates      :.*floor needs 4\.88%.*coverage needs 7\.50%/);
+    assert.match(lines, /implies    : a pool must show >= 7\.50%/);
     assert.match(lines, /binding gate: coverage ratio/);
   });
 });

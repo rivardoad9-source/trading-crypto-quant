@@ -58,13 +58,16 @@ describe("onchain executor — the engine cannot reach it", () => {
    * Walks the relative-import graph from a root file and returns every module in it.
    * Relative specifiers only: a package import can never be one of our modules.
    */
-  function importGraph(entry: string): Set<string> {
+  function importGraph(entry: string, cut: Set<string> = new Set()): Set<string> {
     const seen = new Set<string>();
     const queue = [resolve(entry)];
 
     while (queue.length > 0) {
       const file = queue.pop();
       if (!file || seen.has(file)) continue;
+      // `cut` severs a module: it is not visited and its imports are not followed, so
+      // the walk answers "what is reachable if this file did not exist".
+      if (cut.has(file)) continue;
       seen.add(file);
 
       let text: string;
@@ -84,23 +87,42 @@ describe("onchain executor — the engine cannot reach it", () => {
     return seen;
   }
 
-  it("is absent from every module reachable from src/index.ts", () => {
+  /*
+   * THE RULE CHANGED, AND NARROWED.
+   *
+   * It used to be "the engine cannot reach the executor at all". Live execution made
+   * that false by design: `src/index.ts` now reaches the signer. What replaced it is
+   * not a weaker rule but a more specific one — the engine may reach the executor
+   * through EXACTLY ONE module, `services/liveExecution.ts`, and through nothing else.
+   *
+   * That edge is the whole point. One file means one place to review "can this spend
+   * money, and under what conditions", instead of a signer reachable from wherever an
+   * import happened to be convenient. Deleting this test to make a new import compile
+   * removes the only structural guarantee left.
+   */
+  it("is reachable from src/index.ts through liveExecution.ts and nothing else", () => {
     const graph = importGraph(join(srcDir, "index.ts"));
     const executor = join(srcDir, "services", "onchainExecutor.ts");
+    const bridge = join(srcDir, "services", "liveExecution.ts");
 
     assert.ok(graph.size > 10, "the import walker found almost nothing; it is broken");
     assert.ok(
       graph.has(join(srcDir, "agents", "dlmmTraderAgent.ts")),
       "sanity: the walker should reach the trading agent",
     );
+    assert.ok(graph.has(bridge), "the engine no longer reaches the live-execution bridge");
+
+    // Remove the bridge and the signer must become unreachable again. That is what
+    // "through liveExecution.ts and nothing else" means, tested rather than asserted.
+    const withoutBridge = importGraph(join(srcDir, "index.ts"), new Set([bridge]));
     assert.ok(
-      !graph.has(executor),
-      "the running engine can now reach onchainExecutor. The engine is paper-only; " +
-        "an execution path must be reviewed deliberately, not acquired by an import.",
+      !withoutBridge.has(executor),
+      "the engine reaches onchainExecutor by some path OTHER than liveExecution.ts. " +
+        "Execution must enter the engine through exactly one reviewed edge.",
     );
   });
 
-  it("is imported only by its own test and the isolated PoC script", () => {
+  it("is imported only by its own test, the bridge, and the isolated PoC script", () => {
     const files: string[] = [];
     const walk = (dir: string): void => {
       for (const name of readdirSync(dir)) {
@@ -117,8 +139,15 @@ describe("onchain executor — the engine cannot reach it", () => {
     // who can CALL it.
     const importsExecutor = /(?:from\s*|import\s*\(\s*)["'][^"']*onchainExecutor(?:\.js)?["']/;
     const importers = files.filter((f) => importsExecutor.test(readFileSync(f, "utf8")));
+    /*
+     * Four entries, and the list is the security boundary — every addition widens who
+     * can move funds. `liveExecution.ts` is the bridge the engine goes through; if a
+     * fifth file ever needs to be added here, that is the moment to ask whether it
+     * should instead call the bridge.
+     */
     const allowed = new Set([
       join(srcDir, "services", "onchainExecutor.ts"),
+      join(srcDir, "services", "liveExecution.ts"),
       join(srcDir, "tests", "onchainExecutor.test.ts"),
       join(repoRoot, "scripts", "testMicroSwap.ts"),
     ]);
@@ -128,15 +157,26 @@ describe("onchain executor — the engine cannot reach it", () => {
     }
   });
 
-  it("leaves isLiveTradingEnabled false, and never assigns to it", () => {
-    assert.equal(isLiveTradingEnabled, false);
-
+  it("requires BOTH switches for isLiveTradingEnabled, never one", () => {
+    /*
+     * This used to assert the flag was a `false` literal. Live execution made that
+     * false on purpose; what survives is the property that actually protects anything
+     * — the flag is the AND of two independent switches, so neither one alone can arm
+     * live trading.
+     *
+     * The dangerous half is silent: an engine that believes it is live while nothing
+     * can sign would take entry decisions and fail every execution. `env.ts` refuses
+     * to boot on that combination rather than running in it.
+     */
     const envSource = readFileSync(join(srcDir, "config", "env.ts"), "utf8");
     assert.match(
       envSource,
-      /export const isLiveTradingEnabled = false as const;/,
-      "the live-trading literal was changed",
+      /export const isLiveTradingEnabled: boolean = !env\.DRY_RUN && armedInEnvironment\(\);/,
+      "isLiveTradingEnabled no longer requires both DRY_RUN=false and the executor armed",
     );
+
+    // On this machine DRY_RUN is true, so the flag must be false whatever else is set.
+    assert.equal(isLiveTradingEnabled, false, "this machine has live trading armed");
 
     const executorSource = readFileSync(join(srcDir, "services", "onchainExecutor.ts"), "utf8");
     assert.ok(
@@ -145,9 +185,19 @@ describe("onchain executor — the engine cannot reach it", () => {
     );
   });
 
-  it("keeps DRY_RUN=false unbootable", () => {
+  it("refuses to boot on half-armed live mode", () => {
+    // DRY_RUN=false without an armed executor, or without a key, must not start.
     const envSource = readFileSync(join(srcDir, "config", "env.ts"), "utf8");
-    assert.match(envSource, /if \(!cfg\.DRY_RUN\)/, "the DRY_RUN boot refusal is gone");
+    assert.match(
+      envSource,
+      /if \(!cfg\.DRY_RUN && !armedInEnvironment\(\)\)/,
+      "DRY_RUN=false no longer requires ONCHAIN_EXECUTION_ARMED",
+    );
+    assert.match(
+      envSource,
+      /if \(!cfg\.DRY_RUN && !cfg\.SOLANA_PRIVATE_KEY\)/,
+      "DRY_RUN=false no longer requires a signing key",
+    );
   });
 });
 
