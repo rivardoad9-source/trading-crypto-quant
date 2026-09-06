@@ -1,6 +1,10 @@
 /** Typed client for the FlowMetrix REST API. */
 
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000/api";
+// Same-origin by default: the Next config rewrites /api/* to the engine REST API
+// (:4000), so the browser never needs CORS or a reachable localhost — works both
+// on the server and through the cloudflared tunnel. Override with
+// NEXT_PUBLIC_API_URL for exotic deployments.
+const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "/api";
 
 /**
  * Which slice of trading history a payload was computed over.
