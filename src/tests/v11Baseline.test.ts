@@ -184,6 +184,56 @@ describe("V1.1 baseline — the live micro-capital profile does not touch it", (
     );
   });
 
+  it("charges the 2.5x gate the SAME gas the boot line prices it at", () => {
+    /*
+     * The gap this closes: `requiredFeeTvlRatioForCoverage` prices gas at the 0.008
+     * SOL floor to print "coverage needs 9.00%" at boot, while the runtime call site
+     * handed `assessBreakeven` the live priority fee (~$0.003). Same gate, two cost
+     * bases — the enforced bar was 5.1%, not the 9.00% advertised.
+     *
+     * Asserted against source rather than behaviour because the expression lives
+     * inside `seekNewEntry`, which needs the network, a SOL price and the LLM to
+     * reach. `liveConfig.test.ts` carries the behavioural half: that a pool passes
+     * the runtime gate exactly when it meets the advertised requirement.
+     */
+    assert.match(
+      agentSource,
+      /chargeRoundTripGasUsd\(liveRoundTripGasUsd, solPriceUsd\)/,
+      "the coverage gate no longer charges the shared live gas floor; the bar printed " +
+        "at boot and the bar enforced at runtime can now disagree again",
+    );
+
+    const gateAt = agentSource.indexOf("assessBreakeven({");
+    const chargeAt = agentSource.indexOf("chargeRoundTripGasUsd(liveRoundTripGasUsd");
+    assert.ok(chargeAt > 0 && chargeAt < gateAt, "the gas basis is resolved after the gate reads it");
+
+    // Both gates must be handed the identical figure, or they drift apart again.
+    assert.match(
+      agentSource,
+      /gasRoundTripUsd: liveRoundTripGasUsd,/,
+      "the micro gate is fed a different gas estimate than the coverage gate",
+    );
+  });
+
+  it("keeps the live gas floor out of paper mode", () => {
+    /*
+     * The other half of the same rule. A live-capital cost basis that reached the
+     * disarmed engine would silently rewrite every dry run and every cached sweep,
+     * the same reason `defaultBacktestConfig()` ships its guardrails inert. The
+     * pre-profile fallback (0.0035 SOL round trip) must survive verbatim.
+     */
+    assert.match(
+      agentSource,
+      /liveMicroCapital\.enabled\s*\?\s*chargeRoundTripGasUsd/,
+      "the coverage gate's gas basis is no longer gated on the live profile being armed",
+    );
+    assert.match(
+      agentSource,
+      /liveRoundTripGasUsd \?\? 0\.0035 \* 2 \* solPriceUsd/,
+      "the pre-profile paper-mode gas fallback changed",
+    );
+  });
+
   it("stays inert unless explicitly armed", () => {
     assert.match(
       liveSource,

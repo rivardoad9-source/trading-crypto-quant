@@ -19,14 +19,17 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   assessMicroCapitalFriction,
+  chargeRoundTripGasUsd,
   describeLiveEnvelope,
   effectiveFeeRequirement,
   liveMicroCapital,
   parseLiveConfig,
   requiredFeeTvlRatio24h,
+  requiredFeeTvlRatioForCoverage,
   sizeNextPositionSol,
   type LiveMicroCapitalConfig,
 } from "../config/liveConfig.js";
+import { assessBreakeven } from "../services/meteora.js";
 import {
   INSUFFICIENT_GAS_RESERVE,
   InsufficientGasReserveError,
@@ -373,6 +376,141 @@ describe("live micro-capital — the binding gate is reported, not the friendlie
     assert.match(lines, /gates      :.*floor needs 6\.60%.*coverage needs 9\.00%/);
     assert.match(lines, /implies    : a pool must show >= 9\.00%/);
     assert.match(lines, /binding gate: coverage ratio/);
+  });
+});
+
+describe("live micro-capital — both gates charge one gas basis", () => {
+  const cfg = profile();
+  const SOL = 100;
+  const FLOOR_USD = 0.008 * SOL; // $0.80
+
+  it("prices an absent estimate at the floor, never at zero", () => {
+    for (const absent of [null, undefined, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const c = chargeRoundTripGasUsd(absent, SOL, cfg);
+      assert.equal(c.gasRoundTripUsd, FLOOR_USD, `priced ${String(absent)} wrong`);
+      assert.equal(c.floorApplied, true);
+    }
+  });
+
+  it("takes the higher of the live estimate and the floor, and the floor wins ties", () => {
+    assert.deepEqual(chargeRoundTripGasUsd(0.01, SOL, cfg), {
+      gasRoundTripUsd: FLOOR_USD,
+      floorApplied: true,
+    });
+    assert.deepEqual(chargeRoundTripGasUsd(FLOOR_USD, SOL, cfg), {
+      gasRoundTripUsd: FLOOR_USD,
+      floorApplied: true,
+    });
+    assert.deepEqual(chargeRoundTripGasUsd(2.5, SOL, cfg), {
+      gasRoundTripUsd: 2.5,
+      floorApplied: false,
+    });
+  });
+
+  it("gives the micro gate exactly what chargeRoundTripGasUsd returns", () => {
+    // The micro gate must not keep a second copy of this rule; two copies is how the
+    // coverage gate came to disagree with the bar printed at boot.
+    for (const live of [null, 0.01, 5]) {
+      const charge = chargeRoundTripGasUsd(live, SOL, cfg);
+      const a = assessMicroCapitalFriction({
+        notionalUsd: 50,
+        feeTvlRatio24h: 0.1,
+        gasRoundTripUsd: live,
+        solPriceUsd: SOL,
+        slippagePct: 2,
+        config: cfg,
+      });
+      assert.equal(a.gasRoundTripUsd, charge.gasRoundTripUsd);
+      assert.equal(a.gasFloorApplied, charge.floorApplied);
+    }
+  });
+
+  /*
+   * The regression this whole change exists for.
+   *
+   * `requiredFeeTvlRatioForCoverage` prices gas at the 0.008 SOL floor; before the fix
+   * the runtime call site handed `assessBreakeven` the live priority fee instead
+   * (~$0.003 against a $0.81 floor). The boot line therefore advertised 9.00% while
+   * the gate enforced 5.1% — 52 pools in the 67h Hermes run cleared coverage and then
+   * failed the $1.50 floor, which cannot happen if coverage really binds at 9%.
+   *
+   * The invariant is one-sided, and deliberately so. The runtime gate must NEVER be
+   * looser than the advertised bar — that was the bug. It may be STRICTER, because
+   * `LIVE_ROUND_TRIP_GAS_SOL` is a floor: when the live estimate exceeds it the gate
+   * charges the real, higher cost. Asserting equality in that case would be asserting
+   * that a genuinely expensive network is priced as if it were cheap.
+   *
+   * So: under-enforcement is a failure at every size and every estimate; and where the
+   * floor is what gets charged — the normal case, and the one boot describes — the two
+   * agree exactly.
+   */
+  it("never enforces a looser bar than requiredFeeTvlRatioForCoverage advertises", () => {
+    const COVERAGE = 2.5;
+    for (const sol of [0.05, 0.2, 0.5, 0.85]) {
+      for (const solPriceUsd of [40, 100, 250]) {
+        const notionalUsd = sol * solPriceUsd;
+        const bar = requiredFeeTvlRatioForCoverage(notionalUsd, solPriceUsd, cfg, 2);
+
+        // Whatever the live estimate says, including nothing at all.
+        for (const live of [null, 0.001, 0.5]) {
+          const charge = chargeRoundTripGasUsd(live, solPriceUsd, cfg);
+          const where = `${sol} SOL @ $${solPriceUsd}, live=${String(live)}`;
+          const gate = (feeTvlRatio24h: number) =>
+            assessBreakeven({
+              notionalUsd,
+              feeTvlRatio24h,
+              gasCostRoundTripUsd: charge.gasRoundTripUsd,
+              slippagePct: 2,
+              minCoverageRatio: COVERAGE,
+            });
+
+          // Never looser: anything under the advertised bar is refused, always.
+          assert.ok(!gate(bar * 0.999).passes, `a pool under the advertised bar passed (${where})`);
+
+          if (charge.floorApplied) {
+            // Exactly the advertised bar, which is what boot promises.
+            const at = gate(bar);
+            assert.ok(at.passes, `a pool exactly at the advertised bar was rejected (${where})`);
+            assert.ok(
+              Math.abs(at.coverageRatio - COVERAGE) < 1e-9,
+              `the advertised bar is not the 2.5x point (${where}): got ${at.coverageRatio}`,
+            );
+          } else {
+            // A live estimate above the floor may only make the gate harder.
+            assert.ok(
+              gate(bar).coverageRatio <= COVERAGE + 1e-9,
+              `a live estimate above the floor made the gate EASIER (${where})`,
+            );
+          }
+        }
+      }
+    }
+  });
+
+  it("puts the shipped 0.50 SOL profile back on a 9.00% coverage bar", () => {
+    // The number the operator reads at boot, now the number the gate applies.
+    const gas = chargeRoundTripGasUsd(0.003, SOL, cfg).gasRoundTripUsd;
+    const notionalUsd = 50;
+
+    const nineExactly = assessBreakeven({
+      notionalUsd,
+      feeTvlRatio24h: 0.09,
+      gasCostRoundTripUsd: gas,
+      slippagePct: 2,
+      minCoverageRatio: 2.5,
+    });
+    assert.ok(nineExactly.passes, "9.00% fee/TVL no longer clears the coverage gate");
+
+    // 7.87% is the fone-SOL entry from the 67h run: it passed under the old cost
+    // basis and must now be refused, which is the point of the change.
+    const sevenNine = assessBreakeven({
+      notionalUsd,
+      feeTvlRatio24h: 0.0787,
+      gasCostRoundTripUsd: gas,
+      slippagePct: 2,
+      minCoverageRatio: 2.5,
+    });
+    assert.ok(!sevenNine.passes, "the gate still admits pools below the advertised 9% bar");
   });
 });
 

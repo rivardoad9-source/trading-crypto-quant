@@ -25,6 +25,10 @@ const HISTORY_TABLES = [
   "simulated_positions",
   "daily_pnl_snapshots",
   "daily_research_logs",
+  // Diagnostics, but still history: a funnel row describes a scan of a market that no
+  // longer exists. Leaving it behind a reset would mean "0 trades" alongside hundreds
+  // of cycles from the run that produced them.
+  "scan_funnel_cycles",
 ] as const;
 
 function countRows(table: string): number {

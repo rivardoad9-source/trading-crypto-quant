@@ -39,9 +39,11 @@ pre-V1.1 behaviour reintroduced through configuration.
   not neglect — the same inert-default discipline `defaultBacktestConfig()` uses. They are the
   reviewed envelope the engine will size and screen against when real capital is deployed; see
   "The live micro-capital profile is inert by default" below before touching either file.
-- `src/services/onchainExecutor.ts` and `scripts/testMicroSwap.ts` are STAGE 1 of the on-chain
-  path. Nothing in the engine imports them — by design, and enforced by a test — so they look
-  unreachable and their coverage looks dead. Deleting them as unused removes the only reviewed
+- `src/services/onchainExecutor.ts` and `scripts/testMicroSwap.ts` are the on-chain path:
+  Stage 1 (wallet, signing, priority fees, send/confirm, Jupiter) and Stage 2 (the DLMM
+  adapter) are both IMPLEMENTED, and both are still unreachable. Nothing in the engine
+  imports them — by design, and enforced by a test — so their coverage looks dead.
+  Deleting them as unused removes the only reviewed
   signing path; wiring them into the engine to make them "used" defeats the isolation they
   exist to provide. See "`src/services/onchainExecutor.ts` can sign real transactions" below.
 
@@ -97,6 +99,15 @@ read-only view and holds no trading logic.
   don't write queries elsewhere.
 - `src/database/db.ts` — `initDatabase()` applies `schema.sql` then runs `addColumnIfMissing`
   migrations. Add new columns there, not by editing `schema.sql` alone, or existing databases break.
+- `scan_funnel_cycles` — one row per screener cycle: scanned, the `screenPools` rejection bucket
+  map as JSON, then cooldown / anti-rug / volatility / coverage / micro, the skip reason and the
+  duration. Written by `recordFunnel`, served read-only by `GET /api/funnel`, and it exists
+  because the funnel used to be reconstructible only by parsing PM2 stdout — and its most
+  important step was not in the log at all, since `screenPools` computed those buckets and
+  `seekNewEntry` threw them away. `scanned` is NULL, never 0, when the cycle never reached the
+  screener (paused, or at capacity): "not measured" and "measured zero" are different facts, the
+  same rule `est_gas_cost_usd` follows. Recording it can never fail a trading cycle — the write
+  is wrapped and nothing reads it back.
 - `src/services/meteora.ts` — pool fetching, screening, and **all position maths** (IL, fee accrual,
   valuation). The agent orchestrates; the maths lives here and is unit-tested.
 - `src/services/solana.ts` — JSON-RPC helper: priority-fee estimation, mint/freeze authority,
@@ -444,6 +455,35 @@ quoting `requiredFeeTvlRatio24h` alone** — it answers only what the dollar flo
 whenever coverage is stricter it advertises a bar lower than the screener actually enforces, and
 the operator reads the resulting rejections as a broken screener rather than a working gate.
 
+**Both gates charge ONE gas basis, and that is what makes the paragraph above true.** It was not
+true for the first 67h of live-profile dry running. `requiredFeeTvlRatioForCoverage` prices gas
+at the 0.008 SOL floor to print "coverage needs 9.00%" at boot, but the runtime call site handed
+`assessBreakeven` the live priority fee instead (~$0.003 against a ~$0.81 floor) — so the
+enforced coverage bar was 5.1%, not 9.00%, and the binding gate was really the $1.50 floor at
+6.6%. The tell is in `reports/DRY_RUN_72H_REPORT.md`: **52 pools cleared coverage and then failed
+the dollar floor**, which cannot happen if coverage binds at 9%. This is the same class of defect
+the paragraph above warns about, pointing the other way — a bar advertised HIGHER than enforced.
+`chargeRoundTripGasUsd` in `liveConfig.ts` is now the single implementation, used by
+`assessMicroCapitalFriction` and by the coverage gate's call site, and both gates are handed the
+identical figure. Do not give either gate its own copy.
+
+Three properties of that fix are load-bearing:
+
+- **The floor reaches the coverage gate ONLY when the live profile is armed.** With
+  `LIVE_MICRO_CAPITAL=false` the pre-profile expression survives byte-for-byte, 0.0035 SOL
+  fallback included. A live-capital cost basis leaking into paper mode would silently rewrite
+  every dry run and every cached sweep — the same reason `defaultBacktestConfig()` ships inert.
+- **The guarantee is one-sided.** `LIVE_ROUND_TRIP_GAS_SOL` is a FLOOR, so a live estimate above
+  it makes the gate STRICTER than the boot line advertises, and that is correct — asserting
+  equality there would assert that an expensive network is priced as if it were cheap. The test
+  asserts the gate is never LOOSER than advertised, and exactly equal wherever the floor applies.
+- **`priorityFee.totalUsd` prices ONE transaction.** A round trip is twice it. The micro gate
+  used to be handed the one-way figure; harmless only because the floor dominated it ~800x.
+
+The consequence is real and was accepted deliberately: at a true 9.00% bar, the fone-SOL entry
+from that run (7.87% fee/TVL) would have been refused. Two of the window's three trades survive
+the change. That is the gate doing what it was configured to do, not a regression.
+
 **Raising `LIVE_MAX_POSITION_SOL` is the sanctioned lever, and it was used.** 0.20 SOL x 3 put
 the bar at 15% fee/TVL — inside the band this file elsewhere calls yields no position could
 actually realise. The same book as one 0.50 SOL position puts it at 9%, with NO guardrail moved:
@@ -469,9 +509,9 @@ SIZING and SCREENING only, so the dry run rehearses the live envelope before any
 is wired in. The preflight logs this explicitly at boot for the same reason.
 
 **`src/services/onchainExecutor.ts` can sign real transactions, and the engine must never be
-able to reach it.** It is STAGE 1 of the on-chain path, built and armed separately from the
-trading engine. Three independent locks keep them apart, and they are deliberately at different
-levels so one mistake cannot defeat all three:
+able to reach it.** It is the on-chain path, built and armed separately from the trading
+engine. Stage 2 landing did not change this: implemented is not armed. Three independent locks
+keep them apart, deliberately at different levels so one mistake cannot defeat all three:
 
 - **Type level.** Every fund-moving function requires an `ExecutionAuthorization`, a branded
   type obtainable only from `authorizeExecution()`. There is no overload without it, so
@@ -507,12 +547,44 @@ so the 0.5% cap does not depend on a third party's response body, and Jupiter's
 `otherAmountThreshold` is what enforces it on-chain — a client-side check would be advisory
 while the swap executed at whatever rate it got.
 
-**The DLMM adapter throws instead of stubbing.** `dlmmExecutor` is Stage 2: `openPosition`,
-`claimFees` and `closePosition` all raise `NotImplementedError`. A no-op stub returning a
-plausible success shape would read as a working integration in every log and every test, right
-up until the engine books a position it never opened. When Stage 2 lands, build the instructions
-against the real `@meteora-ag/dlmm` types — never against guessed account layouts, because a
-wrong account order does not throw, it moves funds.
+**The DLMM adapter is Stage 2 and is now IMPLEMENTED — implemented is not armed.**
+`openPosition`, `claimFees` and `closePosition` build real instructions through
+`@meteora-ag/dlmm` (`initializePositionAndAddLiquidityByStrategy`, `claimSwapFee`,
+`removeLiquidity` with `shouldClaimAndClose`). No account layout is written by hand, per the
+rule this paragraph used to state: a wrong account order does not throw, it moves funds.
+Landing it changed nothing about reachability — all three isolation locks above still hold,
+and `onchainExecutor.test.ts` still fails the build if `src/index.ts` can reach the module.
+
+Four things inside the adapter are load-bearing:
+
+- **Bin ids come from the SDK, via `toPricePerLamport` FIRST.** `getBinIdFromPrice` takes a
+  price per lamport and does no decimal conversion — it is a bare logarithm over the bin-step
+  ratio. Handing it `DlmmPool.currentPrice` places the position in an unrelated bin range, off
+  by the ratio of the two mints' decimals, and does not throw. `binRangeFromPrices` takes a
+  structural type so this conversion is unit-tested without a cluster.
+- **The SDK's compute-budget instruction is stripped and replaced.** The SDK attaches its own
+  `setComputeUnitLimit` and never sets a unit price; leaving both in place puts two
+  compute-budget instructions of the same kind in one transaction, which the runtime rejects.
+  Ours carries the priority fee `sendAndConfirm`'s escalation exists to move.
+- **The blockhash comes from `sendAndConfirm`, never from the SDK's own fetch.** The
+  rebroadcast rule depends on the signed bytes being pinned to the blockhash whose expiry that
+  loop is tracking. A transaction carrying a blockhash the retry loop does not know about could
+  be rebuilt while the original was still landable — the double spend that loop prevents.
+- **A multi-transaction operation reports partial completion.** `claimSwapFee` and
+  `removeLiquidity` return `Transaction[]`; a position spanning many bins does not fit in one.
+  `DlmmPartialExecutionError` names the signatures that DID land and says to check the chain
+  before retrying, for the same reason the ambiguous-failure path does. `DlmmSendResult`
+  replaced the old single `SendResult` because that shape could carry neither the several
+  signatures nor the address of the position `openPosition` mints — the old interface was
+  unusable even once implemented.
+
+**`openPosition` never swaps to balance a deposit.** `amountLamports` is SOL and goes to
+whichever side of the pair is wSOL; `pairedTokenAmount` defaults to 0. A range that brackets
+the active bin needs both tokens to be two-sided, so a SOL-only deposit lands a real but
+ONE-SIDED position — legal, and not the balanced LP the paper model simulates. Acquiring the
+paired token is the caller's decision and `executeJupiterSwap` is the path for it. A pool with
+no wSOL side is REFUSED rather than interpreted, because `amountLamports` has no meaning there
+and guessing is a decimals bug that does not throw.
 
 **`scripts/testMicroSwap.ts` is run by hand and by nothing else.** Dry run is the DEFAULT
 (`npm run test:swap` quotes and signs nothing, and needs no key on the box); spending requires

@@ -377,6 +377,47 @@ export interface MicroCapitalFrictionInput {
   config?: LiveMicroCapitalConfig;
 }
 
+export interface RoundTripGasCharge {
+  /** max(live estimate, LIVE_ROUND_TRIP_GAS_SOL x SOL/USD). */
+  gasRoundTripUsd: number;
+  /** True when the configured floor was used (estimate missing, or lower than it). */
+  floorApplied: boolean;
+}
+
+/**
+ * The round-trip gas BOTH live friction gates charge. One function, because two
+ * copies is exactly how the gates came to disagree.
+ *
+ * The 67h Hermes dry run (`reports/DRY_RUN_72H_REPORT.md`) found the boot line
+ * advertising a 9.00% fee/TVL bar with the coverage ratio binding, while the gate
+ * actually enforced 5.1%: `requiredFeeTvlRatioForCoverage` prices gas at the 0.008 SOL
+ * floor (~$0.81), but the runtime call site handed `assessBreakeven` the live priority
+ * fee (~$0.003). Same gate, two cost bases, a 1.36x gap between the advertised bar and
+ * the enforced one — and 52 pools cleared coverage only to fail the $1.50 floor, which
+ * is impossible if coverage really binds at 9%.
+ *
+ * The floor wins ties and wins whenever the estimate is missing: unknown cost is never
+ * treated as zero cost. Same fail-closed rule as the anti-rug and volatility gates, and
+ * deliberately unlike `assessPoolCooldown`, which fails open because it only protects
+ * returns rather than capital.
+ */
+export function chargeRoundTripGasUsd(
+  liveRoundTripGasUsd: number | null | undefined,
+  solPriceUsd: number,
+  config: LiveMicroCapitalConfig = liveMicroCapital,
+): RoundTripGasCharge {
+  const floorUsd = config.roundTripGasSol * solPriceUsd;
+  const live =
+    liveRoundTripGasUsd !== null &&
+    liveRoundTripGasUsd !== undefined &&
+    Number.isFinite(liveRoundTripGasUsd)
+      ? liveRoundTripGasUsd
+      : null;
+
+  if (live === null || floorUsd >= live) return { gasRoundTripUsd: floorUsd, floorApplied: true };
+  return { gasRoundTripUsd: live, floorApplied: false };
+}
+
 export interface MicroCapitalFrictionAssessment {
   /** Gas actually charged to the projection: max(live estimate, configured floor). */
   gasRoundTripUsd: number;
@@ -419,14 +460,13 @@ export function assessMicroCapitalFriction(
   const config = input.config ?? liveMicroCapital;
   const slippagePct = input.slippagePct ?? env.FORCED_EXIT_SLIPPAGE_PCT;
 
-  const gasFloorUsd = config.roundTripGasSol * input.solPriceUsd;
-  const liveGasUsd =
-    input.gasRoundTripUsd !== null && Number.isFinite(input.gasRoundTripUsd)
-      ? input.gasRoundTripUsd
-      : null;
-
-  const gasRoundTripUsd = liveGasUsd === null ? gasFloorUsd : Math.max(liveGasUsd, gasFloorUsd);
-  const gasFloorApplied = liveGasUsd === null || gasFloorUsd >= liveGasUsd;
+  // Shared with the 2.5x coverage gate's runtime call site, so the two cannot drift
+  // onto different cost bases again. See chargeRoundTripGasUsd.
+  const { gasRoundTripUsd, floorApplied: gasFloorApplied } = chargeRoundTripGasUsd(
+    input.gasRoundTripUsd,
+    input.solPriceUsd,
+    config,
+  );
 
   const slippageUsd = input.notionalUsd * (slippagePct / 100);
   const roundTripCostUsd = gasRoundTripUsd + slippageUsd;

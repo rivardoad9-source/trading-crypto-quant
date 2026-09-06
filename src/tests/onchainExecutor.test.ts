@@ -15,21 +15,26 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Keypair } from "@solana/web3.js";
+import { Keypair, PublicKey } from "@solana/web3.js";
 import bs58 from "bs58";
 import { isLiveTradingEnabled } from "../config/env.js";
 import {
   HARD_MAX_SLIPPAGE_BPS,
+  DlmmExecutionError,
+  DlmmPartialExecutionError,
   ExecutionLimitError,
   ExecutionNotArmedError,
-  NotImplementedError,
+  USDC_MINT,
+  WSOL_MINT,
   assertWithinSpendLimit,
   authorizeExecution,
+  binRangeFromPrices,
   dlmmExecutor,
   isExecutionArmable,
   planPriorityFee,
   resolveOnchainConfig,
   resolveSlippageBps,
+  solSide,
   type ExecutionAuthorization,
   type OnchainConfig,
 } from "../services/onchainExecutor.js";
@@ -270,32 +275,167 @@ describe("onchain executor — priority fee escalation", () => {
   });
 });
 
-describe("onchain executor — DLMM adapter is honestly unimplemented", () => {
-  it("throws on every operation rather than silently succeeding", async () => {
-    const a = auth();
+describe("onchain executor — DLMM adapter refuses before it reaches the network", () => {
+  /*
+   * Stage 2 is implemented, so the old "everything throws NotImplementedError" suite
+   * no longer describes this module. What still needs guarding is the part a unit test
+   * can actually reach: every refusal that must happen BEFORE an RPC call, and the
+   * unit conversion that fails silently rather than loudly.
+   *
+   * The end-to-end path needs a cluster and is `scripts/testMicroSwap.ts`'s job. These
+   * tests deliberately never open a socket — each one asserts a rejection that occurs
+   * before `DLMM.create` is reached.
+   */
+  const openParams = {
+    poolAddress: "ErwEeF8y8uLR7LkJcL3xRUuN1d8SrMLZJB92Ydq8vfdw",
+    amountLamports: 10_000_000,
+    lowerBinPrice: 1,
+    upperBinPrice: 2,
+    strategy: "SPOT" as const,
+  };
+
+  it("checks the spend ceiling before doing anything else", async () => {
+    // Ordering matters: a ceiling checked after the RPC round trip is a ceiling that
+    // has already told a third party what we intend to do.
     await assert.rejects(
-      () => dlmmExecutor.openPosition(a, {
-        poolAddress: "p", amountLamports: 1, lowerBinPrice: 1, upperBinPrice: 2, strategy: "SPOT",
-      }),
-      NotImplementedError,
-    );
-    await assert.rejects(
-      () => dlmmExecutor.claimFees(a, { poolAddress: "p", positionAddress: "x" }),
-      NotImplementedError,
-    );
-    await assert.rejects(
-      () => dlmmExecutor.closePosition(a, { poolAddress: "p", positionAddress: "x" }),
-      NotImplementedError,
+      () => dlmmExecutor.openPosition(auth(), { ...openParams, amountLamports: 20_000_001 }),
+      ExecutionLimitError,
     );
   });
 
-  it("does not return a fake success shape", async () => {
-    // A no-op stub returning {signature: "..."} would read as a working integration in
-    // every log and every test, right up until the engine books a position that was
-    // never opened.
+  it("rejects a nonsense deposit rather than coercing it", async () => {
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+      await assert.rejects(
+        () => dlmmExecutor.openPosition(auth(), { ...openParams, amountLamports: bad }),
+        ExecutionLimitError,
+      );
+    }
+  });
+
+  it("rejects a slippage request it cannot honour, before quoting anything", async () => {
+    await assert.rejects(
+      () => dlmmExecutor.openPosition(auth(), { ...openParams, slippageBps: 0 }),
+      ExecutionLimitError,
+    );
+  });
+
+  it("converts prices to bins through the SDK, never by reimplementing the maths", () => {
+    /*
+     * The silent failure this prevents. `getBinIdFromPrice` takes a price PER LAMPORT
+     * and does no decimal conversion — handing it a human price places the position in
+     * an unrelated bin range, off by the ratio of the two mints' decimals, without
+     * throwing. The adapter must route through `toPricePerLamport` first.
+     */
+    const seen: Array<{ price: number; min: boolean }> = [];
+    const pool = {
+      toPricePerLamport: (price: number) => String(price / 1_000),
+      getBinIdFromPrice: (price: number, min: boolean) => {
+        seen.push({ price, min });
+        return min ? 10 : 20;
+      },
+    };
+
+    const range = binRangeFromPrices(pool, 2, 4);
+    assert.deepEqual(range, { minBinId: 10, maxBinId: 20 });
+    assert.deepEqual(
+      seen,
+      [
+        { price: 0.002, min: true },
+        { price: 0.004, min: false },
+      ],
+      "the human price reached getBinIdFromPrice without the per-lamport conversion",
+    );
+  });
+
+  it("floors the lower bound and ceils the upper, so the range contains the prices", () => {
+    const mins: boolean[] = [];
+    binRangeFromPrices(
+      {
+        toPricePerLamport: (p: number) => String(p),
+        getBinIdFromPrice: (_p: number, min: boolean) => {
+          mins.push(min);
+          return min ? 1 : 2;
+        },
+      },
+      1,
+      2,
+    );
+    assert.deepEqual(mins, [true, false], "the range truncates inward instead of containing");
+  });
+
+  it("refuses a range that is not positive and increasing", () => {
+    const pool = {
+      toPricePerLamport: (p: number) => String(p),
+      getBinIdFromPrice: (_p: number, min: boolean) => (min ? 1 : 2),
+    };
+    for (const [lo, hi] of [
+      [0, 1],
+      [-1, 1],
+      [2, 2],
+      [3, 1],
+      [Number.NaN, 1],
+    ]) {
+      assert.throws(
+        () => binRangeFromPrices(pool, lo as number, hi as number),
+        DlmmExecutionError,
+        `accepted range [${lo}, ${hi}]`,
+      );
+    }
+  });
+
+  it("identifies the wSOL side rather than assuming one", () => {
+    const wsol = new PublicKey(WSOL_MINT);
+    const usdc = new PublicKey(USDC_MINT);
+    assert.equal(solSide({ tokenX: { publicKey: wsol }, tokenY: { publicKey: usdc } }), "X");
+    assert.equal(solSide({ tokenX: { publicKey: usdc }, tokenY: { publicKey: wsol } }), "Y");
+    // Neither side is SOL: `amountLamports` has no meaning, and guessing would be a
+    // decimals bug that does not throw.
+    assert.equal(
+      solSide({ tokenX: { publicKey: usdc }, tokenY: { publicKey: Keypair.generate().publicKey } }),
+      null,
+    );
+  });
+
+  it("does not fabricate a signature", async () => {
+    // Unchanged from Stage 1: a no-op returning {signature: "..."} would read as a
+    // working integration in every log, right up until the engine books a position it
+    // never opened. Every signature must come from sendAndConfirm.
     const source = readFileSync(join(srcDir, "services", "onchainExecutor.ts"), "utf8");
-    const stub = source.slice(source.indexOf("export const dlmmExecutor"));
-    assert.ok(!/signature:\s*["'`]/.test(stub), "the DLMM stub fabricates a signature");
+    const adapter = source.slice(source.indexOf("export const dlmmExecutor"));
+    assert.ok(!/signature:\s*["'`]/.test(adapter), "the DLMM adapter fabricates a signature");
+    assert.ok(
+      !/sent:\s*\[\s*\]/.test(adapter),
+      "an operation returns an empty success rather than raising",
+    );
+  });
+
+  it("still demands an authorization on every fund-moving method", () => {
+    // The type-level lock. A convenience overload without ExecutionAuthorization would
+    // turn "are we allowed to spend?" back into a code-review question.
+    const source = readFileSync(join(srcDir, "services", "onchainExecutor.ts"), "utf8");
+    for (const method of ["openPosition", "claimFees", "closePosition"]) {
+      assert.match(
+        source,
+        new RegExp(`${method}\\(\\s*\\n?\\s*auth: ExecutionAuthorization`),
+        `${method} no longer requires an ExecutionAuthorization`,
+      );
+    }
+  });
+
+  it("reports a partial multi-transaction run instead of a clean success", () => {
+    /*
+     * claimSwapFee and removeLiquidity return Transaction[] — a position spanning many
+     * bins does not fit in one. If the third of four lands and the fourth fails, the
+     * fees are partly claimed and the caller must NOT retry blindly.
+     */
+    const landed = [
+      { signature: "sig-a", slot: 1, buildAttempts: 1, priorityMicroLamports: 20_000 },
+    ];
+    const err = new DlmmPartialExecutionError("claimFees", "pos-1", landed, new Error("boom"));
+    assert.match(err.message, /landed 1 of its transactions/);
+    assert.match(err.message, /sig-a/, "the landed signatures are not reported");
+    assert.match(err.message, /CHECK THE POSITION ON-CHAIN BEFORE RETRYING/);
+    assert.deepEqual(err.landed, landed);
   });
 });
 
