@@ -4,10 +4,19 @@ import {
   Keypair,
   PublicKey,
   TransactionExpiredBlockheightExceededError,
+  TransactionMessage,
   VersionedTransaction,
   type BlockhashWithExpiryBlockHeight,
+  type Transaction,
+  type TransactionInstruction,
 } from "@solana/web3.js";
+import BN from "bn.js";
 import bs58 from "bs58";
+// Type-only: erased at compile time, so importing this module still does not pull the
+// DLMM SDK (or Anchor, or spl-token) into memory. The runtime value arrives through
+// `loadDlmmSdk()` below, on first use.
+import type DlmmPool from "@meteora-ag/dlmm";
+import type { LbPosition, StrategyType } from "@meteora-ag/dlmm";
 import { z } from "zod";
 import { env, isLiveTradingEnabled } from "../config/env.js";
 import { getPriorityFeeEstimateSafe } from "./solana.js";
@@ -697,23 +706,48 @@ export async function executeJupiterSwap(
 }
 
 /* ------------------------------------------------------------------ */
-/* Meteora DLMM adapter (STAGE 2 — interface only)                     */
+/* Meteora DLMM adapter (STAGE 2 — implemented, still unreachable)     */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Retained for callers and tests that still reference it. Nothing in this module
+ * throws it any more — the three DLMM operations are implemented against the real
+ * `@meteora-ag/dlmm` types below.
+ */
 export class NotImplementedError extends Error {
   constructor(what: string) {
-    super(
-      `[onchain] ${what} is not implemented. Stage 2: install @meteora-ag/dlmm and build ` +
-        `the instructions against the real SDK types. Do NOT stub this against guessed ` +
-        `instruction layouts — a wrong account order does not throw, it moves funds.`,
-    );
+    super(`[onchain] ${what} is not implemented.`);
     this.name = "NotImplementedError";
+  }
+}
+
+/** Raised when the chain's answer contradicts what the caller asked for. */
+export class DlmmExecutionError extends Error {
+  constructor(message: string) {
+    super(`[onchain/dlmm] ${message}`);
+    this.name = "DlmmExecutionError";
   }
 }
 
 export interface OpenPositionParams {
   poolAddress: string;
+  /**
+   * SOL to deposit, in lamports. Charged against the authorization's per-transaction
+   * ceiling, and routed to whichever side of the pair is wSOL.
+   */
   amountLamports: number;
+  /**
+   * Base units of the OTHER token to deposit. Defaults to 0.
+   *
+   * A DLMM range that brackets the active bin needs BOTH tokens to be two-sided: the
+   * SDK fills bins above the active one from token X and bins below it from token Y.
+   * Funding one side only is legal and lands a real, one-sided position — it is simply
+   * not the balanced LP the paper model simulates. This adapter does not silently swap
+   * to balance the deposit; acquiring the paired token is the caller's decision, and
+   * `executeJupiterSwap` is the path for it.
+   */
+  pairedTokenAmount?: number;
+  /** Human prices (quote per base), the same quantity `DlmmPool.currentPrice` carries. */
   lowerBinPrice: number;
   upperBinPrice: number;
   strategy: "SPOT" | "BID_ASK" | "CURVE";
@@ -732,35 +766,379 @@ export interface ClosePositionParams {
 }
 
 /**
- * The three DLMM operations the live engine will eventually need.
+ * What a DLMM operation actually did.
  *
- * Declared as an interface now so the calling code, the guardlock and the tests can be
- * written and reviewed against a fixed shape, and Stage 2 only has to supply
- * instruction building. Every method takes an `ExecutionAuthorization` for the same
- * reason the Jupiter path does.
+ * `SendResult` alone could not express either half of this, which is why the interface
+ * changed when Stage 2 landed rather than before:
+ *
+ *  - `openPosition` mints a NEW position account (a fresh Keypair the transaction also
+ *    signs). Without returning its address the caller could never claim or close what
+ *    it opened, so the old single-`SendResult` shape was unusable even implemented.
+ *  - `claimSwapFee` and `removeLiquidity` return `Transaction[]`, not one transaction:
+ *    a position spanning many bins does not fit in one. Collapsing that to a single
+ *    signature would report a partial claim as a complete one.
  */
-export interface DlmmExecutor {
-  openPosition(auth: ExecutionAuthorization, params: OpenPositionParams): Promise<SendResult>;
-  claimFees(auth: ExecutionAuthorization, params: ClaimFeesParams): Promise<SendResult>;
-  closePosition(auth: ExecutionAuthorization, params: ClosePositionParams): Promise<SendResult>;
+export interface DlmmSendResult {
+  /** Every transaction that confirmed, in submission order. */
+  sent: SendResult[];
+  /** The position account this operation opened or acted on. */
+  position: string;
 }
 
 /**
- * Stage 2 placeholder. Every method throws.
+ * Raised when a multi-transaction operation confirmed some of its parts and then
+ * failed. The state on-chain is real but incomplete, so the caller must NOT retry
+ * blindly — the same rule `sendAndConfirm` applies to an ambiguous single send.
+ */
+export class DlmmPartialExecutionError extends Error {
+  readonly landed: SendResult[];
+  readonly position: string;
+  constructor(operation: string, position: string, landed: SendResult[], cause: unknown) {
+    super(
+      `[onchain/dlmm] ${operation} on position ${position} landed ${landed.length} of its ` +
+        `transactions and then failed: ${cause instanceof Error ? cause.message : String(cause)}. ` +
+        `Signatures that DID land: ${landed.map((r) => r.signature).join(", ") || "none"}. ` +
+        `CHECK THE POSITION ON-CHAIN BEFORE RETRYING — re-running will repeat the parts ` +
+        `that already succeeded.`,
+    );
+    this.name = "DlmmPartialExecutionError";
+    this.landed = landed;
+    this.position = position;
+  }
+}
+
+/**
+ * The three DLMM operations the live engine will eventually need.
  *
- * Deliberately NOT a stub that "does nothing and returns success": a silent no-op in an
- * execution path reads as a working integration in every log and every test, right up
- * until the engine believes it holds a position it never opened. Throwing is the only
- * honest behaviour for an unimplemented money-moving function.
+ * Every method takes an `ExecutionAuthorization` for the same reason the Jupiter path
+ * does: "did anyone check we are allowed to spend?" is a compile error here, not a
+ * code-review question.
+ */
+export interface DlmmExecutor {
+  openPosition(auth: ExecutionAuthorization, params: OpenPositionParams): Promise<DlmmSendResult>;
+  claimFees(auth: ExecutionAuthorization, params: ClaimFeesParams): Promise<DlmmSendResult>;
+  closePosition(
+    auth: ExecutionAuthorization,
+    params: ClosePositionParams,
+  ): Promise<DlmmSendResult>;
+}
+
+/*
+ * The SDK is loaded on first use, not at import.
+ *
+ * `@meteora-ag/dlmm` drags in Anchor and spl-token. The Stage 1 Jupiter path in this
+ * same module needs none of it, and `scripts/testMicroSwap.ts` would otherwise pay for
+ * a DLMM runtime it never touches. A type-only import at the top keeps every signature
+ * below checked against the real SDK types regardless.
+ */
+let dlmmSdk: Promise<typeof import("@meteora-ag/dlmm")> | null = null;
+
+function loadDlmmSdk(): Promise<typeof import("@meteora-ag/dlmm")> {
+  dlmmSdk ??= import("@meteora-ag/dlmm");
+  return dlmmSdk;
+}
+
+const STRATEGY_TYPE: Record<OpenPositionParams["strategy"], keyof typeof StrategyType> = {
+  SPOT: "Spot",
+  BID_ASK: "BidAsk",
+  CURVE: "Curve",
+};
+
+/**
+ * Rebuilds an SDK-produced legacy `Transaction` as a signed v0 transaction carrying
+ * OUR compute-budget instructions.
+ *
+ * Two things here are load-bearing.
+ *
+ * The SDK attaches its own `setComputeUnitLimit` (it estimates units per call) and
+ * never sets a unit PRICE. Prepending ours without removing theirs would put two
+ * compute-budget instructions of the same kind in one transaction, which the runtime
+ * rejects outright — so the transaction would fail every time, on a detail nothing in
+ * a unit test would surface. Theirs is dropped and ours installed, because the
+ * priority fee is what `sendAndConfirm`'s escalation exists to move.
+ *
+ * And the blockhash comes from the caller rather than from the SDK's own fetch: the
+ * rebroadcast rule depends on the bytes being pinned to the blockhash whose expiry
+ * `sendAndConfirm` is tracking. A transaction carrying a blockhash the retry loop does
+ * not know about could be rebuilt while the original was still landable — the double
+ * spend that loop is written to prevent.
+ */
+function asVersionedTransaction(
+  legacy: Transaction,
+  blockhash: BlockhashWithExpiryBlockHeight,
+  plan: PriorityFeePlan,
+  payer: PublicKey,
+  extraSigners: Keypair[] = [],
+): VersionedTransaction {
+  const withoutComputeBudget: TransactionInstruction[] = legacy.instructions.filter(
+    (ix) => !ix.programId.equals(ComputeBudgetProgram.programId),
+  );
+
+  const message = new TransactionMessage({
+    payerKey: payer,
+    recentBlockhash: blockhash.blockhash,
+    instructions: [...computeBudgetInstructions(plan), ...withoutComputeBudget],
+  }).compileToV0Message();
+
+  const tx = new VersionedTransaction(message);
+  // The wallet signs last and separately: loadWallet() is module-private precisely so
+  // the Keypair never escapes, and signTransaction only ever adds a signature.
+  if (extraSigners.length > 0) tx.sign(extraSigners);
+  return signTransaction(tx);
+}
+
+/** Loads the pool's live state. Read-only; takes no authorization. */
+async function openPool(poolAddress: string): Promise<DlmmPool> {
+  const { default: DLMM } = await loadDlmmSdk();
+  return DLMM.create(getConnection(), new PublicKey(poolAddress));
+}
+
+/**
+ * Converts the engine's human prices into the bin ids the program indexes by.
+ *
+ * `getBinIdFromPrice` takes a price PER LAMPORT, not the human price — it is a raw
+ * logarithm over the bin-step ratio and does no decimal conversion of its own. Feeding
+ * it `DlmmPool.currentPrice` directly would silently place the position in an entirely
+ * unrelated bin range, off by the ratio of the two mints' decimals. `toPricePerLamport`
+ * is the SDK's own conversion and is used for exactly that reason; the arithmetic is
+ * never reimplemented here.
+ *
+ * `min: true` floors and `min: false` ceils, so the range returned always CONTAINS the
+ * requested prices rather than truncating inside them.
+ */
+export interface BinRangeSource {
+  toPricePerLamport(price: number): string;
+  getBinIdFromPrice(price: number, min: boolean): number;
+}
+
+export function binRangeFromPrices(
+  pool: BinRangeSource,
+  lowerPrice: number,
+  upperPrice: number,
+): { minBinId: number; maxBinId: number } {
+  if (!(lowerPrice > 0) || !(upperPrice > 0) || !(upperPrice > lowerPrice)) {
+    throw new DlmmExecutionError(
+      `bin range [${lowerPrice}, ${upperPrice}] is not a positive, increasing range`,
+    );
+  }
+
+  const minBinId = pool.getBinIdFromPrice(Number(pool.toPricePerLamport(lowerPrice)), true);
+  const maxBinId = pool.getBinIdFromPrice(Number(pool.toPricePerLamport(upperPrice)), false);
+
+  if (!Number.isFinite(minBinId) || !Number.isFinite(maxBinId) || maxBinId < minBinId) {
+    throw new DlmmExecutionError(
+      `price range [${lowerPrice}, ${upperPrice}] resolved to an unusable bin range ` +
+        `[${minBinId}, ${maxBinId}]`,
+    );
+  }
+  return { minBinId, maxBinId };
+}
+
+/** Which side of the pair is wSOL, or null when neither is. */
+export function solSide(pool: {
+  tokenX: { publicKey: PublicKey };
+  tokenY: { publicKey: PublicKey };
+}): "X" | "Y" | null {
+  const wsol = new PublicKey(WSOL_MINT);
+  if (pool.tokenX.publicKey.equals(wsol)) return "X";
+  if (pool.tokenY.publicKey.equals(wsol)) return "Y";
+  return null;
+}
+
+/** Finds the caller's position on this pool, or explains that it is not there. */
+async function requirePosition(
+  pool: DlmmPool,
+  owner: PublicKey,
+  positionAddress: string,
+): Promise<LbPosition> {
+  const wanted = new PublicKey(positionAddress);
+  const { userPositions } = await pool.getPositionsByUserAndLbPair(owner);
+  const found = userPositions.find((p: LbPosition) => p.publicKey.equals(wanted));
+
+  if (!found) {
+    /*
+     * Fail rather than proceed. "The RPC did not list it" is not evidence the position
+     * is gone — same fail-closed rule as the anti-rug screen — and acting on a position
+     * we could not read is how an operation targets the wrong account.
+     */
+    throw new DlmmExecutionError(
+      `position ${positionAddress} is not owned by ${owner.toBase58()} on pool ` +
+        `${pool.pubkey.toBase58()}, or could not be read. Refusing to act on it.`,
+    );
+  }
+  return found;
+}
+
+/**
+ * Submits a sequence of SDK transactions one at a time, stopping at the first failure.
+ *
+ * Sequential and not parallel: these transactions touch the same position account, and
+ * the later ones assume the earlier ones landed. A partial run raises
+ * `DlmmPartialExecutionError` carrying the signatures that DID land, because silently
+ * returning the successful subset would report a partial claim as a complete one.
+ */
+async function sendSequentially(
+  auth: ExecutionAuthorization,
+  transactions: Transaction[],
+  context: { operation: string; position: string; extraSigners?: Keypair[] },
+): Promise<SendResult[]> {
+  const landed: SendResult[] = [];
+
+  for (const [index, legacy] of transactions.entries()) {
+    const label = `dlmm ${context.operation} ${index + 1}/${transactions.length}`;
+    try {
+      landed.push(
+        await sendAndConfirm(
+          auth,
+          async ({ blockhash, plan }) =>
+            asVersionedTransaction(legacy, blockhash, plan, auth.wallet, context.extraSigners ?? []),
+          { label },
+        ),
+      );
+    } catch (err) {
+      if (landed.length === 0) throw err;
+      throw new DlmmPartialExecutionError(context.operation, context.position, landed, err);
+    }
+  }
+
+  return landed;
+}
+
+/**
+ * The Meteora DLMM operations, built against the real SDK.
+ *
+ * STILL UNREACHABLE FROM THE ENGINE. Implementing these did not arm anything: the
+ * import-graph test in `src/tests/onchainExecutor.test.ts` still fails the build if
+ * `src/index.ts` can reach this module, `ONCHAIN_EXECUTION_ARMED` still defaults to
+ * false, `authorizeExecution()` is still the only source of an `ExecutionAuthorization`,
+ * and `env.ts` still refuses to boot on `DRY_RUN=false`. What changed is that the
+ * instructions are now real ones produced by the SDK rather than a throw.
  */
 export const dlmmExecutor: DlmmExecutor = {
-  async openPosition(): Promise<SendResult> {
-    throw new NotImplementedError("DLMM openPosition");
+  async openPosition(
+    auth: ExecutionAuthorization,
+    params: OpenPositionParams,
+  ): Promise<DlmmSendResult> {
+    // Before any network call: the SOL leg is a spend, so it faces the ceiling first.
+    assertWithinSpendLimit(auth, params.amountLamports, "dlmm openPosition");
+    const slippageBps = resolveSlippageBps(auth, params.slippageBps);
+
+    const { StrategyType: Strategy } = await loadDlmmSdk();
+    const pool = await openPool(params.poolAddress);
+    const { minBinId, maxBinId } = binRangeFromPrices(
+      pool,
+      params.lowerBinPrice,
+      params.upperBinPrice,
+    );
+
+    const side = solSide(pool);
+    if (side === null) {
+      /*
+       * `amountLamports` is SOL. If neither side of the pair is wSOL there is no
+       * honest way to interpret it, and guessing would deposit a SOL-denominated
+       * number of some other token's base units — a decimals bug that does not throw.
+       */
+      throw new DlmmExecutionError(
+        `pool ${params.poolAddress} has no wSOL side (${pool.tokenX.publicKey.toBase58()} / ` +
+          `${pool.tokenY.publicKey.toBase58()}); amountLamports has no meaning here`,
+      );
+    }
+
+    const paired = new BN(Math.floor(params.pairedTokenAmount ?? 0));
+    const sol = new BN(Math.floor(params.amountLamports));
+
+    const positionKeypair = Keypair.generate();
+    const transaction = await pool.initializePositionAndAddLiquidityByStrategy({
+      positionPubKey: positionKeypair.publicKey,
+      user: auth.wallet,
+      totalXAmount: side === "X" ? sol : paired,
+      totalYAmount: side === "Y" ? sol : paired,
+      strategy: {
+        minBinId,
+        maxBinId,
+        strategyType: Strategy[STRATEGY_TYPE[params.strategy]],
+      },
+      // The SDK takes slippage as a PERCENTAGE; our bound is in bps.
+      slippage: slippageBps / 100,
+    });
+
+    const sent = await sendAndConfirm(
+      auth,
+      async ({ blockhash, plan }) =>
+        asVersionedTransaction(transaction, blockhash, plan, auth.wallet, [positionKeypair]),
+      { label: "dlmm openPosition" },
+    );
+
+    return { sent: [sent], position: positionKeypair.publicKey.toBase58() };
   },
-  async claimFees(): Promise<SendResult> {
-    throw new NotImplementedError("DLMM claimFees");
+
+  async claimFees(
+    auth: ExecutionAuthorization,
+    params: ClaimFeesParams,
+  ): Promise<DlmmSendResult> {
+    const pool = await openPool(params.poolAddress);
+    const position = await requirePosition(pool, auth.wallet, params.positionAddress);
+
+    // Claiming moves fees TO the wallet, so there is no spend to bound here — only the
+    // priority fee, which planPriorityFee already caps.
+    const transactions = await pool.claimSwapFee({ owner: auth.wallet, position });
+
+    if (transactions.length === 0) {
+      throw new DlmmExecutionError(
+        `position ${params.positionAddress} produced no claim transaction — there is ` +
+          `nothing to claim, or the position was read as empty`,
+      );
+    }
+
+    const sent = await sendSequentially(auth, transactions, {
+      operation: "claimFees",
+      position: params.positionAddress,
+    });
+    return { sent, position: params.positionAddress };
   },
-  async closePosition(): Promise<SendResult> {
-    throw new NotImplementedError("DLMM closePosition");
+
+  async closePosition(
+    auth: ExecutionAuthorization,
+    params: ClosePositionParams,
+  ): Promise<DlmmSendResult> {
+    const pool = await openPool(params.poolAddress);
+    const position = await requirePosition(pool, auth.wallet, params.positionAddress);
+
+    const bins = position.positionData.positionBinData;
+    const fromBinId = bins.at(0)?.binId;
+    const toBinId = bins.at(-1)?.binId;
+
+    if (fromBinId === undefined || toBinId === undefined) {
+      throw new DlmmExecutionError(
+        `position ${params.positionAddress} reports no bins; refusing to guess its range`,
+      );
+    }
+
+    /*
+     * 100% (10 000 bps) with `shouldClaimAndClose`, which is one operation on-chain:
+     * withdraw every bin, claim the fees, close the account and reclaim its rent. Doing
+     * it as separate withdraw-then-close calls would leave a funded-but-open position
+     * if the second failed, and the engine would have booked the exit either way.
+     */
+    const transactions = await pool.removeLiquidity({
+      user: auth.wallet,
+      position: position.publicKey,
+      fromBinId,
+      toBinId,
+      bps: new BN(10_000),
+      shouldClaimAndClose: true,
+    });
+
+    if (transactions.length === 0) {
+      throw new DlmmExecutionError(
+        `position ${params.positionAddress} produced no close transaction`,
+      );
+    }
+
+    const sent = await sendSequentially(auth, transactions, {
+      operation: "closePosition",
+      position: params.positionAddress,
+    });
+    return { sent, position: params.positionAddress };
   },
 };

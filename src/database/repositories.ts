@@ -655,3 +655,125 @@ export function getResearchHistory(limit = 30): DailyResearchRow[] {
     .prepare(`SELECT * FROM daily_research_logs ORDER BY report_date DESC LIMIT ?`)
     .all(limit) as DailyResearchRow[];
 }
+
+/* ------------------------------------------------------------------ */
+/* Scan funnel                                                         */
+/* ------------------------------------------------------------------ */
+
+export interface ScanFunnelRecord {
+  /** Pools fetched from Meteora, or null when the cycle never reached the screener. */
+  scanned: number | null;
+  /** `ScreenResult.rejected` bucket map, stored as JSON. */
+  screenRejections: Record<string, number>;
+  candidates: number;
+  cooldownRejected: number;
+  antirugPassed: number;
+  antirugRejected: number;
+  volatilityRejected: number;
+  coverageRejected: number;
+  microRejected: number;
+  reachedDecision: boolean;
+  opened: boolean;
+  skipReason: string | null;
+  positionsChecked: number;
+  positionsClosed: number;
+  durationMs: number;
+}
+
+export interface ScanFunnelRow extends ScanFunnelRecord {
+  id: number;
+  cycleAt: string;
+}
+
+/**
+ * Records one screener cycle's funnel.
+ *
+ * Diagnostic, so it must never be able to fail a trading cycle: the caller wraps it,
+ * and this function keeps no state a later cycle depends on. `scanned` stays null
+ * rather than 0 when the screener never ran, for the same reason `est_gas_cost_usd`
+ * does — "not measured" and "measured zero" are different facts.
+ */
+export function recordScanFunnel(record: ScanFunnelRecord): void {
+  db.prepare(
+    `INSERT INTO scan_funnel_cycles (
+       scanned, screen_rejections, candidates, cooldown_rejected,
+       antirug_passed, antirug_rejected, volatility_rejected,
+       coverage_rejected, micro_rejected, reached_decision, opened,
+       skip_reason, positions_checked, positions_closed, duration_ms
+     ) VALUES (
+       @scanned, @screenRejections, @candidates, @cooldownRejected,
+       @antirugPassed, @antirugRejected, @volatilityRejected,
+       @coverageRejected, @microRejected, @reachedDecision, @opened,
+       @skipReason, @positionsChecked, @positionsClosed, @durationMs
+     )`,
+  ).run({
+    ...record,
+    screenRejections: JSON.stringify(record.screenRejections),
+    reachedDecision: record.reachedDecision ? 1 : 0,
+    opened: record.opened ? 1 : 0,
+  });
+}
+
+interface RawFunnelRow {
+  id: number;
+  cycle_at: string;
+  scanned: number | null;
+  screen_rejections: string | null;
+  candidates: number;
+  cooldown_rejected: number;
+  antirug_passed: number;
+  antirug_rejected: number;
+  volatility_rejected: number;
+  coverage_rejected: number;
+  micro_rejected: number;
+  reached_decision: number;
+  opened: number;
+  skip_reason: string | null;
+  positions_checked: number;
+  positions_closed: number;
+  duration_ms: number | null;
+}
+
+/** Most recent cycles first. `limit` goes through intParam at the API boundary. */
+export function getScanFunnel(limit = 100): ScanFunnelRow[] {
+  const rows = db
+    .prepare(`SELECT * FROM scan_funnel_cycles ORDER BY id DESC LIMIT ?`)
+    .all(limit) as RawFunnelRow[];
+
+  return rows.map((r) => ({
+    id: r.id,
+    cycleAt: r.cycle_at,
+    scanned: r.scanned,
+    // A row written before this column existed, or by a failed write, reads as {} —
+    // never as a fabricated bucket map.
+    screenRejections: parseRejections(r.screen_rejections),
+    candidates: r.candidates,
+    cooldownRejected: r.cooldown_rejected,
+    antirugPassed: r.antirug_passed,
+    antirugRejected: r.antirug_rejected,
+    volatilityRejected: r.volatility_rejected,
+    coverageRejected: r.coverage_rejected,
+    microRejected: r.micro_rejected,
+    reachedDecision: r.reached_decision === 1,
+    opened: r.opened === 1,
+    skipReason: r.skip_reason,
+    positionsChecked: r.positions_checked,
+    positionsClosed: r.positions_closed,
+    durationMs: r.duration_ms ?? 0,
+  }));
+}
+
+function parseRejections(raw: string | null): Record<string, number> {
+  if (!raw) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === "number" && Number.isFinite(v)) out[k] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}

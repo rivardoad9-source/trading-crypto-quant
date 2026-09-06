@@ -10,6 +10,7 @@ import {
   getLatestResearch,
   getPositionById,
   getResearchHistory,
+  getScanFunnel,
 } from "../database/repositories.js";
 import { computeOverview } from "../services/overview.js";
 import { computeLiveAnalytics } from "../services/analytics.js";
@@ -294,6 +295,17 @@ export function buildServer(): FastifyInstance {
         createdAt: r.created_at,
       })),
     };
+  });
+
+  /*
+   * The entry funnel, one row per screener cycle. Read-only diagnostics: it exists so
+   * a question like "what actually rejected everything last night" is answered from
+   * data rather than by parsing PM2 stdout. `limit` goes through intParam like every
+   * other query number — Number("1e999") is Infinity and better-sqlite3 rejects it.
+   */
+  app.get<{ Querystring: { limit?: string } }>("/api/funnel", async (req) => {
+    const limit = intParam(req.query.limit, 100, 1, 1_000);
+    return { cycles: getScanFunnel(limit) };
   });
 
   /*

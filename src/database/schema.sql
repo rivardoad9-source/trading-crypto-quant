@@ -47,6 +47,39 @@ CREATE TABLE IF NOT EXISTS daily_pnl_snapshots (
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- One row per screener cycle: the full entry funnel, from pools fetched to the
+-- decision. Diagnostic only — nothing in the trading path reads it back.
+--
+-- It exists because the funnel was previously reconstructible only by parsing PM2
+-- stdout, and the one step that mattered most was not in the log at all: `screenPools`
+-- computed its rejection buckets and `seekNewEntry` discarded them, so the 600 -> ~20
+-- narrowing could only be quoted as a nominal figure. `screen_rejections` is the JSON
+-- of that bucket map; it is JSON rather than columns because the bucket list is the
+-- screener's business and will grow with it, and a schema change per new gate would
+-- make adding a gate needlessly expensive.
+--
+-- NULL is not zero here either: `scanned` is NULL when the cycle never reached the
+-- screener (paused, or at capacity), which is a different fact from "scanned nothing".
+CREATE TABLE IF NOT EXISTS scan_funnel_cycles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cycle_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    scanned INTEGER,
+    screen_rejections TEXT,               -- JSON: {"lowTvl": 412, "highTvl": 9, ...}
+    candidates INTEGER DEFAULT 0,         -- survivors after the quantitative screen
+    cooldown_rejected INTEGER DEFAULT 0,
+    antirug_passed INTEGER DEFAULT 0,
+    antirug_rejected INTEGER DEFAULT 0,
+    volatility_rejected INTEGER DEFAULT 0,
+    coverage_rejected INTEGER DEFAULT 0,  -- the 2.5x MIN_FEE_COST_COVERAGE gate
+    micro_rejected INTEGER DEFAULT 0,     -- the live $1.50 net-PnL floor
+    reached_decision INTEGER DEFAULT 0,   -- 1 when the LLM was actually consulted
+    opened INTEGER DEFAULT 0,
+    skip_reason TEXT,
+    positions_checked INTEGER DEFAULT 0,
+    positions_closed INTEGER DEFAULT 0,
+    duration_ms INTEGER
+);
+
 -- Columns added after the initial schema are handled by the migration step in db.ts,
 -- so a pre-existing database is upgraded in place rather than recreated. Those include
 -- the anti-rug screen (top10_holder_pct, mint_authority_revoked, freeze_authority_revoked,
@@ -60,3 +93,4 @@ CREATE INDEX IF NOT EXISTS idx_positions_closed_at ON simulated_positions(closed
 CREATE INDEX IF NOT EXISTS idx_positions_opened_at ON simulated_positions(opened_at);
 CREATE INDEX IF NOT EXISTS idx_research_date       ON daily_research_logs(report_date);
 CREATE INDEX IF NOT EXISTS idx_snapshot_date       ON daily_pnl_snapshots(date);
+CREATE INDEX IF NOT EXISTS idx_funnel_cycle_at     ON scan_funnel_cycles(cycle_at);

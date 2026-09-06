@@ -3,6 +3,7 @@ import { z } from "zod";
 import { env } from "../config/env.js";
 import {
   assessMicroCapitalFriction,
+  chargeRoundTripGasUsd,
   liveMicroCapital,
   sizeNextPositionSol,
 } from "../config/liveConfig.js";
@@ -57,6 +58,7 @@ import {
   getPositionById,
   hasActivePositionForPool,
   insertPosition,
+  recordScanFunnel,
   updatePositionMetrics,
 } from "../database/repositories.js";
 import { reflectOnPosition, runPostMortemSweep } from "./postMortemAgent.js";
@@ -954,6 +956,16 @@ async function closeAllPositionsLocked(options: {
 
 export interface EntrySummary {
   scanned: number;
+  /**
+   * Why the quantitative screener dropped the other `scanned - candidates` pools,
+   * keyed by `ScreenResult.rejected` bucket (lowTvl, highTvl, tooYoung, ageUnknown, …).
+   *
+   * `screenPools` has always computed this and `seekNewEntry` has always discarded it,
+   * so the 600 -> ~20 narrowing was the one step of the funnel no log could explain:
+   * auditing the 67h Hermes run had to quote a nominal 600/cycle because nothing
+   * recorded the real figure. Empty when the cycle never reached the screener.
+   */
+  screenRejections: Record<string, number>;
   candidates: number;
   /** Candidates remaining after the anti-rug screen. */
   safeCandidates: number;
@@ -1043,6 +1055,7 @@ function resolveEntrySizing(): EntrySizing {
 async function seekNewEntry(): Promise<EntrySummary> {
   const summary: EntrySummary = {
     scanned: 0,
+    screenRejections: {},
     candidates: 0,
     safeCandidates: 0,
     cooldownRejected: [],
@@ -1064,6 +1077,7 @@ async function seekNewEntry(): Promise<EntrySummary> {
   const pools = await fetchLivePools({ pageSize: 200, pages: 3 });
   const screened = screenPools(pools, defaultThresholds());
   summary.scanned = screened.scanned;
+  summary.screenRejections = screened.rejected;
 
   // Never stack a second simulated position on a pool already held.
   const held = screened.candidates.filter((c) => !hasActivePositionForPool(c.address));
@@ -1248,10 +1262,36 @@ async function seekNewEntry(): Promise<EntrySummary> {
    * strategy churn itself into a loss in the first place.
    */
   const notionalUsd = sizing.sizeSol * solPriceUsd;
-  const gasRoundTripUsd =
+
+  /*
+   * `priorityFee.totalUsd` prices ONE transaction, so a round trip is twice it. Both
+   * gates below are handed this same figure; the micro gate used to receive the
+   * one-way number, which understated its cost base (harmlessly, because the 0.008 SOL
+   * floor dominated it by ~800x, but wrong is wrong).
+   */
+  const liveRoundTripGasUsd =
     priorityFee?.totalUsd !== null && priorityFee?.totalUsd !== undefined
       ? priorityFee.totalUsd * 2
-      : 0.0035 * 2 * solPriceUsd;
+      : null;
+
+  /*
+   * The gas the 2.5x coverage gate is charged.
+   *
+   * When the live profile is ARMED this is `chargeRoundTripGasUsd` — the identical
+   * basis `requiredFeeTvlRatioForCoverage` uses to compute the bar printed at boot, so
+   * the advertised requirement and the enforced one are the same number. Before this,
+   * boot advertised 9.00% while the gate enforced 5.1%; see
+   * `reports/DRY_RUN_72H_REPORT.md`.
+   *
+   * When the profile is DISARMED the pre-profile expression is kept byte-for-byte,
+   * including its 0.0035 SOL conservative fallback. The live floor is a live-capital
+   * rule: letting it reach paper mode would silently rewrite every dry run and every
+   * cached sweep result, which is the same reason `defaultBacktestConfig()` keeps its
+   * guardrails inert.
+   */
+  const gasRoundTripUsd = liveMicroCapital.enabled
+    ? chargeRoundTripGasUsd(liveRoundTripGasUsd, solPriceUsd).gasRoundTripUsd
+    : (liveRoundTripGasUsd ?? 0.0035 * 2 * solPriceUsd);
 
   const affordable: typeof top = [];
   for (const entry of top) {
@@ -1309,7 +1349,7 @@ async function seekNewEntry(): Promise<EntrySummary> {
       const micro = assessMicroCapitalFriction({
         notionalUsd,
         feeTvlRatio24h: entry.pool.feeTvlRatio24h,
-        gasRoundTripUsd: priorityFee?.totalUsd ?? null,
+        gasRoundTripUsd: liveRoundTripGasUsd,
         solPriceUsd,
       });
 
@@ -1503,6 +1543,67 @@ export interface CycleOptions {
 }
 
 /**
+ * Emits the cycle's entry funnel to the log and to `scan_funnel_cycles`.
+ *
+ * Two sinks on purpose. The `[funnel]` line is what an operator reads over SSH; the
+ * table is what a later audit queries, and it carries the screener bucket map the log
+ * line cannot fit. Reconstructing the last 67h funnel from PM2 stdout alone required
+ * counting 662 stderr lines backwards and hoping nothing was interleaved — the row is
+ * so that never has to be done again.
+ *
+ * Every failure here is swallowed. This is diagnostics: a full disk or a locked
+ * database must not turn a completed trading cycle into a reported failure, and there
+ * is no state a later cycle reads back.
+ */
+function recordFunnel(entry: EntrySummary, monitor: MonitorSummary, durationMs: number): void {
+  // Distinguishes "screener ran and found nothing" from "screener never ran".
+  const screenerRan = Object.keys(entry.screenRejections).length > 0 || entry.scanned > 0;
+
+  const rejections = Object.entries(entry.screenRejections)
+    .filter(([, n]) => n > 0)
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, n]) => `${k}=${n}`)
+    .join(" ");
+
+  console.log(
+    `[funnel] scanned ${screenerRan ? entry.scanned : "n/a"} -> ` +
+      `candidates ${entry.candidates} -> ` +
+      `cooldown -${entry.cooldownRejected.length} -> ` +
+      `antirug ${entry.safeCandidates}/-${entry.rugRejected.length} -> ` +
+      `vol -${entry.volatilityRejected.length} -> ` +
+      `coverage -${entry.breakevenRejected.length} -> ` +
+      `micro -${entry.microFrictionRejected.length} -> ` +
+      `${entry.opened ? "OPENED" : "none"}` +
+      (rejections ? ` | screen: ${rejections}` : "") +
+      ` | ${durationMs}ms`,
+  );
+
+  try {
+    recordScanFunnel({
+      scanned: screenerRan ? entry.scanned : null,
+      screenRejections: entry.screenRejections,
+      candidates: entry.candidates,
+      cooldownRejected: entry.cooldownRejected.length,
+      antirugPassed: entry.safeCandidates,
+      antirugRejected: entry.rugRejected.length,
+      volatilityRejected: entry.volatilityRejected.length,
+      coverageRejected: entry.breakevenRejected.length,
+      microRejected: entry.microFrictionRejected.length,
+      reachedDecision: entry.decision !== null,
+      opened: entry.opened,
+      skipReason: entry.skipReason ?? null,
+      positionsChecked: monitor.checked,
+      positionsClosed: monitor.closed,
+      durationMs,
+    });
+  } catch (err) {
+    console.warn(
+      `[funnel] could not record cycle: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+/**
  * One full paper-trading cycle: mark open positions, then look for a new entry.
  * Runs every 30 minutes via cron; also exported for manual triggering.
  */
@@ -1515,6 +1616,7 @@ export async function runDlmmTradingCycle(
   }
 
   console.log("[dlmm] cycle start");
+  const startedAt = Date.now();
 
   try {
     /*
@@ -1534,6 +1636,7 @@ export async function runDlmmTradingCycle(
     const entry = isEnginePaused()
       ? {
           scanned: 0,
+          screenRejections: {},
           candidates: 0,
           safeCandidates: 0,
           cooldownRejected: [],
@@ -1563,6 +1666,8 @@ export async function runDlmmTradingCycle(
           : "") +
         `opened ${entry.opened ? "yes" : `no (${entry.skipReason ?? "n/a"})`}`,
     );
+
+    recordFunnel(entry, monitor, Date.now() - startedAt);
 
     return { monitor, entry, postMortemsBackfilled };
   } catch (err) {
