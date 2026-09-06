@@ -1843,9 +1843,15 @@ function recordFunnel(entry: EntrySummary, monitor: MonitorSummary, durationMs: 
 export async function runDlmmTradingCycle(
   options: CycleOptions = {},
 ): Promise<CycleResult | null> {
-  // Belt-and-braces: env.ts already refuses to boot unless DRY_RUN is true.
-  if (!env.DRY_RUN) {
-    throw new Error("[dlmm] refusing to run: DRY_RUN is false and live execution is unimplemented.");
+  // Belt-and-braces: env.ts's guardlock refuses to boot on DRY_RUN=false unless live
+  // execution is armed (ONCHAIN_EXECUTION_ARMED=true plus a signing key — see
+  // isLiveTradingEnabled). Reaching this function with DRY_RUN=false but no live path
+  // is a programming error, so refuse rather than paper-trade real money.
+  if (!env.DRY_RUN && !isLiveExecutionActive()) {
+    throw new Error(
+      "[dlmm] refusing to run: DRY_RUN=false but live execution is not armed " +
+        "(need ONCHAIN_EXECUTION_ARMED=true and the signing key in the environment).",
+    );
   }
 
   console.log("[dlmm] cycle start");

@@ -115,19 +115,13 @@ export async function runLivePreflight(deps: PreflightDeps = {}): Promise<Prefli
   for (const line of envelope) log(`[preflight]   ${line}`);
 
   /*
-   * Stated, not enforced. `env.ts` still refuses DRY_RUN=false and nothing here signs
-   * a transaction, so the absence of a key blocks nothing today. Saying so at boot is
-   * what stops "live profile armed" from being misread as "live execution running".
+   * Stated, not enforced. The GUARDLOCK in env.ts already pairs DRY_RUN=false with
+   * ONCHAIN_EXECUTION_ARMED=true before boot, so this line only records whether the
+   * signing key is present in the environment.
    */
-  log(
-    `[preflight]   signing key: ${
-      hasLiveSigningKey() ? "present in env (unused: no execution path exists)" : "not configured"
-    }`,
-  );
-  if (!env.DRY_RUN) {
-    // Unreachable while env.ts refuses to boot on DRY_RUN=false; kept as a tripwire in
-    // case that refusal is ever relaxed before an execution path is reviewed.
-    log("[preflight]   WARNING: DRY_RUN is false but this build cannot sign transactions");
+  log(`[preflight]   signing key: ${hasLiveSigningKey() ? "present in env" : "not configured"}`);
+  if (!env.DRY_RUN && !hasLiveSigningKey()) {
+    log("[preflight]   WARNING: DRY_RUN=false but no signing key — first execution will fail to arm");
   }
 
   if (!config.walletAddress) {
