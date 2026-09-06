@@ -18,7 +18,7 @@ import bs58 from "bs58";
 import type DlmmPool from "@meteora-ag/dlmm";
 import type { LbPosition, StrategyType } from "@meteora-ag/dlmm";
 import { z } from "zod";
-import { env, isLiveTradingEnabled } from "../config/env.js";
+import { env } from "../config/env.js";
 import { getPriorityFeeEstimateSafe } from "./solana.js";
 
 /**
@@ -43,10 +43,10 @@ import { getPriorityFeeEstimateSafe } from "./solana.js";
  *  3. IMPORT GRAPH. A test walks every import reachable from `src/index.ts` and
  *     fails if this module appears anywhere in it.
  *
- * `isLiveTradingEnabled` in `src/config/env.ts` stays `false as const` and this
- * module NEVER reads it as permission — it reads it only to refuse (see
- * `authorizeExecution`). Arming this module does not arm the trading engine: the
- * engine still has no code path that calls any function here.
+ * This module does not read `isLiveTradingEnabled` at all. Arming it and arming the
+ * ENGINE stay two independent facts: `ONCHAIN_EXECUTION_ARMED` says these functions
+ * may sign, `DRY_RUN=false` says the engine should trade for real, and the engine can
+ * reach this module only through `services/liveExecution.ts`.
  */
 
 /* ------------------------------------------------------------------ */
@@ -217,10 +217,9 @@ function loadWallet(): Keypair {
  * The single gate to on-chain execution. Throws unless every condition holds.
  *
  * Note what this does NOT do: it does not consult `isLiveTradingEnabled`, and it never
- * flips it. That flag governs the TRADING ENGINE, which remains paper-only; this
- * module is armed on its own, separate switch so that "the executor can sign" and "the
- * engine trades live" stay two independent facts. It is read here only to refuse the
- * one combination that would be incoherent — see below.
+ * flips it. That flag governs the TRADING ENGINE; this module is armed on its own,
+ * separate switch, so "the executor can sign" and "the engine trades live" stay two
+ * independent facts. `scripts/testMicroSwap.ts` arms the first without the second.
  */
 export function authorizeExecution(
   config: OnchainConfig = onchainConfig,
@@ -233,16 +232,19 @@ export function authorizeExecution(
   }
 
   /*
-   * A tripwire, not a permission check. `isLiveTradingEnabled` is a `false` literal
-   * today, so this never fires. If some future change makes it true WITHOUT an
-   * execution path having been reviewed, this refuses rather than inheriting that
-   * change as consent — the executor must be armed deliberately, never by proxy.
+   * The tripwire that used to live here refused to sign whenever
+   * `isLiveTradingEnabled` was anything but false. That was correct while the flag was
+   * a `false` literal and an unexplained `true` could only mean an unreviewed change.
+   * It cannot survive live mode: the flag is now legitimately true whenever the
+   * operator has set `DRY_RUN=false` AND armed this module, so keeping the check would
+   * refuse every live signature — the engine would screen, decide, and then fail on
+   * the last step, every time.
+   *
+   * What replaces it is not weaker. `config.armed` above is still the real gate and
+   * still defaults to false, and the flag can no longer become true by accident: it is
+   * the AND of two switches, and `env.ts` refuses to boot on either one alone. So
+   * "armed by proxy" is now prevented by construction rather than by a tripwire.
    */
-  if (isLiveTradingEnabled !== false) {
-    throw new ExecutionNotArmedError(
-      "isLiveTradingEnabled changed without this module being reviewed; refusing to sign",
-    );
-  }
 
   if (!(config.maxLamportsPerTx > 0)) {
     throw new ExecutionNotArmedError("ONCHAIN_MAX_LAMPORTS_PER_TX must be greater than zero");

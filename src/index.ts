@@ -9,6 +9,10 @@ import { startApiServer, stopApiServer } from "./api/server.js";
 import { startTelegramCommands, stopTelegramCommands } from "./services/telegramCommands.js";
 import { liveMicroCapital } from "./config/liveConfig.js";
 import { InsufficientGasReserveError, runLivePreflight } from "./services/livePreflight.js";
+import {
+  describeLiveExecutionBlockers,
+  isLiveExecutionActive,
+} from "./services/liveExecution.js";
 import { fetchSolPriceUsd } from "./services/marketData.js";
 import { getClosedPositions } from "./database/repositories.js";
 import { describeStartingBalance } from "./config/startingBalance.js";
@@ -66,6 +70,31 @@ function banner(): void {
  */
 async function preflight(): Promise<void> {
   if (!liveMicroCapital.enabled) return;
+
+  /*
+   * Configuration blockers before the funding gate, because these are the silent
+   * ones: a spend ceiling below the position size does not misbehave, it lets every
+   * entry pass the screen and the LLM and then fail on the last step, so the operator
+   * watches a healthy-looking engine that never opens anything. Refusing here costs a
+   * restart; discovering it later costs a day of scanning.
+   */
+  const blockers = describeLiveExecutionBlockers();
+  if (blockers.length > 0) {
+    console.error("\n[main] LIVE EXECUTION is armed but cannot work as configured:\n");
+    for (const b of blockers) console.error(`  - ${b}`);
+    console.error("\n[main] refusing to start.\n");
+    process.exit(1);
+  }
+
+  if (isLiveExecutionActive()) {
+    console.warn(
+      "\n[main] *** LIVE EXECUTION ARMED — THIS ENGINE WILL SPEND REAL SOL ***\n" +
+        `[main]     position size : ${liveMicroCapital.maxPositionSol} SOL x ` +
+        `${liveMicroCapital.maxConcurrentPositions}\n` +
+        "[main]     every entry swaps half the SOL into the pool's other token, then\n" +
+        "[main]     opens a real DLMM position. Exits close it on-chain.\n",
+    );
+  }
 
   // Best-effort, and only to render the envelope summary. A missing price must not
   // itself block a start: the balance floor is denominated in SOL, not USD.

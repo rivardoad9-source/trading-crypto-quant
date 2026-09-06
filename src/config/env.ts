@@ -48,6 +48,22 @@ const booleanish = (defaultValue: boolean) =>
       return ["true", "1", "yes", "on"].includes(v.trim().toLowerCase());
     });
 
+/**
+ * Whether the on-chain executor is armed, read straight from the environment.
+ *
+ * `ONCHAIN_EXECUTION_ARMED` is owned by the executor's own schema in
+ * `services/onchainExecutor.ts`. This module deliberately does NOT import that one:
+ * doing so would pull the signer into the engine's import graph through the config
+ * layer, which is the exact edge `onchainExecutor.test.ts` polices. Duplicating one
+ * boolean parse is the cheaper of the two costs, and it is parsed the same way
+ * (`booleanish`) so the two cannot disagree about what "true" means.
+ */
+function armedInEnvironment(): boolean {
+  const raw = process.env.ONCHAIN_EXECUTION_ARMED;
+  if (raw === undefined || raw.trim() === "") return false;
+  return ["true", "1", "yes", "on"].includes(raw.trim().toLowerCase());
+}
+
 const numeric = (defaultValue: number) =>
   z
     .string()
@@ -329,14 +345,35 @@ const EnvSchema = z
     DATABASE_PATH: z.string().default("./data/flowmetrix.db"),
   })
   .superRefine((cfg, ctx) => {
-    // Live mode is deliberately not implemented. Refuse to boot rather than half-arm it.
-    if (!cfg.DRY_RUN) {
+    /*
+     * `DRY_RUN=false` is now supported: Stage 1 (signing, priority fees, send/confirm,
+     * Jupiter) and Stage 2 (the DLMM adapter) are both implemented, and the engine is
+     * wired to them through `src/services/liveExecution.ts`.
+     *
+     * What replaced the blanket refusal is a narrower one. Live mode needs BOTH
+     * switches: `DRY_RUN=false` says the engine should trade for real, and
+     * `ONCHAIN_EXECUTION_ARMED=true` says the executor may sign. Half of that pair is
+     * always a misconfiguration, and the dangerous half is silent — an engine that
+     * believes it is live while nothing can sign would take entry decisions, fail to
+     * execute them, and (before this) still write rows describing positions that do
+     * not exist. Refusing to boot is the same reasoning the original refusal had; only
+     * the condition changed.
+     */
+    if (!cfg.DRY_RUN && !armedInEnvironment()) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["DRY_RUN"],
         message:
-          "DRY_RUN=false is not supported: live execution is not implemented. " +
-          "This engine is paper-trading only and never signs a Solana transaction.",
+          "DRY_RUN=false requires ONCHAIN_EXECUTION_ARMED=true. Live trading needs an " +
+          "executor that can actually sign; arming only one of the two would leave the " +
+          "engine believing it trades live while every execution fails.",
+      });
+    }
+    if (!cfg.DRY_RUN && !cfg.SOLANA_PRIVATE_KEY) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["SOLANA_PRIVATE_KEY"],
+        message: "DRY_RUN=false requires SOLANA_PRIVATE_KEY: live trading must be able to sign.",
       });
     }
     if (cfg.TAKE_PROFIT_PCT <= 0) {
@@ -383,8 +420,21 @@ if (!parsed.success) {
 
 export const env: AppEnv = parsed.data;
 
-/** True when the process is allowed to touch real funds. Always false in this build. */
-export const isLiveTradingEnabled = false as const;
+/**
+ * True when the process is allowed to touch real funds.
+ *
+ * Both switches, never one. `DRY_RUN=false` is the engine's intent;
+ * `ONCHAIN_EXECUTION_ARMED=true` is the executor's consent. The env schema refuses to
+ * boot on either half alone, so by the time this is read the pair is already coherent
+ * — this constant restates the condition rather than deciding it.
+ *
+ * Read straight from `process.env` rather than from `env`, because
+ * `ONCHAIN_EXECUTION_ARMED` belongs to the executor's own schema in
+ * `services/onchainExecutor.ts`, and importing that module here would put the signer
+ * back into the engine's import graph through the config layer — the exact edge the
+ * isolation test exists to police.
+ */
+export const isLiveTradingEnabled: boolean = !env.DRY_RUN && armedInEnvironment();
 
 export const hasDeepSeek = Boolean(env.DEEPSEEK_API_KEY);
 export const hasTelegram = Boolean(env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID);

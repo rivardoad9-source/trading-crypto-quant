@@ -2,14 +2,18 @@ import { z } from "zod";
 import { env } from "./env.js";
 
 /**
- * Live micro-capital profile: 1 SOL of real money, not the $1,000 paper baseline.
+ * Live micro-capital profile: 1.15 SOL of real money, not the $1,000 paper baseline.
  *
- * This module is a CONFIGURATION LAYER ONLY. It does not enable live trading and
- * cannot: `env.ts` refuses to boot on `DRY_RUN=false`, `isLiveTradingEnabled` is a
- * `false` literal, and no code path in this repository signs, serialises or submits a
- * Solana transaction. Arming this profile changes how the engine SIZES and SCREENS,
- * so the dry run rehearses the live envelope before any execution code exists. It
- * does not move funds.
+ * This module is a CONFIGURATION LAYER. It decides how the engine SIZES and SCREENS;
+ * it does not itself sign anything. What changed when live execution landed is that
+ * the numbers here are no longer hypothetical — `LIVE_MAX_POSITION_SOL` is now an
+ * amount of real SOL that `services/liveExecution.ts` will deposit into a real DLMM
+ * position, so an error in this file is an error in the size of a real trade.
+ *
+ * Three separate switches still have to agree before any of that happens:
+ * `LIVE_MICRO_CAPITAL=true` (this profile), `DRY_RUN=false` (the engine trades for
+ * real) and `ONCHAIN_EXECUTION_ARMED=true` (the executor may sign). `env.ts` refuses
+ * to boot on any incoherent combination of the last two.
  *
  * Everything here defaults to INERT. `LIVE_MICRO_CAPITAL=false` (the default) leaves
  * sizing, the friction gate and startup byte-identical to the paper engine — the same
@@ -64,10 +68,18 @@ const LiveConfigSchema = z
     LIVE_MICRO_CAPITAL: booleanish(false),
 
     /* ---- Capital & position sizing ---- */
-    /** Total capital base, in SOL. The account, not a notional baseline. */
-    LIVE_CAPITAL_SOL: numeric(1.0),
     /**
-     * Ceiling on one position, in SOL. 0.50 = 50% of a 1 SOL book.
+     * Total capital base, in SOL. The account, not a notional baseline.
+     *
+     * 1.15 rather than 1.00 because live execution has costs the paper model never
+     * had. A DLMM open pays RENT before it pays anything else: 0.0574 SOL for the
+     * position account, 0.0714 per bin array the range touches that is not already
+     * initialised, and 0.0020 for the paired token's ATA. Most of it comes back on
+     * close, but it has to be there to open at all.
+     */
+    LIVE_CAPITAL_SOL: numeric(1.15),
+    /**
+     * Ceiling on one position, in SOL. 0.80 of a 1.15 SOL book.
      *
      * This is the lever for micro-capital friction, and it is the RIGHT one. Gas is
      * per transaction and does not shrink with the position, so a bigger position
@@ -75,12 +87,19 @@ const LiveConfigSchema = z
      * Concentrating the book into one larger position therefore lowers the fee yield
      * a pool must show, without touching a single guardrail. Loosening the gates would
      * have bought the same candidate count by lowering the bar instead.
-     */
-    LIVE_MAX_POSITION_SOL: numeric(0.5),
-    /**
-     * Concurrency ceiling. 1 x 0.50 = 0.50 SOL of maximum simultaneous exposure.
      *
-     * One position, not three. At 1 SOL of capital, three concurrent positions means
+     * 0.80, not the 1.0 first asked for. 1.0 does not fit: it exceeds the deployable
+     * capital (1.15 - 0.15 reserve = 1.00, so a 1.0 position touches the reserve and
+     * `parseLiveConfig` refuses the profile), and against a 1.1479 SOL wallet it
+     * leaves nothing for the ~0.20 SOL of worst-case rent above. The return on the
+     * last 0.20 SOL is small anyway: the coverage bar is 7.5% at 0.80 and 7.0% at
+     * 1.00, against 9.0% at 0.50.
+     */
+    LIVE_MAX_POSITION_SOL: numeric(0.8),
+    /**
+     * Concurrency ceiling. 1 x 0.80 = 0.80 SOL of maximum simultaneous exposure.
+     *
+     * One position, not three. At this size, three concurrent positions would mean
      * three sets of round-trip gas against a third of the notional each — the split
      * multiplies the fixed cost the size increase above exists to dilute. It also
      * matches `defaultBacktestConfig()`'s `maxConcurrentPositions: 1`, so the harness
