@@ -4,6 +4,7 @@ import { liveMicroCapital, LAMPORTS_PER_SOL } from "../config/liveConfig.js";
 import {
   WSOL_MINT,
   authorizeExecution,
+  binRangeFromPrices,
   dlmmExecutor,
   executeJupiterSwap,
   getConnection,
@@ -55,27 +56,67 @@ export interface LiveOpenOutcome {
  *
  * This is the one partial state that costs money quietly. The wallet is no longer
  * holding SOL — it is holding some quantity of a memecoin it acquired purely in order
- * to provide liquidity, and nothing is going to sell it back automatically. It must be
- * loud, and it must name the token, or the balance simply sits there.
+ * to provide liquidity. The engine now ATTEMPTS an automatic sell-back to SOL before
+ * raising (best effort, thin pools can still fail), but the alert must stay loud and
+ * must name the token, or any balance the rescue could not move simply sits there.
  */
 export class StrandedSwapError extends Error {
   readonly mint: string;
   readonly amount: string;
   readonly swapSignature: string;
-  constructor(mint: string, amount: string, swapSignature: string, cause: unknown) {
+  readonly rescueSignature: string | null;
+  readonly rescueError: string | null;
+  constructor(
+    mint: string,
+    amount: string,
+    swapSignature: string,
+    cause: unknown,
+    rescueSignature: string | null = null,
+    rescueError: string | null = null,
+  ) {
+    const rescue =
+      rescueSignature !== null
+        ? `Auto-unwind back to SOL submitted (${rescueSignature}).`
+        : rescueError !== null
+          ? `Auto-unwind back to SOL FAILED (${rescueError}). Sell it back or open the position by hand — do NOT assume the SOL is still SOL.`
+          : `Auto-unwind found no paired balance to sell. Sell it back or open the position by hand — do NOT assume the SOL is still SOL.`;
     super(
       `[live] the balancing swap CONFIRMED but the position open failed. The wallet now ` +
-        `holds ${amount} base units of ${mint} that nothing will unwind automatically ` +
-        `(swap ${swapSignature}). Sell it back or open the position by hand — do NOT ` +
-        `assume the SOL is still SOL. Cause: ` +
-        `${cause instanceof Error ? cause.message : String(cause)}`,
+        `holds ${amount} base units of ${mint} that nothing monitors (swap ${swapSignature}). ` +
+        `${rescue} Cause: ${cause instanceof Error ? cause.message : String(cause)}`,
     );
     this.name = "StrandedSwapError";
     this.mint = mint;
     this.amount = amount;
     this.swapSignature = swapSignature;
+    this.rescueSignature = rescueSignature;
+    this.rescueError = rescueError;
   }
 }
+
+/**
+ * The DLMM program creates ONE position account per initializePosition call and that
+ * account spans at most `MAX_BIN_PER_POSITION` (70) bins — IDL constant, verified
+ * on-chain by simulation: width 74 is rejected by the program ("InvalidPositionWidth"),
+ * width 100+ dies in the runtime ("realloc limited to 10240 in inner instructions"),
+ * width 1-70 initialises cleanly. The engine's -45%/+15% price range maps to a bin
+ * width that grows as the pool's bin_step shrinks, and below ~106 bps it exceeds 70 —
+ * the open then fails AFTER the balancing swap has already spent the SOL (7 Sep 2026:
+ * 0.4 SOL stranded as an unmonitored memecoin). Raising this lets the entry be skipped
+ * BEFORE any swap when the range cannot fit in one position.
+ */
+export class BinWidthExceededError extends Error {
+  constructor(pairName: string, binWidth: number, poolAddress: string) {
+    super(
+      `[live] ${pairName} needs ${binWidth} bins, over the DLMM one-position maximum of ` +
+        `${MAX_DLMM_POSITION_BINS} (pool ${poolAddress}); skipped before any swap`,
+    );
+    this.name = "BinWidthExceededError";
+  }
+}
+
+/** Hard on-chain limit: the DLMM program IDL's MAX_BIN_PER_POSITION. */
+const MAX_DLMM_POSITION_BINS = 70;
 
 /**
  * Reads a token balance from the chain rather than trusting the swap's quote.
@@ -135,7 +176,21 @@ export async function openLivePosition(params: {
   const swapLamports = Math.floor(totalLamports / 2);
   const depositSolLamports = totalLamports - swapLamports;
 
-  const { pairedMint, pairedTokenProgram } = await describePair(params.poolAddress);
+  const { pairedMint, pairedTokenProgram, binWidth } = await describePair(
+    params.poolAddress,
+    params.lowerBinPrice,
+    params.upperBinPrice,
+  );
+
+  /*
+   * Gate BEFORE the balancing swap spends anything. One DLMM position account holds
+   * at most 70 bins; a wider range makes the open fail after the swap has already
+   * converted SOL into the paired token, stranding an unmonitored memecoin balance.
+   * `seekNewEntry` treats BinWidthExceededError as a routine skip, not a fault.
+   */
+  if (binWidth > MAX_DLMM_POSITION_BINS) {
+    throw new BinWidthExceededError(params.pairName, binWidth, params.poolAddress);
+  }
 
   console.log(
     `[live] ${params.pairName}: swapping ${(swapLamports / LAMPORTS_PER_SOL).toFixed(4)} SOL ` +
@@ -189,11 +244,36 @@ export async function openLivePosition(params: {
       depositedPairedAmount: pairedAmount.toString(),
     };
   } catch (err) {
+    /*
+     * Auto-unwind, best effort: the balancing swap has already moved SOL into the
+     * paired token, so a failed open must put the wallet back to SOL — not leave an
+     * unmonitored memecoin balance behind. Sell the CURRENT on-chain balance (re-read:
+     * a partial open may have consumed some), then report both the failure and the
+     * rescue outcome in the alert.
+     */
+    let rescueSignature: string | null = null;
+    let rescueError: string | null = null;
+    try {
+      const current = await readTokenBalance(auth.wallet, pairedMint, pairedTokenProgram);
+      if (current > 0n) {
+        const rescue = await executeJupiterSwap(auth, {
+          inputMint: pairedMint.toBase58(),
+          outputMint: WSOL_MINT,
+          amountLamports: Number(current),
+        });
+        rescueSignature = rescue.result.signature;
+      }
+    } catch (rescueErr) {
+      rescueError = rescueErr instanceof Error ? rescueErr.message : String(rescueErr);
+    }
+
     const stranded = new StrandedSwapError(
       pairedMint.toBase58(),
       pairedAmount.toString(),
       swap.signature,
       err,
+      rescueSignature,
+      rescueError,
     );
     console.error(stranded.message);
     // Best effort: a failed page must not swallow the original failure.
@@ -255,10 +335,14 @@ export async function claimLiveFees(params: {
   return { signatures: claimed.sent.map((s) => s.signature) };
 }
 
-/** The non-SOL side of a pair, and the token program that owns it. */
+/** The non-SOL side of a pair, the token program that owns it, and how wide the
+ * requested price range is on the pool's bin grid (bins are the unit the DLMM
+ * program sizes position accounts in — see `MAX_DLMM_POSITION_BINS`). */
 async function describePair(
   poolAddress: string,
-): Promise<{ pairedMint: PublicKey; pairedTokenProgram: PublicKey }> {
+  lowerBinPrice: number,
+  upperBinPrice: number,
+): Promise<{ pairedMint: PublicKey; pairedTokenProgram: PublicKey; binWidth: number }> {
   // Load the SDK via its CJS build: the ESM build (`dist/index.mjs`) imports an
   // Anchor CJS directory (`@coral-xyz/anchor/dist/cjs/utils/bytes`), which Node's
   // ESM resolver rejects — every live entry then dies in seekNewEntry. CJS
@@ -269,13 +353,22 @@ async function describePair(
   const dlmmModule = require("@meteora-ag/dlmm") as { default?: unknown };
   const DLMM = (dlmmModule.default ?? dlmmModule) as typeof import("@meteora-ag/dlmm")["default"];
   const pool = await DLMM.create(getConnection(), new PublicKey(poolAddress));
+  const { minBinId, maxBinId } = binRangeFromPrices(pool, lowerBinPrice, upperBinPrice);
   const wsol = new PublicKey(WSOL_MINT);
 
   if (pool.tokenX.publicKey.equals(wsol)) {
-    return { pairedMint: pool.tokenY.publicKey, pairedTokenProgram: pool.tokenY.owner };
+    return {
+      pairedMint: pool.tokenY.publicKey,
+      pairedTokenProgram: pool.tokenY.owner,
+      binWidth: maxBinId - minBinId + 1,
+    };
   }
   if (pool.tokenY.publicKey.equals(wsol)) {
-    return { pairedMint: pool.tokenX.publicKey, pairedTokenProgram: pool.tokenX.owner };
+    return {
+      pairedMint: pool.tokenX.publicKey,
+      pairedTokenProgram: pool.tokenX.owner,
+      binWidth: maxBinId - minBinId + 1,
+    };
   }
   throw new Error(
     `[live] pool ${poolAddress} has no wSOL side; the engine sizes in SOL and cannot ` +

@@ -47,6 +47,31 @@ pre-V1.1 behaviour reintroduced through configuration.
   signing path; wiring them into the engine to make them "used" defeats the isolation they
   exist to provide. See "`src/services/onchainExecutor.ts` can sign real transactions" below.
 
+## Live entry hard limits (learned 7 Sep 2026, real money)
+
+The DLMM program opens ONE position account per `initializePosition` and that account
+spans at most **70 bins** (IDL `MAX_BIN_PER_POSITION`; verified by simulation — width
+74 → `InvalidPositionWidth`, width 100+ → runtime `InvalidRealloc`, width 1–70 clean).
+The engine's −45%/+15% price range exceeds 70 bins on any pool with `bin_step` below
+~106 bps (~72% of the scanned universe), so such an entry fails AFTER the balancing
+swap has already converted SOL into the paired token — a stranded, unmonitored
+memecoin balance (0.4 SOL lost-ish on 7 Sep before the fix). Two server-side fixes are
+live:
+
+1. `openLivePosition` (liveExecution.ts) computes the bin width from the live pool and
+   throws `BinWidthExceededError` BEFORE the balancing swap; `seekNewEntry` treats it
+   as a routine skip (no operator page). Consequence: live entries only happen on pools
+   whose bin step keeps the range ≤ 70 bins (~28% of universe).
+2. Any open failure after the swap auto-unwinds: the catch block sells the current
+   paired-token balance back to SOL via Jupiter and includes the rescue signature in
+   the `StrandedSwapError` page.
+
+Do NOT widen the 70-bin cap — it is a program constant. Open work if the full universe
+is wanted: (a) pre-create the position account at final size in a top-level instruction
+so `initializePosition` never reallocs inside a CPI, or (b) chunk the range into
+multiple ≤70-bin positions — route (b) breaks the one-position-per-pool assumption in
+DB/monitor/close/claim and is a big refactor. Neither is started.
+
 ## Commands
 
 ```bash

@@ -8,6 +8,7 @@ import {
   sizeNextPositionSol,
 } from "../config/liveConfig.js";
 import {
+  BinWidthExceededError,
   closeLivePosition,
   isLiveExecutionActive,
   openLivePosition,
@@ -1645,6 +1646,17 @@ async function seekNewEntry(): Promise<EntrySummary> {
         strategy: decision.strategy,
       });
     } catch (err) {
+      /*
+       * BinWidthExceededError is a routine SCREENING outcome, not a fault: the
+       * requested price range cannot fit in one DLMM position account (70-bin cap),
+       * and the gate fires before any swap, so nothing was spent and nothing is
+       * stranded. Log it as a skip like any other gate; do not page the operator.
+       */
+      if (err instanceof BinWidthExceededError) {
+        summary.skipReason = `skipped ${chosen.pairName}: ${err.message}`;
+        console.warn(`[dlmm] ${summary.skipReason}`);
+        return summary;
+      }
       /*
        * No row is written. A failed open means there is no position, and a row
        * describing one would be a fabricated holding that the monitor would then
