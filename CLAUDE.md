@@ -152,9 +152,20 @@ worked exactly as designed — the 0.9 SOL of paired tokens was sold back to SOL
 on-chain (verified: wallet back to 2.81 SOL, no token dust).
 
 The pool stays a candidate, so every 30-min cycle re-attempts it until blocked or
-paused. Fix direction (not started): initialize the required bin arrays in their own
-transactions, one per tx — the same chunking the liquidity phase already uses —
-instead of inside the create. Until then: block the pool or keep the engine paused.
+paused. Fixes landed the same day (commit 35f6366 + follow-up):
+
+1. `POOL_DENYLIST` env (comma-separated pool addresses/pair names) — checked in
+   `openLivePosition` BEFORE any network call or swap; denied pools are routine
+   seekNewEntry skips. Live server denies STONK-SOL.
+2. `preCreateMissingBinArrays` in `onchainExecutor.ts` — the wide path now creates
+   every missing bin array in its OWN transaction before funding, so the SDK's
+   chunked funding builder emits pure liquidity txs. Root-cause fix for the CU
+   overflow (2x `InitializeBinArray` ~192k each > 399,700 budget in one tx).
+   Untested wide opens may still surface new edge cases — the two-phase path has
+   only ever run against STONK-SOL.
+
+Orphan account `6MdbD6GjaM49fm7fQTwnvyZUVfbjgogbAkVuVEu5MURs` (0.2657 SOL rent)
+still needs a manual close to recover the rent.
 
 ## Commands
 
