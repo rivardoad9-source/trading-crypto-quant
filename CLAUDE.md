@@ -122,7 +122,9 @@ build instead of the wallet. That test is the actual fix here; the number is jus
 first output.
 
 Raising `LIVE_CAPITAL_SOL` is the sanctioned lever for more coverage — it buys rent
-headroom, and rent is recovered when the position closes. Open work for the last 6.8%:
+headroom, and the POSITION account's rent is recovered when the position closes. **Bin
+array rent is not** — see "Bin-array rent is NOT recovered" below; this sentence used to
+claim both. Open work for the last 6.8%:
 chunk the range into multiple <=1400-bin positions. That breaks the
 one-position-per-pool assumption in DB/monitor/close/claim and is a real refactor;
 write the design down before starting it. Not started.
@@ -151,24 +153,239 @@ position account `6MdbD6GjaM49fm7fQTwnvyZUVfbjgogbAkVuVEu5MURs` exists but empty
 worked exactly as designed — the 0.9 SOL of paired tokens was sold back to SOL
 on-chain (verified: wallet back to 2.81 SOL, no token dust).
 
-The pool stays a candidate, so every 30-min cycle re-attempts it until blocked or
-paused. Fixes landed the same day (commit 35f6366 + follow-up):
+The pool stays a candidate, so every 30-min cycle re-attempted it. Two same-day fixes
+(commit 35f6366 + follow-up) stopped that specific pool: `POOL_DENYLIST`, and
+`preCreateMissingBinArrays`, which moves bin-array creation out of the SDK's chunked
+funding transaction and into one transaction each.
 
-1. `POOL_DENYLIST` env (comma-separated pool addresses/pair names) — checked in
-   `openLivePosition` BEFORE any network call or swap; denied pools are routine
-   seekNewEntry skips. Live server denies STONK-SOL.
-2. `preCreateMissingBinArrays` in `onchainExecutor.ts` — the wide path now creates
-   every missing bin array in its OWN transaction before funding, so the SDK's
-   chunked funding builder emits pure liquidity txs. Root-cause fix for the CU
-   overflow (2x `InitializeBinArray` ~192k each > 399,700 budget in one tx).
-   Untested wide opens may still surface new edge cases — the two-phase path has
-   only ever run against STONK-SOL.
+Both still stand, but **neither was the root cause**, and the investigation that
+followed found the same defect on paths that had never run. The sections below are the
+result; read them before touching the execution path.
 
 Orphan account `6MdbD6GjaM49fm7fQTwnvyZUVfbjgogbAkVuVEu5MURs` (0.2657 SOL rent)
 was closed the same evening via `scripts/closeOrphanPosition.cjs` (SDK
 `closePosition2`; valid because the position held zero liquidity) — 0.265727 SOL
 recovered, wallet back to 3.08 SOL. The script is kept as the template for closing
 any future empty position account the engine leaves behind.
+
+### The compute budget: `ONCHAIN_COMPUTE_UNIT_LIMIT` is a FLOOR, not a cap
+
+**This is the root cause of the 7 Sep failure, and it was bigger than the pool it
+surfaced on.** `asVersionedTransaction` has to strip the SDK's compute-budget
+instructions — two `setComputeUnitLimit`s in one transaction is a hard runtime reject,
+and the priority fee has to be ours for `sendAndConfirm`'s escalation to mean anything.
+What it did was strip them **without reading them**, replacing a budget the SDK had
+sized per call with one flat 400,000.
+
+The SDK sizes every call, and it is the only party that can:
+
+| SDK path | how it budgets |
+|---|---|
+| `initializePositionAndAddLiquidityByStrategy` (narrow open), `removeLiquidity`, `claimSwapFee` | `getEstimatedComputeUnitIxWithBuffer` - **simulates** against the cluster, adds a 50k-200k buffer, falls back to 1.4M if the simulation itself fails |
+| `createExtendedEmptyPosition` (wide create) | a STATIC formula, no simulation: `min(30,000 + 30,000 x extendedBinCount, 1,400,000)`. It saturates at the 1.4M ceiling from ~117 bins upward, while measured consumption at 1400 bins is ~153k, so a wide create RESERVES about nine times what it uses. Harmless - a limit is a reservation, not a charge - but it is where the fee note below comes from. This row said "simulates" until an audit read the shipped build; the test suite covers the three rows above and not this one |
+| `addLiquidityByStrategyChunkable` (wide funding) | `DEFAULT_ADD_LIQUIDITY_CU` = **1,000,000** per chunk - its transactions depend on each other so they cannot be simulated ahead |
+| each inline `InitializeBinArray` | `DEFAULT_INIT_BIN_ARRAY_CU` = **350,000** |
+
+So the enforced budget was 400,000 wherever the SDK had asked for up to 1,400,000. That
+is not a STONK-SOL bug: **every path was affected, including the two that have never
+run.** A `removeLiquidity` that will not fit its budget is strictly worse than a failed
+open — the capital is already committed, the row stays ACTIVE, and the stop-loss is what
+stops being enforceable.
+
+`resolveComputeUnitLimit` now takes the **maximum** of the SDK's request and the
+configured floor, clamped to Solana's 1,400,000. Never invert it to a `Math.min`: taking
+the smaller number reads as cheaper (the priority fee really is price × REQUESTED units)
+and is exactly the defect. The over-request is not free - a wide create reserves 1.4M CU against ~153k used -
+but it is small in both directions: about 0.000028 SOL at the
+`ONCHAIN_MIN_PRIORITY_MICRO_LAMPORTS` floor, and about 0.0028 SOL per rebuild at the
+escalation ceiling, against a failure that has twice cost tenths of a SOL. There is a test named
+after the inversion.
+
+Two details that are load-bearing:
+
+- **The clamp protects against the SDK too.** `getEstimatedComputeUnitIxWithBuffer` adds
+  its buffer *without* re-clamping to `MAX_CU`, so a heavy transaction can come back
+  above 1.4M and be rejected outright. Our clamp is the only thing stopping that.
+- **The narrow path needed no separate fix, and that is a measured claim, not a hope.**
+  A range of ≤70 bins spans TWO bin arrays unless it aligns to the array boundary
+  (`MAX_BIN_ARRAY_SIZE` = 70), so on a thin pool that single fused transaction can carry
+  two 350k inits — over any 400k floor. It survives because the SDK simulates the whole
+  instruction set. `onchainExecutor.test.ts` asserts the SDK still does that on the
+  narrow open, `removeLiquidity` and `claimSwapFee`; if a bump removes it, the build
+  fails instead of the wallet.
+
+### The pre-swap rehearsal is the gate that did not exist
+
+Every other gate names a condition and checks it — the width, the rent, the denylist.
+The compute overflow was not a condition anyone had named, which is why it got through a
+carefully gated path and cost money. `rehearseOpenPosition` asks the **cluster** to run
+the account-creation transactions with `sigVerify: false` and reports what it says. It is
+the same technique `scripts/simWidePosition.cjs` used to establish the 1400-bin limit
+without spending anything, moved onto the live path and run BEFORE the balancing swap.
+
+It rehearses with **the same compute budget the real send will carry**. A rehearsal
+simulating against a different limit than production uses would pass exactly the
+transactions production then fails.
+
+Three boundaries are deliberate and must not be quietly "improved":
+
+- **It rehearses the WIDE path only.** Standalone `initializeBinArray` transactions
+  exist there alone; the narrow path fuses the inits into
+  `initializePositionAndAddLiquidityByStrategy`. The first version simulated them on
+  both, which an audit caught: on a narrow range it could bench a pool for a day over a
+  transaction the engine would never build, while still being blind to the fused one it
+  does. The narrow path therefore has nothing to rehearse, and `openLivePosition` says
+  so in as many words rather than logging a clean rehearsal that checked nothing. Its
+  protection is the compute-budget fix — the SDK simulates that fused transaction
+  itself, which `onchainExecutor.test.ts` asserts.
+- **It cannot cover the liquidity phase.** That deposits the paired token, and the
+  wallet does not hold it until the swap this gate runs before. Simulating it here would
+  fail for lack of funds on *every* pool — a false alarm, not a check.
+- **It fails OPEN on an RPC error.** A simulation that could not RUN is not evidence the
+  open would fail. Failing closed on a provider hiccup would stop all trading for a
+  reason that has nothing to do with the pool — the same reasoning `assessPoolCooldown`
+  uses, and the opposite of `screenTokenSafety`, because the capital is protected by the
+  gates that do fail closed.
+
+**The rehearsal cannot see OUR OWN spend ceiling**, because it simulates against the
+cluster and the cluster knows nothing about `ONCHAIN_MAX_LAMPORTS_PER_TX`. That gap was
+real: every `assertWithinSpendLimit` covering rent lives inside
+`dlmmExecutor.openPosition`, which runs AFTER the swap, so a wide position whose
+`deposit + position rent + bin-array rent` breached the ceiling failed with the swap
+already spent. The affordability gate now checks it before the swap, against the worst
+single transaction each path actually sends — the narrow path's sum, the wide path's
+larger half — rather than their total, which would refuse wide positions the executor
+would have accepted. `describeLiveExecutionBlockers` was worse than silent about this:
+it told the operator to set the ceiling EQUAL to `LIVE_MAX_POSITION_SOL`, which
+guarantees the failure. It now requires `maxPosition + rentBudget`.
+
+### The execution breaker: the V1.1 lockout is blind to failed opens, by construction
+
+Two rules that are each correct meet in a hole. `liveExecution.ts` writes **no position
+row until the open confirms** — right, because a row describing a position that does not
+exist would be valued, accrued and eventually "closed", all of it about nothing. And
+`assessPoolCooldown` reads `PoolExitRecord`, reconstructed from **closed position rows**,
+counting consecutive failed EXITS. A failed OPEN therefore leaves no trace any anti-churn
+gate can see, so the same pool was re-elected every 30 minutes on 7 Sep and spent real
+money twice before an operator added a denylist entry by hand.
+
+`src/services/executionGuard.ts` is the missing half. Cooldown measures how a pool
+**traded**; this measures whether it can be **entered**. They must stay separate:
+
+- Separate storage (`pool_execution_failures`), separate thresholds
+  (`EXECUTION_FAILURE_LOCKOUT_COUNT` / `_HOURS`, default 2 → 24h). Nothing in
+  `executionGuard.ts` may read a V1.1 guardrail, and there is a test for that — two
+  copies of a guardrail means "V1.1" would name two configurations.
+- **Merging them would also change the V1.1 baseline**, which is a change to the official
+  configuration and needs its own justification. `meteora.ts` must never import the
+  execution history: the lockout's meaning would change silently while
+  `v11Baseline.test.ts` still passed, because none of the six numbers would have moved.
+- **Inert in paper mode.** The candidate filter sits inside `isLiveExecutionActive()`, so
+  a dry run's candidate list is byte-identical to what it was before. Same discipline as
+  `defaultBacktestConfig()`.
+- **Fails open** (unparseable timestamp expires the bench, no history never blocks), for
+  the same reason `assessPoolCooldown` does.
+
+**ONE expensive failure benches; free ones are counted to the limit.** The first version
+weighted them equally at 2, and an audit caught that this made the gate miss its own
+founding case: on 7 Sep one pool cost money EXACTLY TWICE, so a flat limit of two would
+not have benched it until after the second loss. A post-swap failure means the balancing
+swap confirmed and the SOL is gone — that is not a data point awaiting confirmation, it
+is the outcome being prevented. A pre-swap rehearsal refusal costs nothing and can be
+transient cluster state, so it still gets `EXECUTION_FAILURE_LOCKOUT_COUNT` looks.
+`classifyFailureStage` treats an UNRECOGNISED stage as the expensive one, because an
+unknown failure is likelier to be a new post-swap path than a new free one.
+
+Rehearsal refusals are counted at all — despite spending nothing — because the cost
+there is the entry slot: `seekNewEntry` acts on the single pool the LLM selects and
+returns as soon as that pool is refused, so a pool the chain will always reject would
+otherwise consume every cycle it is elected in while the engine reports itself healthy.
+Filtering happens **before the LLM sees the list**, not only at execution time, so the
+model can pick something else.
+
+**A WALLET-level refusal is not a POOL fact.** A simulation that fails for want of
+lamports would fail identically on every pool, so counting it would let one wallet-level
+condition bench the universe a pool at a time, 24 hours each — a self-inflicted outage
+that a top-up fixes. `isPoolAttributable` reads the cluster's own error and logs; the
+open is still refused, only the strike is withheld. It defaults to "the pool's fault",
+because wrongly benching one pool costs a missed entry while wrongly clearing a broken
+one costs the repeat loss.
+
+`total_failures` is deliberately not reset on success — it is how an operator tells
+"flaky once" from "fails most of the time", and a gate that erases its own evidence
+cannot support that judgement.
+
+### Bin-array rent is NOT recovered, and this file used to say it was
+
+"Raising `LIVE_CAPITAL_SOL` buys rent headroom, and rent is recovered when the position
+closes" is true of the POSITION account and false of BIN ARRAYS. Bin arrays are
+pool-level accounts shared by every LP; `close_bin_array` exists in the IDL, but the SDK
+exposes no wrapper and **nothing in this repository can reclaim it**. At the deployed
+envelope the rent budget is 1.10 SOL, so a fresh pool can absorb up to ~15 arrays ×
+0.0714 SOL of permanently spent rent on a 1.8 SOL position.
+
+The friction gates do not see this. `assessBreakeven` (2.5×) and
+`assessMicroCapitalFriction` ($1.50) price gas and slippage; the affordability gate asks
+"can I afford it", never "is it worth it". Pricing rent into the entry economics would
+change which pools the engine admits — a change to the formula, out of scope here — so it
+is recorded as a known exposure rather than silently patched. `preCreateMissingBinArrays`
+logs the SOL it spends on arrays so it is at least visible in the run.
+
+### The Jupiter swap was breaking the double-spend rule, silently
+
+`sendAndConfirm`'s safety argument is that a transaction carries the blockhash the loop
+is tracking, so "expired" means the old signature can never land and rebuilding is safe.
+Every DLMM builder takes that blockhash. **The Jupiter swap did not**: Jupiter builds the
+transaction server-side and stamps its own, necessarily younger, blockhash, while
+`confirmTransaction` was still handed OURS.
+
+The consequence is the exact failure the rule exists to prevent. Ours expires first, so
+the loop declares expiry and rebuilds with a fresh quote while Jupiter's transaction is
+still landable for the slots by which its blockhash is younger — and both can land. The
+window is a slot or two of a ~60s validity, and it is on the balancing swap, which runs
+on **every live entry**.
+
+`buildJupiterSwap` now re-pins `message.recentBlockhash` BEFORE signing. The order is
+load-bearing: the signature covers the message, so re-pinning after signing would produce
+bytes the cluster rejects — a change that reviews as correct and fails every swap. A
+source-level test asserts every `sendAndConfirm` builder destructures `blockhash`,
+because the rule is about future builders too; both tests were confirmed to FAIL against
+the pre-fix code rather than merely passing against the new one.
+
+### Failure reporting: "outcome unknown" now means something
+
+`sendAndConfirm` warns that a transaction's outcome is unknown and the operator must
+check the signature before retrying — the warning that prevents a manual double spend. It
+was firing on **preflight rejections**, which are the one non-expiry failure whose outcome
+is not in doubt: the RPC simulated the transaction and refused to broadcast it, so nothing
+entered the network. Reporting that as ambiguous sent the operator to look for a
+transaction that provably never existed, and hid the diagnosis — the cluster's simulation
+logs name the reason, and for 7 Sep they said the compute meter was exhausted.
+`TransactionFailedError` now carries `deterministic` and `logs`, and the ambiguity warning
+is reserved for genuinely ambiguous failures.
+
+### `POOL_DENYLIST` is a setting, not a `process.env` read
+
+It first shipped reading `process.env` at the call site and throwing a
+`BinWidthExceededError` with a width of 0, which logged "needs 0 bins, over the operator
+POOL_DENYLIST" — a line that reads months later as a width bug, and made an operator
+decision indistinguishable from a program limit in the funnel. It now lives in
+`env.ts` (parsed once, placeholder-aware, printed at boot by `describeExecutionGuard()`)
+and has its own `PoolDeniedError`. A safety gate that is silently empty because of a typo
+is worse than no gate, because it is believed.
+
+`LiveEntryRefusedError` is the base class for every pre-swap refusal — width, rent,
+denylist, breaker, rehearsal — and `seekNewEntry` catches THAT, not one subclass. It used
+to catch `BinWidthExceededError` specifically, so any new refusal would have fallen
+through and paged the operator for a pool the engine had merely declined to enter.
+
+### `scripts/closeOrphanPosition.cjs` is dry-run by default
+
+Same shape as `scripts/testMicroSwap.ts`, and not decoration: it loads a private key and
+signs, it is run by hand under time pressure after something has already gone wrong, and
+it is kept as **the template**, so its defaults propagate. A dry run needs no key on the
+box — it inspects the position from `SOLANA_WALLET_ADDRESS` or `--owner` — and it refuses
+a position that still holds liquidity, because `closePosition` does not withdraw.
 
 ## Commands
 
@@ -652,6 +869,13 @@ executor has four entries; a fifth is the moment to ask whether it should call t
 instead.
 
 Two of the three original locks are unchanged, and they are what still hold:
+
+**One documented failure this cannot cover: the live host is not this checkout.** The
+`.env` here is paper mode; the deployed profile lives on the box that runs the engine and
+this repository cannot read it. So no statement here about what is "deployed" is
+verifiable from the repo, and `.env.example` no longer makes one. The boot line
+`[guard] execution breaker: ...; operator denylist: ...` is the authority on what is
+actually armed — read it after every deploy.
 
 - **Type level.** Every fund-moving function requires an `ExecutionAuthorization`, a branded
   type obtainable only from `authorizeExecution()`. There is no overload without it, so

@@ -1,8 +1,10 @@
 import {
+  ComputeBudgetInstruction,
   ComputeBudgetProgram,
   Connection,
   Keypair,
   PublicKey,
+  SendTransactionError,
   TransactionExpiredBlockheightExceededError,
   TransactionMessage,
   VersionedTransaction,
@@ -328,8 +330,15 @@ export function setConnection(next: Connection | null): void {
 
 export interface PriorityFeePlan {
   microLamportsPerCu: number;
+  /**
+   * The compute-unit FLOOR, not the final limit. `computeBudgetInstructions` raises it
+   * to whatever the SDK asked for when that is larger — see `resolveComputeUnitLimit`.
+   */
   computeUnitLimit: number;
-  /** Priority portion only, in lamports. Diagnostic. */
+  /**
+   * Priority portion only, in lamports, priced at the FLOOR. Diagnostic. A transaction
+   * the SDK sized above the floor pays proportionally more than this figure.
+   */
   estimatedLamports: number;
   source: "sampled" | "floor";
 }
@@ -373,10 +382,105 @@ export async function planPriorityFee(
   };
 }
 
-/** The two compute-budget instructions every transaction this module builds carries. */
-export function computeBudgetInstructions(plan: PriorityFeePlan) {
+/**
+ * Solana's per-transaction compute ceiling. A `setComputeUnitLimit` above it is
+ * rejected outright, so it bounds what an SDK may ask for as much as what we may set.
+ */
+export const SOLANA_MAX_COMPUTE_UNITS = 1_400_000;
+
+/**
+ * The compute-unit limit an SDK-built transaction asked for, or null when it set none.
+ *
+ * Read by DECODING rather than by matching on programId alone: the ComputeBudget
+ * program carries the unit LIMIT and the unit PRICE under the same programId, and
+ * mistaking one for the other would install a fee where a unit count belongs. An
+ * instruction that will not decode is treated as "no limit stated" rather than as a
+ * zero — absent is not the same fact as zero, the same rule `est_gas_cost_usd` follows.
+ */
+export function readRequestedComputeUnits(
+  instructions: readonly TransactionInstruction[],
+): number | null {
+  let requested: number | null = null;
+
+  for (const ix of instructions) {
+    if (!ix.programId.equals(ComputeBudgetProgram.programId)) continue;
+    try {
+      if (ComputeBudgetInstruction.decodeInstructionType(ix) !== "SetComputeUnitLimit") continue;
+      const { units } = ComputeBudgetInstruction.decodeSetComputeUnitLimit(ix);
+      if (Number.isFinite(units) && units > 0) requested = Math.max(requested ?? 0, units);
+    } catch {
+      continue;
+    }
+  }
+
+  return requested;
+}
+
+/**
+ * The compute-unit limit a transaction will actually carry.
+ *
+ * **`ONCHAIN_COMPUTE_UNIT_LIMIT` is a FLOOR, not a ceiling.** That one-sided rule —
+ * the same shape `LIVE_ROUND_TRIP_GAS_SOL` already uses — is the correction for the
+ * defect that cost real money on 7 Sep 2026, and it is the reason that class of bug
+ * cannot come back:
+ *
+ * The DLMM SDK sizes the budget PER CALL, and it is the only party that can. Most of
+ * its paths SIMULATE the instructions against the cluster and add a buffer
+ * (`getEstimatedComputeUnitIxWithBuffer`, falling back to the 1.4M ceiling when the
+ * simulation itself fails); the chunked add-liquidity paths, whose transactions depend
+ * on each other and so cannot be simulated ahead of time, carry a measured constant
+ * instead (`DEFAULT_ADD_LIQUIDITY_CU` = 1,000,000; `DEFAULT_INIT_BIN_ARRAY_CU` =
+ * 350,000 for each bin array). `asVersionedTransaction` used to DROP all of that and
+ * install a flat 400,000, so any operation the SDK had sized above our constant died
+ * on the compute meter — which is exactly what happened: two `InitializeBinArray`
+ * instructions (~192k each as executed) blew a 399,700 CU budget AFTER the balancing
+ * swap had spent, leaving a funded-but-empty position account holding 0.2657 SOL.
+ *
+ * Taking the MAXIMUM of the two is what makes this safe in both directions. Our floor
+ * still applies where the SDK asked for less (so a transaction is never starved by a
+ * tight third-party estimate), and the SDK's larger figure always wins (so a bigger
+ * operation is never truncated by our constant). Over-requesting is not free — the
+ * priority fee is price x REQUESTED units — but at the configured price band that
+ * costs fractions of a cent, against a failure mode that has twice cost tenths of a
+ * SOL. Never invert this into a `Math.min`.
+ *
+ * The same reasoning covers the paths that have never run: `removeLiquidity` and
+ * `claimSwapFee` are simulation-sized by the SDK too, and a CLOSE that will not fit
+ * its budget is strictly worse than an open that will not — the capital is already
+ * committed and the stop-loss is what stops being enforceable.
+ */
+export function resolveComputeUnitLimit(
+  sdkRequestedUnits: number | null,
+  floorUnits: number,
+): { units: number; source: "sdk" | "floor" } {
+  const floor = Math.max(
+    1,
+    Math.min(Math.floor(Number.isFinite(floorUnits) ? floorUnits : 0), SOLANA_MAX_COMPUTE_UNITS),
+  );
+
+  const asked =
+    sdkRequestedUnits !== null && Number.isFinite(sdkRequestedUnits) && sdkRequestedUnits > 0
+      ? Math.min(Math.floor(sdkRequestedUnits), SOLANA_MAX_COMPUTE_UNITS)
+      : null;
+
+  if (asked === null || asked <= floor) return { units: floor, source: "floor" };
+  return { units: asked, source: "sdk" };
+}
+
+/**
+ * The two compute-budget instructions every transaction this module builds carries.
+ *
+ * `sdkRequestedUnits` is what the SDK asked for in the transaction being rebuilt, or
+ * null for one we assembled ourselves. See `resolveComputeUnitLimit` for why it wins
+ * whenever it is larger.
+ */
+export function computeBudgetInstructions(
+  plan: PriorityFeePlan,
+  sdkRequestedUnits: number | null = null,
+): TransactionInstruction[] {
+  const { units } = resolveComputeUnitLimit(sdkRequestedUnits, plan.computeUnitLimit);
   return [
-    ComputeBudgetProgram.setComputeUnitLimit({ units: plan.computeUnitLimit }),
+    ComputeBudgetProgram.setComputeUnitLimit({ units }),
     ComputeBudgetProgram.setComputeUnitPrice({ microLamports: plan.microLamportsPerCu }),
   ];
 }
@@ -394,11 +498,50 @@ export interface SendResult {
 
 export class TransactionFailedError extends Error {
   readonly signature: string | null;
-  constructor(message: string, signature: string | null) {
+  /**
+   * True when the transaction is KNOWN not to have landed — a preflight rejection, or
+   * an on-chain execution error the cluster reported back.
+   *
+   * The distinction is operational, not cosmetic. `false` means the outcome is
+   * genuinely unknown and the operator must check the signature on-chain before
+   * retrying, because a retry on top of an in-flight transaction is how the same trade
+   * executes twice. Reporting a deterministic preflight rejection as "unknown" sends
+   * the operator to look for a transaction that provably never existed, and the whole
+   * point of the ambiguity warning is that it should mean something when it appears.
+   */
+  readonly deterministic: boolean;
+  /** Simulation logs when the cluster supplied them. The CU meter message lives here. */
+  readonly logs: string[] | null;
+
+  constructor(
+    message: string,
+    signature: string | null,
+    options: { deterministic?: boolean; logs?: string[] | null } = {},
+  ) {
     super(`[onchain] ${message}`);
     this.name = "TransactionFailedError";
     this.signature = signature;
+    this.deterministic = options.deterministic ?? false;
+    this.logs = options.logs ?? null;
   }
+}
+
+/**
+ * Whether an error is the RPC refusing a transaction at PREFLIGHT.
+ *
+ * Preflight runs the transaction in simulation before broadcasting it, so a rejection
+ * there is proof it never entered the network: nothing is in flight, nothing can land
+ * later, and rebuilding is safe. That is the opposite of the ambiguous failure
+ * `sendAndConfirm` is otherwise careful about, and it deserves the opposite report.
+ */
+function preflightRejection(err: unknown): { logs: string[] | null } | null {
+  if (err instanceof SendTransactionError) {
+    // `logs` is the public getter; `transactionLogs` behind it is private.
+    return { logs: Array.isArray(err.logs) ? err.logs : null };
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  if (/simulation failed|preflight/i.test(message)) return { logs: null };
+  return null;
 }
 
 /** Builds a signed transaction for one attempt. Receives the blockhash to embed. */
@@ -484,10 +627,12 @@ export async function sendAndConfirm(
 
       if (confirmation.value.err) {
         // The cluster executed it and it failed. Retrying identical instructions would
-        // fail identically, so this is terminal rather than another attempt.
+        // fail identically, so this is terminal rather than another attempt. The
+        // outcome is KNOWN: it landed and reverted, so there is nothing in flight.
         throw new TransactionFailedError(
           `${label}: transaction failed on-chain: ${JSON.stringify(confirmation.value.err)}`,
           signature,
+          { deterministic: true },
         );
       }
 
@@ -512,6 +657,28 @@ export async function sendAndConfirm(
         /block height exceeded|blockhash not found/i.test((err as Error).message ?? "");
 
       if (!expired) {
+        /*
+         * A PREFLIGHT rejection is the one non-expiry failure whose outcome is not in
+         * doubt: the RPC simulated the transaction and refused to broadcast it, so it
+         * never entered the network. Reporting it as "outcome unknown — check the
+         * signature" was actively misleading, and it hid the diagnosis: the cluster's
+         * simulation logs name the reason, and for the 7 Sep 2026 failure they said the
+         * compute meter had been exhausted. Terminal, because the same instructions
+         * would be refused identically.
+         */
+        const preflight = preflightRejection(err);
+        if (preflight) {
+          throw new TransactionFailedError(
+            `${label}: rejected at preflight, so it never reached the network and ` +
+              `nothing is in flight: ${(err as Error).message}` +
+              (preflight.logs?.length
+                ? `\n  cluster logs:\n    ${preflight.logs.slice(-12).join("\n    ")}`
+                : ""),
+            signature,
+            { deterministic: true, logs: preflight.logs },
+          );
+        }
+
         const status = await conn.getSignatureStatus(signature).catch(() => null);
         if (status?.value && !status.value.err) {
           // It landed while the confirmation call was failing. Reporting this as an
@@ -617,7 +784,13 @@ export async function buildJupiterSwap(
   auth: ExecutionAuthorization,
   quote: JupiterQuote,
   plan: PriorityFeePlan,
-  config: OnchainConfig = onchainConfig,
+  config: OnchainConfig,
+  /*
+   * REQUIRED, and deliberately not optional. Optional made the double-spend fix depend
+   * on every caller remembering to pass it, policed only by a test that reads the
+   * source. Required makes a caller that forgets a compile error.
+   */
+  blockhash: BlockhashWithExpiryBlockHeight,
 ): Promise<VersionedTransaction> {
   if (quote.slippageBps > auth.maxSlippageBps) {
     throw new ExecutionLimitError(
@@ -658,6 +831,31 @@ export async function buildJupiterSwap(
   }
 
   const tx = VersionedTransaction.deserialize(Buffer.from(body.swapTransaction, "base64"));
+
+  /*
+   * Re-pin to the blockhash `sendAndConfirm` is tracking, BEFORE signing.
+   *
+   * Every other builder in this module takes its blockhash from the retry loop, and
+   * CLAUDE.md states that as an invariant, "the blockhash comes from `sendAndConfirm`,
+   * never from the SDK's own fetch". This path was the exception and nothing enforced
+   * it: Jupiter builds the transaction server-side and stamps its OWN blockhash, which
+   * is necessarily NEWER than the one the loop fetched a moment earlier.
+   *
+   * That inverts the safety argument the loop rests on. `confirmTransaction` is given
+   * OUR blockhash and lastValidBlockHeight, so the loop declares expiry — and rebuilds
+   * with a fresh quote — while Jupiter's transaction is still landable for the few
+   * slots by which its blockhash is younger. Both can then land: the same swap
+   * executed twice, which is precisely the double spend the rebroadcast rule exists to
+   * prevent. The window is small (a slot or two of a ~60s validity) and it is on the
+   * balancing swap, which runs on EVERY live entry.
+   *
+   * Setting `recentBlockhash` before `signTransaction` is what makes this safe rather
+   * than cosmetic: the signature covers the message, so re-pinning after signing would
+   * produce bytes the cluster rejects. Jupiter returns a transaction only the user
+   * signs, so there is no earlier signature to invalidate.
+   */
+  tx.message.recentBlockhash = blockhash.blockhash;
+
   return signTransaction(tx);
 }
 
@@ -696,7 +894,7 @@ export async function executeJupiterSwap(
 
   const result = await sendAndConfirm(
     auth,
-    async ({ plan }) => buildJupiterSwap(auth, quote, plan, config),
+    async ({ blockhash, plan }) => buildJupiterSwap(auth, quote, plan, config, blockhash),
     {
       config,
       label: "jupiter swap",
@@ -872,12 +1070,19 @@ const STRATEGY_TYPE: Record<OpenPositionParams["strategy"], keyof typeof Strateg
  *
  * Two things here are load-bearing.
  *
- * The SDK attaches its own `setComputeUnitLimit` (it estimates units per call) and
- * never sets a unit PRICE. Prepending ours without removing theirs would put two
- * compute-budget instructions of the same kind in one transaction, which the runtime
- * rejects outright — so the transaction would fail every time, on a detail nothing in
- * a unit test would surface. Theirs is dropped and ours installed, because the
- * priority fee is what `sendAndConfirm`'s escalation exists to move.
+ * The SDK attaches its own `setComputeUnitLimit` (it sizes units per call, mostly by
+ * simulating the instructions against the cluster) and never sets a unit PRICE —
+ * verified: the installed build contains zero `setComputeUnitPrice` call sites.
+ * Prepending ours without removing theirs would put two compute-budget instructions of
+ * the same kind in one transaction, which the runtime rejects outright, so exactly one
+ * of each is emitted.
+ *
+ * What their instruction ASKED FOR is read out before it is dropped, and
+ * `resolveComputeUnitLimit` keeps whichever budget is larger. Dropping it unread —
+ * which this function did until 7 Sep 2026 — replaced an estimate informed by the
+ * chain with a flat constant, and every operation the SDK had sized above that
+ * constant died on the compute meter. Read that function before changing anything
+ * here; it is the fix for a bug that cost real money twice.
  *
  * And the blockhash comes from the caller rather than from the SDK's own fetch: the
  * rebroadcast rule depends on the bytes being pinned to the blockhash whose expiry
@@ -892,14 +1097,27 @@ function asVersionedTransaction(
   payer: PublicKey,
   extraSigners: Keypair[] = [],
 ): VersionedTransaction {
+  // What the SDK sized THIS transaction at, read before its instruction is dropped.
+  // Dropping the instruction without first reading it is the bug that cost 0.2657 SOL.
+  const sdkRequestedUnits = readRequestedComputeUnits(legacy.instructions);
+
   const withoutComputeBudget: TransactionInstruction[] = legacy.instructions.filter(
     (ix) => !ix.programId.equals(ComputeBudgetProgram.programId),
   );
 
+  const budget = computeBudgetInstructions(plan, sdkRequestedUnits);
+  const { units, source } = resolveComputeUnitLimit(sdkRequestedUnits, plan.computeUnitLimit);
+  if (source === "sdk") {
+    console.log(
+      `[onchain] honouring the SDK's compute budget: ${units} CU requested, above the ` +
+        `${plan.computeUnitLimit} CU floor (ONCHAIN_COMPUTE_UNIT_LIMIT)`,
+    );
+  }
+
   const message = new TransactionMessage({
     payerKey: payer,
     recentBlockhash: blockhash.blockhash,
-    instructions: [...computeBudgetInstructions(plan), ...withoutComputeBudget],
+    instructions: [...budget, ...withoutComputeBudget],
   }).compileToV0Message();
 
   const tx = new VersionedTransaction(message);
@@ -1067,6 +1285,244 @@ export async function quoteOpenCost(params: {
   };
 }
 
+/**
+ * A DRESS REHEARSAL of the account-creation phase of an open, run against the cluster
+ * with `sigVerify: false` so nothing is signed, sent or spent.
+ *
+ * WHY THIS EXISTS. Every gate in this engine fires BEFORE the balancing swap, and both
+ * failures that have cost real money landed AFTER it — in the phase that had no gate,
+ * only error handling. The auto-unwind worked both times, but unwinding is damage
+ * control, not prevention. This is the missing gate, and it is the only one that
+ * catches a failure nobody has thought of yet: instead of naming a condition to check,
+ * it asks the cluster to run the transactions and reports what it says.
+ *
+ * The technique is already trusted here — `scripts/simWidePosition.cjs` is exactly
+ * this, and it is how the 1400-bin limit was established without spending anything.
+ * This moves it onto the live path.
+ *
+ * WHAT IT COVERS: bin-array creation, and for a wide range the extended-position
+ * create. Those need only SOL, which the wallet already holds, so they simulate
+ * faithfully before the swap.
+ *
+ * WHAT IT CANNOT COVER, and why that is not a gap being papered over: the LIQUIDITY
+ * phase deposits the paired token, and the wallet does not hold that token until the
+ * swap this gate runs before has happened. Simulating it here would fail for lack of
+ * funds on every pool, which is a false alarm, not a check. The liquidity phase is
+ * protected differently — by `resolveComputeUnitLimit` honouring the budget the SDK
+ * sized for it, and by `preCreateMissingBinArrays` keeping account creation out of it.
+ *
+ * Read-only and unauthorized by design: it takes a wallet ADDRESS, never an
+ * `ExecutionAuthorization`, because a function that cannot spend should not be able to
+ * ask for permission to.
+ */
+export interface OpenRehearsalStep {
+  stage: string;
+  computeUnitLimit: number;
+  unitsConsumed: number | null;
+  error: string | null;
+  logs: string[] | null;
+}
+
+export interface OpenRehearsal {
+  ok: boolean;
+  binWidth: number;
+  binArraysToCreate: number;
+  steps: OpenRehearsalStep[];
+  /** The first step that failed, or null when every one simulated clean. */
+  failure: OpenRehearsalStep | null;
+  /** Steps that landed within 10% of their compute budget. Not a failure; a warning. */
+  tight: OpenRehearsalStep[];
+  /**
+   * Whether a failure is attributable to the POOL rather than to the wallet.
+   *
+   * A refusal for want of lamports says nothing about the pool: the wallet is short,
+   * and every pool would refuse the same way. Counting those as pool strikes would let
+   * one wallet-level fact bench the entire universe a pool at a time, 24 hours each —
+   * a self-inflicted outage from a condition a top-up fixes. The open is still refused;
+   * only the BOOKKEEPING is withheld. Same distinction the "simulation unavailable"
+   * path already makes.
+   */
+  poolAttributable: boolean;
+}
+
+export async function rehearseOpenPosition(params: {
+  poolAddress: string;
+  lowerBinPrice: number;
+  upperBinPrice: number;
+  wallet: PublicKey;
+  config?: OnchainConfig;
+}): Promise<OpenRehearsal> {
+  const config = params.config ?? onchainConfig;
+  const { deriveBinArray, getBinArrayIndexesCoverage } = await loadDlmmSdk();
+  const pool = await openPool(params.poolAddress);
+  const { minBinId, maxBinId } = binRangeFromPrices(
+    pool,
+    params.lowerBinPrice,
+    params.upperBinPrice,
+  );
+  const binWidth = maxBinId - minBinId + 1;
+  const connection = getConnection();
+
+  const planned: { stage: string; instructions: TransactionInstruction[] }[] = [];
+
+  // --- Bin arrays the range needs and the chain does not have ---
+  const candidates = [...getBinArrayIndexesCoverage(new BN(minBinId), new BN(maxBinId))].map(
+    (raw) => {
+      const index = new BN(raw);
+      const [pubkey] = deriveBinArray(pool.pubkey, index, pool.program.programId);
+      return { index, pubkey };
+    },
+  );
+
+  const infos: (Awaited<ReturnType<Connection["getAccountInfo"]>> | null)[] = [];
+  for (let i = 0; i < candidates.length; i += 100) {
+    const slice = candidates.slice(i, i + 100).map((c) => c.pubkey);
+    infos.push(...(await connection.getMultipleAccountsInfo(slice)));
+  }
+  const missing = candidates.filter((_, i) => infos[i] === null);
+
+  /*
+   * REHEARSE ONLY WHAT WILL ACTUALLY BE SENT.
+   *
+   * Standalone `initializeBinArray` transactions exist on the WIDE path alone —
+   * `preCreateMissingBinArrays` is called there and nowhere else. The narrow path fuses
+   * the inits into `initializePositionAndAddLiquidityByStrategy`, so simulating them
+   * separately here would rehearse a transaction the engine will never build: it could
+   * bench a pool for 24 hours over an artefact, and it would still be blind to the
+   * fused transaction that does run. An audit caught this; the first version simulated
+   * them on both paths.
+   *
+   * The narrow path therefore has nothing to rehearse, and `openLivePosition` says so
+   * in as many words rather than logging a clean rehearsal that checked nothing.
+   */
+  const wide = binWidth > DLMM_BINS_PER_INIT;
+
+  if (wide) {
+    for (const [i, { index, pubkey }] of missing.entries()) {
+      planned.push({
+        stage: `init bin array ${i + 1}/${missing.length}`,
+        instructions: [
+          await pool.program.methods
+            .initializeBinArray(index)
+            .accountsPartial({ binArray: pubkey, funder: params.wallet, lbPair: pool.pubkey })
+            .instruction(),
+        ],
+      });
+    }
+  }
+
+  // --- The position account, for the wide path only (see the note above) ---
+  if (wide) {
+    // Throwaway: the rehearsal never signs, so this address is never created.
+    const rehearsalPosition = Keypair.generate();
+    const createTx = await pool.createExtendedEmptyPosition(
+      minBinId,
+      maxBinId,
+      rehearsalPosition.publicKey,
+      params.wallet,
+    );
+    planned.push({ stage: `create ${binWidth}-bin position`, instructions: createTx.instructions });
+  }
+
+  const steps: OpenRehearsalStep[] = [];
+  const { blockhash } = await connection.getLatestBlockhash("confirmed");
+
+  for (const { stage, instructions } of planned) {
+    /*
+     * The SAME budget the real send will carry, resolved the same way. A rehearsal
+     * that simulated against a different compute limit than production uses would
+     * pass exactly the transactions production then fails.
+     */
+    const requested = readRequestedComputeUnits(instructions);
+    const { units } = resolveComputeUnitLimit(requested, config.computeUnitLimit);
+    const withoutBudget = instructions.filter(
+      (ix) => !ix.programId.equals(ComputeBudgetProgram.programId),
+    );
+
+    const message = new TransactionMessage({
+      payerKey: params.wallet,
+      recentBlockhash: blockhash,
+      instructions: [
+        ComputeBudgetProgram.setComputeUnitLimit({ units }),
+        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: config.minPriorityMicroLamports }),
+        ...withoutBudget,
+      ],
+    }).compileToV0Message();
+
+    let step: OpenRehearsalStep;
+    try {
+      const sim = await connection.simulateTransaction(new VersionedTransaction(message), {
+        sigVerify: false,
+        replaceRecentBlockhash: true,
+        commitment: "confirmed",
+      });
+      step = {
+        stage,
+        computeUnitLimit: units,
+        unitsConsumed: sim.value.unitsConsumed ?? null,
+        error: sim.value.err === null ? null : JSON.stringify(sim.value.err),
+        logs: sim.value.logs ?? null,
+      };
+    } catch (err) {
+      /*
+       * The RPC could not run the simulation. That is NOT evidence the open would
+       * fail, so it must not be reported as a refusal — a rehearsal that fails closed
+       * on its own outage would stop all trading whenever the provider hiccups, and
+       * this gate protects against a specific on-chain failure, not against the RPC.
+       * Same reasoning as `assessPoolCooldown` failing open.
+       */
+      step = {
+        stage,
+        computeUnitLimit: units,
+        unitsConsumed: null,
+        error: null,
+        logs: [
+          `rehearsal could not run: ${err instanceof Error ? err.message : String(err)}`,
+        ],
+      };
+      console.warn(`[onchain/rehearsal] ${stage}: simulation unavailable; not treated as a refusal`);
+    }
+    steps.push(step);
+  }
+
+  const failure = steps.find((s) => s.error !== null) ?? null;
+  const tight = steps.filter(
+    (s) => s.unitsConsumed !== null && s.unitsConsumed > s.computeUnitLimit * 0.9,
+  );
+
+  return {
+    ok: failure === null,
+    binWidth,
+    binArraysToCreate: wide ? missing.length : 0,
+    steps,
+    failure,
+    tight,
+    poolAttributable: failure === null || isPoolAttributable(failure),
+  };
+}
+
+/**
+ * Whether a simulation failure is the POOL's fault or the WALLET's.
+ *
+ * Read from the cluster's own logs and error shape rather than guessed. Insufficient
+ * lamports, and an account the runtime refuses to fund, are wallet-level facts that
+ * would repeat identically on every pool.
+ *
+ * Defaults to TRUE — an unrecognised failure is treated as the pool's — because the
+ * cost of wrongly benching one pool is a missed entry, while wrongly clearing a broken
+ * pool is the repeat loss this whole gate exists to stop.
+ */
+function isPoolAttributable(failure: OpenRehearsalStep): boolean {
+  const haystack = [failure.error ?? "", ...(failure.logs ?? [])].join(" ").toLowerCase();
+  const walletLevel = [
+    "insufficient lamports",
+    "insufficient funds",
+    "account not found",
+    "attempt to debit an account but found no record of a prior credit",
+  ];
+  return !walletLevel.some((needle) => haystack.includes(needle));
+}
+
 /** Which side of the pair is wSOL, or null when neither is. */
 export function solSide(pool: {
   tokenX: { publicKey: PublicKey };
@@ -1140,73 +1596,166 @@ async function sendSequentially(
 /**
  * The Meteora DLMM operations, built against the real SDK.
  *
- * STILL UNREACHABLE FROM THE ENGINE. Implementing these did not arm anything: the
- * import-graph test in `src/tests/onchainExecutor.test.ts` still fails the build if
- * `src/index.ts` can reach this module, `ONCHAIN_EXECUTION_ARMED` still defaults to
- * false, `authorizeExecution()` is still the only source of an `ExecutionAuthorization`,
- * and `env.ts` still refuses to boot on `DRY_RUN=false`. What changed is that the
- * instructions are now real ones produced by the SDK rather than a throw.
+ * REACHABLE, AND SPENDING REAL MONEY SINCE 6 SEP 2026. This block used to say the
+ * opposite, and left it saying so for a day after the engine went live — a comment
+ * that tells a reader the code cannot spend is worse than no comment when it can.
+ *
+ * What still holds is the NARROWING, which is a different claim: the engine reaches
+ * this module through `src/services/liveExecution.ts` and nothing else, so "can this
+ * spend money, and under what conditions" has exactly one edge to review.
+ * `onchainExecutor.test.ts` walks the import graph from `src/index.ts` to assert the
+ * bridge is reachable, then re-walks with the bridge CUT to assert this module is not.
+ * `ONCHAIN_EXECUTION_ARMED` still defaults to false, `authorizeExecution()` is still
+ * the only source of an `ExecutionAuthorization`, and `env.ts` still refuses to boot a
+ * half-armed configuration.
  */
 
 /**
- * Creates every bin array a wide range needs that does not exist on-chain yet, ONE
- * PER TRANSACTION, before the funding phase runs.
+ * Creates every bin array the range needs that does not exist on-chain yet, ONE PER
+ * TRANSACTION, before any funding runs. Returns how many it created.
  *
- * Why this exists (measured live on 7 Sep 2026, real money): the SDK's chunked
- * funding builder emits `InitializeBinArray` inline for missing arrays — two of
- * them in one funding transaction blew the 399,700 CU budget (~192k per init:
- * the second init died at 191,723 of 191,723 remaining). The swap had already
- * happened and auto-unwound, but a funded-but-empty position account was left
- * holding rent. Pre-creating each missing array in its own transaction means the
- * funding builder finds every array on-chain and emits pure liquidity
- * transactions, which are the ones that were already chunked safely.
+ * WHY THIS EXISTS (measured live on 7 Sep 2026, real money). The SDK's chunked funding
+ * builder emits `InitializeBinArray` inline for missing arrays and budgets the whole
+ * chunk at its `DEFAULT_ADD_LIQUIDITY_CU` constant (1,000,000). Each init costs the
+ * SDK's own `DEFAULT_INIT_BIN_ARRAY_CU` of 350,000, so three missing arrays cannot fit
+ * that budget however the compute limit is resolved, and two plus the liquidity work
+ * is marginal. Pre-creating each one alone means the funding builder finds every array
+ * present and emits pure liquidity transactions, which are the ones already chunked
+ * safely.
+ *
+ * That is a genuinely separate defect from the compute-limit one that
+ * `resolveComputeUnitLimit` fixes, and BOTH are needed: honouring the SDK's budget
+ * stops us starving a transaction it sized correctly, and this stops the SDK packing
+ * more into one transaction than any budget can cover.
+ *
+ * ORDERING. This runs BEFORE the position account is created, not after. Bin arrays
+ * are derived from the pool and an index alone, so nothing here needs the position to
+ * exist; and a failure partway through then leaves no position account behind, which
+ * is the difference between a clean abort and an orphan holding recoverable-only-by-
+ * hand rent. Bin-array rent is spent either way — it belongs to the pool, is shared by
+ * every LP, and this repository has no path that reclaims it.
  */
 async function preCreateMissingBinArrays(
   auth: ExecutionAuthorization,
   pool: DlmmPool,
   minBinId: number,
   maxBinId: number,
-): Promise<void> {
-  const { deriveBinArray, getBinArrayIndexesCoverage } = await loadDlmmSdk();
+): Promise<number> {
+  const sdk = await loadDlmmSdk();
+  const { deriveBinArray, getBinArrayIndexesCoverage, BIN_ARRAY_FEE } = sdk;
 
-  const indexes = getBinArrayIndexesCoverage(new BN(minBinId), new BN(maxBinId));
-  const candidates: { index: BN; pubkey: PublicKey }[] = [];
-  for (const raw of indexes) {
-    const index = new BN(raw);
-    const [pubkey] = deriveBinArray(pool.pubkey, index, pool.program.programId);
-    candidates.push({ index, pubkey });
+  /*
+   * Fail LOUDLY and BEFORE spending if the SDK no longer exports what this depends on.
+   * A destructure of a renamed export yields `undefined` and throws at the call site
+   * instead — which here would be mid-open, after the balancing swap.
+   * `onchainExecutor.test.ts` asserts all three at build time, which is the real
+   * guard; this covers a runtime whose node_modules disagree with the test run.
+   */
+  if (
+    typeof deriveBinArray !== "function" ||
+    typeof getBinArrayIndexesCoverage !== "function" ||
+    typeof BIN_ARRAY_FEE !== "number"
+  ) {
+    throw new DlmmExecutionError(
+      "the installed @meteora-ag/dlmm build does not export deriveBinArray, " +
+        "getBinArrayIndexesCoverage and BIN_ARRAY_FEE. Refusing to open a position " +
+        "rather than guess at bin-array creation.",
+    );
   }
 
-  const infos = await pool.program.provider.connection.getMultipleAccountsInfo(
-    candidates.map((c) => c.pubkey),
+  const candidates = [...getBinArrayIndexesCoverage(new BN(minBinId), new BN(maxBinId))].map(
+    (raw) => {
+      const index = new BN(raw);
+      const [pubkey] = deriveBinArray(pool.pubkey, index, pool.program.programId);
+      return { index, pubkey };
+    },
   );
-  const missing = candidates.filter((_, i) => infos[i] === null);
-  if (missing.length === 0) return;
 
-  const { BIN_ARRAY_FEE } = await loadDlmmSdk();
+  /*
+   * One batched existence read for the common case, which is that every array already
+   * exists and there is nothing to do. `getMultipleAccountsInfo` is capped at 100
+   * accounts per request and a 1400-bin range spans 20, so the chunking is defensive
+   * rather than currently load-bearing — but the range width is configuration.
+   */
+  const connection = pool.program.provider.connection;
+  const infos: (Awaited<ReturnType<Connection["getAccountInfo"]>> | null)[] = [];
+  for (let i = 0; i < candidates.length; i += 100) {
+    const slice = candidates.slice(i, i + 100).map((c) => c.pubkey);
+    infos.push(...(await connection.getMultipleAccountsInfo(slice)));
+  }
+
+  const missing = candidates.filter((_, i) => infos[i] === null);
+  if (missing.length === 0) return 0;
+
+  /*
+   * Bin-array rent faces the per-transaction ceiling. Charged for the WHOLE set rather
+   * than per transaction, deliberately: the ceiling is the blast radius of a bug, and
+   * a loop that spends 0.0714 SOL a hundred times has a blast radius of 7.14 SOL
+   * however modest each step looks on its own.
+   */
   assertWithinSpendLimit(
     auth,
     Math.ceil(missing.length * BIN_ARRAY_FEE * 1e9),
     "dlmm openPosition (missing bin array rent)",
   );
 
-  for (const { index, pubkey } of missing) {
+  let created = 0;
+
+  for (const [i, { index, pubkey }] of missing.entries()) {
+    const label = `dlmm openPosition (init bin array ${i + 1}/${missing.length})`;
+
+    /*
+     * Built through Anchor's IDL-driven `accountsPartial`, which resolves accounts BY
+     * NAME. That is the safe form of the rule this file states elsewhere — "no account
+     * layout is written by hand, because a wrong ORDER does not throw, it moves funds"
+     * — since naming an account cannot put it in the wrong slot and Anchor fills the
+     * rest from the IDL. The one address that must be derived, `binArray`, comes from
+     * the SDK's own `deriveBinArray` rather than a reimplementation of its seeds.
+     *
+     * The SDK's `createBinArraysIfNeeded` builds an identical instruction, but it is
+     * marked private in the published types: calling it would mean casting past the
+     * type system to reach an API its authors reserve the right to change.
+     *
+     * No compute-budget instruction is attached, so `resolveComputeUnitLimit` applies
+     * the configured floor. That is deliberate and checked: the SDK budgets one
+     * `InitializeBinArray` at 350,000 CU and the live failure measured ~192,000, both
+     * under the 400,000 default floor.
+     */
     const initIx = await pool.program.methods
       .initializeBinArray(index)
       .accountsPartial({ binArray: pubkey, funder: auth.wallet, lbPair: pool.pubkey })
       .instruction();
-    const initTx = new Transaction().add(initIx);
-    await sendAndConfirm(
-      auth,
-      async ({ blockhash, plan }) =>
-        asVersionedTransaction(initTx, blockhash, plan, auth.wallet, []),
-      { label: "dlmm openPosition (init bin array)" },
-    );
-    console.log(
-      `[onchain/dlmm] ${pool.pubkey.toBase58()}: initialized bin array ${index.toString()} ` +
-        `(${pubkey.toBase58().slice(0, 8)}…) before funding`,
-    );
+
+    try {
+      await sendAndConfirm(
+        auth,
+        async ({ blockhash, plan }) =>
+          asVersionedTransaction(new Transaction().add(initIx), blockhash, plan, auth.wallet, []),
+        { label },
+      );
+      created += 1;
+    } catch (err) {
+      /*
+       * Someone else may have created the same array between our read and our send —
+       * bin arrays are shared pool infrastructure and any LP entering this range
+       * creates them. For our purposes that is a SUCCESS: the array we needed is
+       * there. Re-read before deciding, so a genuine failure still aborts the open
+       * while no position account exists yet.
+       */
+      const nowExists = await connection.getAccountInfo(pubkey).catch(() => null);
+      if (nowExists !== null) {
+        console.log(`[onchain/dlmm] ${label}: already created by another party; continuing`);
+        continue;
+      }
+      throw err;
+    }
   }
+
+  console.log(
+    `[onchain/dlmm] ${pool.pubkey.toBase58()}: created ${created} bin array(s) ` +
+      `(${(created * BIN_ARRAY_FEE).toFixed(4)} SOL of pool-shared rent) before funding`,
+  );
+  return created;
 }
 
 export const dlmmExecutor: DlmmExecutor = {
@@ -1355,6 +1904,17 @@ export const dlmmExecutor: DlmmExecutor = {
         `~${cost.transactionCount} tx); creating the account before funding it`,
     );
 
+    /*
+     * Bin arrays first, while a failure is still free of consequences.
+     *
+     * They are pool-level accounts, so nothing about them needs the position to exist,
+     * and doing them here means an abort partway through leaves NO position account —
+     * only arrays that the next attempt (or any other LP) will use. Doing it the other
+     * way round, as this did when the fix first landed, makes every one of these sends
+     * a potential orphan-maker.
+     */
+    await preCreateMissingBinArrays(auth, pool, minBinId, maxBinId);
+
     const createTx = await pool.createExtendedEmptyPosition(
       minBinId,
       maxBinId,
@@ -1378,10 +1938,6 @@ export const dlmmExecutor: DlmmExecutor = {
      */
     let funded: SendResult[] = [];
     try {
-      // See preCreateMissingBinArrays: the SDK would otherwise pack two
-      // InitializeBinArray instructions into funding tx 1/N and blow the CU meter.
-      await preCreateMissingBinArrays(auth, pool, minBinId, maxBinId);
-
       const liquidityTxs = await pool.addLiquidityByStrategyChunkable(deposit);
 
       if (liquidityTxs.length === 0) {

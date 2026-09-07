@@ -2,6 +2,16 @@ import { PublicKey } from "@solana/web3.js";
 import { isLiveTradingEnabled } from "../config/env.js";
 import { liveMicroCapital, LAMPORTS_PER_SOL } from "../config/liveConfig.js";
 import {
+  getPoolExecutionRecord,
+  recordPoolExecutionFailure,
+  recordPoolExecutionSuccess,
+} from "../database/repositories.js";
+import {
+  assessExecutionBreaker,
+  isPoolDenied,
+  poolDenylist,
+} from "./executionGuard.js";
+import {
   DLMM_MAX_BINS_PER_POSITION,
   WSOL_MINT,
   authorizeExecution,
@@ -11,6 +21,7 @@ import {
   getConnection,
   onchainConfig,
   quoteOpenCost,
+  rehearseOpenPosition,
   type ExecutionAuthorization,
 } from "./onchainExecutor.js";
 import { sendError } from "./telegram.js";
@@ -115,13 +126,101 @@ export class StrandedSwapError extends Error {
  * a width failure landed AFTER the swap and stranded 0.4 SOL as an unmonitored
  * memecoin. `seekNewEntry` treats this as a routine skip, not a fault.
  */
-export class BinWidthExceededError extends Error {
+export class LiveEntryRefusedError extends Error {
+  readonly poolAddress: string;
+  readonly pairName: string;
+  /**
+   * Whether this refusal says something about the POOL that should be remembered.
+   *
+   * A range too wide, an operator denylist entry or an unaffordable rent bill are
+   * facts about the current configuration, not about the pool's ability to execute:
+   * raise `LIVE_CAPITAL_SOL` and the same pool opens fine. A rehearsal the cluster
+   * refused is different — it is the chain saying this open would fail — and that is
+   * what the execution breaker counts.
+   */
+  readonly countsAsExecutionFailure: boolean;
+
+  constructor(
+    message: string,
+    pairName: string,
+    poolAddress: string,
+    countsAsExecutionFailure = false,
+  ) {
+    super(message);
+    this.name = "LiveEntryRefusedError";
+    this.pairName = pairName;
+    this.poolAddress = poolAddress;
+    this.countsAsExecutionFailure = countsAsExecutionFailure;
+  }
+}
+
+export class BinWidthExceededError extends LiveEntryRefusedError {
   constructor(pairName: string, binWidth: number, poolAddress: string, limit: string) {
     super(
       `[live] ${pairName} needs ${binWidth} bins, over ${limit} (pool ${poolAddress}); ` +
         `skipped before any swap`,
+      pairName,
+      poolAddress,
     );
     this.name = "BinWidthExceededError";
+  }
+}
+
+/**
+ * The operator named this pool in `POOL_DENYLIST`.
+ *
+ * Its own type rather than a `BinWidthExceededError` with a width of 0, which is how
+ * this first shipped and which logged the line "needs 0 bins, over the operator
+ * POOL_DENYLIST". That reads months later as a width bug, and it made an operator
+ * decision indistinguishable from a program limit in the funnel. A skip reason is
+ * evidence; it has to say what actually happened.
+ */
+export class PoolDeniedError extends LiveEntryRefusedError {
+  constructor(pairName: string, poolAddress: string) {
+    super(
+      `[live] ${pairName} (pool ${poolAddress}) is on the operator POOL_DENYLIST; ` +
+        `skipped before any network call`,
+      pairName,
+      poolAddress,
+    );
+    this.name = "PoolDeniedError";
+  }
+}
+
+/** The pool has failed to execute repeatedly and is serving its bench. */
+export class ExecutionBenchedError extends LiveEntryRefusedError {
+  constructor(pairName: string, poolAddress: string, reason: string) {
+    super(
+      `[live] ${pairName} (pool ${poolAddress}) is benched by the execution breaker: ` +
+        `${reason}; skipped before any network call`,
+      pairName,
+      poolAddress,
+    );
+    this.name = "ExecutionBenchedError";
+  }
+}
+
+/**
+ * The cluster refused the open in simulation, before anything was signed or spent.
+ *
+ * This is the gate that did not exist on 7 Sep 2026. It is a REFUSAL rather than a
+ * fault — the engine skips the pool and moves on, exactly like any other gate — but
+ * unlike the others it counts towards the execution breaker, because the chain has
+ * said this specific open does not work and repeating it every 30 minutes would burn
+ * the entry slot indefinitely.
+ */
+export class OpenRehearsalFailedError extends LiveEntryRefusedError {
+  readonly stage: string;
+  constructor(pairName: string, poolAddress: string, stage: string, detail: string) {
+    super(
+      `[live] ${pairName} (pool ${poolAddress}) failed its pre-swap rehearsal at ` +
+        `"${stage}": ${detail}. Nothing was signed, sent or spent.`,
+      pairName,
+      poolAddress,
+      true,
+    );
+    this.name = "OpenRehearsalFailedError";
+    this.stage = stage;
   }
 }
 
@@ -196,25 +295,25 @@ export async function openLivePosition(params: {
   const depositSolLamports = totalLamports - swapLamports;
 
   /*
-   * Operator denylist (POOL_DENYLIST: comma-separated pool addresses or pair names,
-   * case-insensitive). Checked BEFORE any network call or swap so a denied pool is a
-   * routine skip, never a spend. Added after STONK-SOL cost real money twice on
-   * 7 Sep 2026 — once through a pre-fix width failure, once through the wide-create
-   * CU bug — and the operator wanted that specific pool gone, not just fixed.
+   * Two local refusals first, in this order, because neither costs a network call.
+   *
+   * The DENYLIST is the operator's manual override: "that pool specifically, gone".
+   * The BREAKER is its automatic counterpart, and the one that matters more, because
+   * it does not need anyone to be awake. On 7 Sep 2026 the same pool was re-elected
+   * every 30 minutes and spent real money twice before a human added a denylist entry;
+   * the breaker is what closes the window between the first failure and that
+   * intervention.
    */
-  const deniedPools = (process.env.POOL_DENYLIST ?? "")
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-  if (
-    deniedPools.includes(params.poolAddress.toLowerCase()) ||
-    deniedPools.includes(params.pairName.toLowerCase())
-  ) {
-    throw new BinWidthExceededError(
+  if (isPoolDenied(poolDenylist, params.poolAddress, params.pairName)) {
+    throw new PoolDeniedError(params.pairName, params.poolAddress);
+  }
+
+  const benched = assessExecutionBreaker(getPoolExecutionRecord(params.poolAddress));
+  if (benched.blocked) {
+    throw new ExecutionBenchedError(
       params.pairName,
-      0,
       params.poolAddress,
-      "the operator POOL_DENYLIST",
+      benched.reason ?? "benched",
     );
   }
 
@@ -276,11 +375,152 @@ export async function openLivePosition(params: {
       );
     }
 
+    /*
+     * THE PER-TRANSACTION SPEND CEILING, CHECKED HERE RATHER THAN AFTER THE SWAP.
+     *
+     * `dlmmExecutor.openPosition` charges deposit + rent to `assertWithinSpendLimit`,
+     * which is correct — but every one of those calls happens AFTER the balancing swap
+     * has confirmed. A wide position's account rent approaches 1 SOL, so
+     * `deposit + positionRent + binArrayRent` can breach a ceiling set to the position
+     * size, and the resulting `ExecutionLimitError` lands with the swap already spent
+     * and a memecoin to unwind. That is a configuration error producing a stranded
+     * swap — exactly the shape of failure every gate in this function exists to move
+     * in front of the spend.
+     *
+     * The rehearsal below cannot catch it either: it simulates against the CLUSTER,
+     * which knows nothing about our own ceiling.
+     *
+     * Deliberately checked against the worst of the two shapes the executor will
+     * actually assert, not their sum: the wide path splits rent and deposit across
+     * separate transactions, the narrow path sends one. Asserting the sum would refuse
+     * wide positions the executor would have accepted.
+     */
+    const depositLamports = totalLamports - swapLamports;
+    const positionRentLamports = Math.ceil(cost.positionSol * LAMPORTS_PER_SOL);
+    const binArrayRentLamports = Math.ceil(cost.binArraySol * LAMPORTS_PER_SOL);
+    const narrowPathLamports = depositLamports + positionRentLamports + binArrayRentLamports;
+    const widePathLamports = Math.max(
+      positionRentLamports,
+      depositLamports + binArrayRentLamports,
+    );
+    const worstLamports = binWidth <= 70 ? narrowPathLamports : widePathLamports;
+
+    if (worstLamports > onchainConfig.maxLamportsPerTx) {
+      throw new BinWidthExceededError(
+        params.pairName,
+        binWidth,
+        params.poolAddress,
+        `ONCHAIN_MAX_LAMPORTS_PER_TX (${(onchainConfig.maxLamportsPerTx / LAMPORTS_PER_SOL).toFixed(4)} ` +
+          `SOL): opening it needs one transaction to move ` +
+          `${(worstLamports / LAMPORTS_PER_SOL).toFixed(4)} SOL ` +
+          `(${(depositLamports / LAMPORTS_PER_SOL).toFixed(4)} deposit + ` +
+          `${cost.positionSol.toFixed(4)} position rent + ${cost.binArraySol.toFixed(4)} bin arrays). ` +
+          `Raise the ceiling; it bounds the transaction, not the position`,
+      );
+    }
+
     console.log(
       `[live] ${params.pairName}: ${binWidth} bins, open cost ${cost.totalSol.toFixed(4)} SOL ` +
-        `of a ${rentBudgetSol.toFixed(4)} SOL rent budget, ~${cost.transactionCount} tx`,
+        `of a ${rentBudgetSol.toFixed(4)} SOL rent budget, ` +
+        `worst single tx ${(worstLamports / LAMPORTS_PER_SOL).toFixed(4)} SOL of a ` +
+        `${(onchainConfig.maxLamportsPerTx / LAMPORTS_PER_SOL).toFixed(4)} SOL ceiling, ` +
+        `~${cost.transactionCount} tx`,
     );
   }
+
+  /*
+   * DRESS REHEARSAL — the last gate before anything is spent, and the only one that
+   * catches a failure nobody anticipated.
+   *
+   * Every other gate here names a condition and checks it: the width, the rent, the
+   * denylist. This one asks the CLUSTER to run the account-creation transactions and
+   * reports what it says. That is the difference between the gates that existed on
+   * 7 Sep 2026 and the failure that got through them — a compute-budget overflow that
+   * no named condition would have caught, discovered only after the swap had spent and
+   * a position account had been created and abandoned.
+   *
+   * It cannot rehearse the liquidity phase, because that deposits a token the wallet
+   * does not hold until the swap below. `rehearseOpenPosition` documents that boundary
+   * honestly rather than implying wider cover than it has; the liquidity phase is
+   * protected instead by the SDK's own compute budget now being honoured.
+   *
+   * A rehearsal the RPC could not RUN is not a refusal — it yields no failure and the
+   * open proceeds. Failing closed on a provider outage would stop all trading for a
+   * reason that has nothing to do with the pool.
+   */
+  const rehearsal = await rehearseOpenPosition({
+    poolAddress: params.poolAddress,
+    lowerBinPrice: params.lowerBinPrice,
+    upperBinPrice: params.upperBinPrice,
+    wallet: auth.wallet,
+  });
+
+  if (!rehearsal.ok && rehearsal.failure) {
+    const failure = rehearsal.failure;
+    const meter = failure.logs?.find((line) => /compute|exceeded/i.test(line));
+
+    /*
+     * Counted against the pool even though NOTHING WAS SPENT. The cost of a refused
+     * rehearsal is not gas, it is the entry slot: `seekNewEntry` opens at most one
+     * position per cycle and returns as soon as its chosen pool is refused, so a pool
+     * the chain will always reject would otherwise consume every 30-minute cycle
+     * forever while the engine reports itself healthy.
+     *
+     * UNLESS the refusal was the WALLET's fault. A simulation that failed for want of
+     * lamports would fail identically on every pool, so counting it would let one
+     * wallet-level fact bench the universe a pool at a time. The open is refused either
+     * way; only the strike is withheld.
+     */
+    if (rehearsal.poolAttributable) {
+      try {
+        recordPoolExecutionFailure({
+          poolAddress: params.poolAddress,
+          pairName: params.pairName,
+          stage: `rehearsal/${failure.stage}`,
+          reason: (failure.error ?? "simulation refused").slice(0, 500),
+        });
+      } catch (bookkeeping) {
+        console.warn(`[live] could not record the rehearsal failure for ${params.pairName}:`, bookkeeping);
+      }
+    } else {
+      console.warn(
+        `[live] ${params.pairName}: rehearsal refused for a WALLET-level reason, not a ` +
+          `pool one - refusing the entry but not counting a strike against the pool`,
+      );
+    }
+
+    throw new OpenRehearsalFailedError(
+      params.pairName,
+      params.poolAddress,
+      failure.stage,
+      `${failure.error}` +
+        (failure.unitsConsumed !== null
+          ? ` (used ${failure.unitsConsumed} of ${failure.computeUnitLimit} CU)`
+          : "") +
+        (meter ? ` — ${meter}` : ""),
+    );
+  }
+
+  for (const step of rehearsal.tight) {
+    console.warn(
+      `[live] ${params.pairName}: rehearsal step "${step.stage}" used ` +
+        `${step.unitsConsumed} of ${step.computeUnitLimit} CU — within 10% of its budget`,
+    );
+  }
+
+  /*
+   * Say plainly when there was nothing to rehearse. A narrow range on a pool whose bin
+   * arrays all exist has no account-creation transaction at all, so "rehearsal clean"
+   * on its own would read as "the open was verified" when nothing was simulated.
+   */
+  console.log(
+    rehearsal.steps.length === 0
+      ? `[live] ${params.pairName}: nothing to rehearse - no account creation needed ` +
+        `(all bin arrays exist${rehearsal.binWidth <= 70 ? ", narrow range" : ""}); ` +
+        `the deposit itself cannot be simulated before the swap that funds it`
+      : `[live] ${params.pairName}: rehearsal clean (${rehearsal.steps.length} transaction(s), ` +
+        `${rehearsal.binArraysToCreate} bin array(s) to create)`,
+  );
 
   console.log(
     `[live] ${params.pairName}: swapping ${(swapLamports / LAMPORTS_PER_SOL).toFixed(4)} SOL ` +
@@ -293,19 +533,28 @@ export async function openLivePosition(params: {
     amountLamports: swapLamports,
   });
 
-  // The chain, not the quote.
-  const pairedAmount = await readTokenBalance(auth.wallet, pairedMint, pairedTokenProgram);
-
-  if (pairedAmount === 0n) {
-    throw new StrandedSwapError(
-      pairedMint.toBase58(),
-      "0 (balance read as zero after a confirmed swap)",
-      swap.signature,
-      new Error("the swap confirmed but no token balance could be read"),
-    );
-  }
+  /*
+   * FROM HERE THE SWAP HAS SPENT. Everything below is inside the try, and that
+   * placement is load-bearing rather than tidy.
+   *
+   * The balance read and the zero check used to sit OUTSIDE it. Both can fail after a
+   * confirmed swap — an RPC error on the read, or a balance that comes back zero — and
+   * outside the try neither the auto-unwind nor the execution-breaker bookkeeping ran.
+   * That made it the one path that leaves an unmonitored memecoin in the wallet AND
+   * leaves no record that the pool cost anything, which is precisely the combination
+   * the breaker exists to notice. A zero balance now falls into the catch as well, so
+   * the rescue at least RE-READS the chain before concluding there is nothing to sell.
+   */
+  let pairedAmount = 0n;
 
   try {
+    // The chain, not the quote.
+    pairedAmount = await readTokenBalance(auth.wallet, pairedMint, pairedTokenProgram);
+
+    if (pairedAmount === 0n) {
+      throw new Error("the swap confirmed but no token balance could be read");
+    }
+
     const opened = await dlmmExecutor.openPosition(auth, {
       poolAddress: params.poolAddress,
       amountLamports: depositSolLamports,
@@ -325,6 +574,19 @@ export async function openLivePosition(params: {
     console.log(
       `[live] ${params.pairName}: position ${opened.position} opened (${openSignature})`,
     );
+
+    /*
+     * A confirmed open clears the pool's consecutive-failure run. Recorded here rather
+     * than by the caller because this is the only place that knows the open CONFIRMED
+     * — the same reason no position row is written anywhere else. Diagnostic, so it is
+     * wrapped: a breaker bookkeeping error must never turn a successful, already-paid
+     * open into a thrown failure that the caller would then treat as no position.
+     */
+    try {
+      recordPoolExecutionSuccess(params.poolAddress, params.pairName);
+    } catch (bookkeeping) {
+      console.warn(`[live] could not clear the execution breaker for ${params.pairName}:`, bookkeeping);
+    }
 
     return {
       positionAddress: opened.position,
@@ -357,9 +619,28 @@ export async function openLivePosition(params: {
       rescueError = rescueErr instanceof Error ? rescueErr.message : String(rescueErr);
     }
 
+    /*
+     * Count it against the pool BEFORE reporting. This is the failure that costs money
+     * — the swap confirmed and the open did not — and it is exactly the one that
+     * repeated on 7 Sep 2026 because nothing remembered it. Wrapped for the same
+     * reason as the success path: bookkeeping must not replace the real error.
+     */
+    try {
+      recordPoolExecutionFailure({
+        poolAddress: params.poolAddress,
+        pairName: params.pairName,
+        stage: "open",
+        reason: err instanceof Error ? err.message.slice(0, 500) : String(err).slice(0, 500),
+      });
+    } catch (bookkeeping) {
+      console.warn(`[live] could not record the execution failure for ${params.pairName}:`, bookkeeping);
+    }
+
     const stranded = new StrandedSwapError(
       pairedMint.toBase58(),
-      pairedAmount.toString(),
+      // Zero here means the balance never read back, not that the swap delivered
+      // nothing — the rescue above re-read the chain and is the authority on that.
+      pairedAmount === 0n ? "0 (balance never read back after a confirmed swap)" : pairedAmount.toString(),
       swap.signature,
       err,
       rescueSignature,
@@ -480,14 +761,36 @@ export function describeLiveExecutionBlockers(): string[] {
   if (!isLiveExecutionActive()) return [];
   const blockers: string[] = [];
 
+  /*
+   * The ceiling has to clear the DEPOSIT PLUS RENT, not the deposit alone.
+   *
+   * This check used to compare it against the position size and tell the operator to
+   * set the two equal — advice that guarantees the failure it was written to prevent.
+   * A single transaction on the narrow path carries the deposit, the position account's
+   * rent and any new bin arrays together, and rent is the larger term on a wide range
+   * (~1 SOL at 1400 bins). Set equal, every such entry passes screening and then dies
+   * on `assertWithinSpendLimit` AFTER the balancing swap has spent.
+   *
+   * The rent side is bounded by the envelope's own rent budget — the affordability gate
+   * refuses anything above it — so `maxPosition + rentBudget` is the largest sum any
+   * one transaction can legitimately ask for.
+   */
   const positionLamports = Math.ceil(liveMicroCapital.maxPositionSol * LAMPORTS_PER_SOL);
-  if (onchainConfig.maxLamportsPerTx < positionLamports) {
+  const rentBudgetLamports = Math.ceil(
+    Math.max(liveMicroCapital.deployableSol - liveMicroCapital.maxExposureSol, 0) *
+      LAMPORTS_PER_SOL,
+  );
+  const requiredLamports = positionLamports + rentBudgetLamports;
+
+  if (onchainConfig.maxLamportsPerTx < requiredLamports) {
     blockers.push(
       `ONCHAIN_MAX_LAMPORTS_PER_TX is ${onchainConfig.maxLamportsPerTx} lamports ` +
         `(${(onchainConfig.maxLamportsPerTx / LAMPORTS_PER_SOL).toFixed(4)} SOL) but one ` +
-        `position deposits up to ${positionLamports} (${liveMicroCapital.maxPositionSol} SOL). ` +
-        `Every entry would pass screening and then fail the spend ceiling. Set ` +
-        `ONCHAIN_MAX_LAMPORTS_PER_TX=${positionLamports}.`,
+        `transaction can carry a ${liveMicroCapital.maxPositionSol} SOL deposit PLUS up to ` +
+        `${(rentBudgetLamports / LAMPORTS_PER_SOL).toFixed(4)} SOL of position and bin-array ` +
+        `rent (the envelope's rent budget). Entries would pass screening and then fail the ` +
+        `spend ceiling after the balancing swap had already spent. Set ` +
+        `ONCHAIN_MAX_LAMPORTS_PER_TX=${requiredLamports}.`,
     );
   }
 
