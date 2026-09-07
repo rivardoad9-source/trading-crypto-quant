@@ -1617,10 +1617,11 @@ async function seekNewEntry(): Promise<EntrySummary> {
   /*
    * LIVE EXECUTION. The chain decides; the database records.
    *
-   * Deliberately OUTSIDE positionMutex. Opening a position is three confirmed
-   * transactions — a swap and up to two DLMM sends — and holding the lock across them
-   * would block the 60-second fast monitor for the duration, which is precisely the
-   * exit-timing guarantee the monitor exists to provide. Same rule that keeps
+   * Deliberately OUTSIDE positionMutex. Opening a position is a swap plus one to
+   * several DLMM sends — a range wider than 70 bins is created and then funded across
+   * multiple transactions — and holding the lock across them would block the
+   * 60-second fast monitor for the duration, which is precisely the exit-timing
+   * guarantee the monitor exists to provide. Same rule that keeps
    * `sendPositionClosed` and `reflectOnPosition` out of the locked section.
    *
    * The capacity check therefore happens twice: once here, before spending anything,

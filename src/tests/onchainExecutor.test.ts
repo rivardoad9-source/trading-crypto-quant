@@ -19,6 +19,10 @@ import { Keypair, PublicKey } from "@solana/web3.js";
 import bs58 from "bs58";
 import { isLiveTradingEnabled } from "../config/env.js";
 import {
+  DLMM_BINS_PER_INIT,
+  DLMM_MAX_BINS_PER_POSITION,
+  DLMM_POSITION_BIN_DATA_SIZE,
+  DLMM_POSITION_MIN_SIZE,
   HARD_MAX_SLIPPAGE_BPS,
   DlmmExecutionError,
   DlmmPartialExecutionError,
@@ -28,6 +32,7 @@ import {
   WSOL_MINT,
   assertWithinSpendLimit,
   authorizeExecution,
+  positionAccountBytes,
   binRangeFromPrices,
   dlmmExecutor,
   isExecutionArmable,
@@ -585,5 +590,88 @@ describe("onchain executor — the PoC script is safe by default", () => {
   it("tells the operator to check the chain before retrying a failure", () => {
     // The one instruction that prevents a double spend after an ambiguous failure.
     assert.match(script, /CHECK IT ON-CHAIN BEFORE RETRYING/);
+  });
+});
+
+/*
+ * These are the tests that would have caught the 7 Sep 2026 outage before it cost
+ * 0.4 SOL, and they are the ones that stop it recurring after an SDK upgrade.
+ *
+ * The engine had `MAX_BIN_PER_POSITION = 70` hand-written in `liveExecution.ts`. 70 is
+ * real — it is `DEFAULT_BIN_PER_POSITION`, all one `initializePosition` allocates — but
+ * it is not what a position account can HOLD, which is 1400. Nothing failed at build
+ * time or at boot; the number was simply wrong, and the cost showed up as entries
+ * dying after the balancing swap had already spent the SOL.
+ *
+ * The defence is not a better-chosen constant. It is refusing to let our copy and the
+ * SDK's disagree silently: every value below is asserted against the installed SDK, so
+ * a version bump that moves any of them fails the build instead of the wallet.
+ */
+describe("onchain executor — DLMM position limits track the SDK, not a hand-written guess", () => {
+  /** The SDK ships a broken ESM build; the CJS one is what the executor loads too. */
+  async function sdkConstants(): Promise<Record<string, unknown>> {
+    const { createRequire } = await import("node:module");
+    const require = createRequire(import.meta.url);
+    return require("@meteora-ag/dlmm") as Record<string, unknown>;
+  }
+
+  it("mirrors DEFAULT_BIN_PER_POSITION and POSITION_MAX_LENGTH exactly", async () => {
+    const sdk = await sdkConstants();
+
+    assert.equal(
+      Number(String(sdk.DEFAULT_BIN_PER_POSITION)),
+      DLMM_BINS_PER_INIT,
+      "DLMM_BINS_PER_INIT drifted from the SDK's DEFAULT_BIN_PER_POSITION",
+    );
+    assert.equal(
+      Number(String(sdk.POSITION_MAX_LENGTH)),
+      DLMM_MAX_BINS_PER_POSITION,
+      "DLMM_MAX_BINS_PER_POSITION drifted from the SDK's POSITION_MAX_LENGTH",
+    );
+  });
+
+  it("mirrors the account size constants", async () => {
+    const sdk = await sdkConstants();
+    assert.equal(Number(sdk.POSITION_MIN_SIZE), DLMM_POSITION_MIN_SIZE);
+    assert.equal(Number(sdk.POSITION_BIN_DATA_SIZE), DLMM_POSITION_BIN_DATA_SIZE);
+  });
+
+  it("computes the same account size the SDK does, at and either side of the 70-bin step", async () => {
+    const sdk = await sdkConstants();
+    const calculatePositionSize = sdk.calculatePositionSize as (bn: unknown) => { toString(): string };
+    const { default: BN } = await import("bn.js");
+
+    // 69/70/71 straddle the point where the account stops being fixed-size, which is
+    // exactly where an off-by-one would hide.
+    for (const width of [1, 69, 70, 71, 91, 161, 278, 700, 1400]) {
+      assert.equal(
+        positionAccountBytes(width),
+        Number(calculatePositionSize(new BN(width)).toString()),
+        `account size disagrees with the SDK at width ${width}`,
+      );
+    }
+  });
+
+  it("keeps the resize step under Solana's 10240-byte realloc cap", async () => {
+    const sdk = await sdkConstants();
+    const maxResize = Number(String(sdk.MAX_RESIZE_LENGTH));
+
+    /*
+     * This is the arithmetic the whole wide-position path rests on: one
+     * `increasePositionLength` grows the account by MAX_RESIZE_LENGTH bins, and Solana
+     * refuses a realloc above 10240 bytes per instruction. If an SDK bump raised
+     * MAX_RESIZE_LENGTH past this, every wide open would fail on-chain.
+     */
+    assert.ok(
+      maxResize * DLMM_POSITION_BIN_DATA_SIZE <= 10_240,
+      `MAX_RESIZE_LENGTH=${maxResize} x ${DLMM_POSITION_BIN_DATA_SIZE}B exceeds the ` +
+        `10240-byte realloc cap`,
+    );
+  });
+
+  it("rejects a nonsense width rather than returning a plausible size", () => {
+    for (const bad of [0, -1, 1.5, Number.NaN]) {
+      assert.throws(() => positionAccountBytes(bad), DlmmExecutionError, `width ${bad}`);
+    }
   });
 });

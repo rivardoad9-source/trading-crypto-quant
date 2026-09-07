@@ -49,28 +49,83 @@ pre-V1.1 behaviour reintroduced through configuration.
 
 ## Live entry hard limits (learned 7 Sep 2026, real money)
 
-The DLMM program opens ONE position account per `initializePosition` and that account
-spans at most **70 bins** (IDL `MAX_BIN_PER_POSITION`; verified by simulation — width
-74 → `InvalidPositionWidth`, width 100+ → runtime `InvalidRealloc`, width 1–70 clean).
-The engine's −45%/+15% price range exceeds 70 bins on any pool with `bin_step` below
-~106 bps (~72% of the scanned universe), so such an entry fails AFTER the balancing
-swap has already converted SOL into the paired token — a stranded, unmonitored
-memecoin balance (0.4 SOL lost-ish on 7 Sep before the fix). Two server-side fixes are
-live:
+**70 was the wrong number, and believing it cost 0.4 SOL and ~75% of the universe.**
+The original note here said a position account "spans at most 70 bins (IDL
+`MAX_BIN_PER_POSITION`)" and told the reader not to widen it. 70 is real but it is
+`DEFAULT_BIN_PER_POSITION` — all a single `initializePosition` ALLOCATES — not what the
+account can HOLD, which is **1400** (`POSITION_MAX_LENGTH`). Nothing failed loudly: the
+constant was hand-written in `liveExecution.ts`, agreed with no test, and the cost
+surfaced only as entries dying after the balancing swap had already spent the SOL.
 
-1. `openLivePosition` (liveExecution.ts) computes the bin width from the live pool and
-   throws `BinWidthExceededError` BEFORE the balancing swap; `seekNewEntry` treats it
-   as a routine skip (no operator page). Consequence: live entries only happen on pools
-   whose bin step keeps the range ≤ 70 bins (~28% of universe).
-2. Any open failure after the swap auto-unwinds: the catch block sells the current
-   paired-token balance back to SOL via Jupiter and includes the rescue signature in
-   the `StrandedSwapError` page.
+The account is grown past 70 by TOP-LEVEL `increasePositionLength` instructions of at
+most `MAX_RESIZE_LENGTH` (91) bins each. 91 x 112 bytes = 10192, just under Solana's
+10240-byte realloc cap — which is where the cap comes from, and why the original
+"InvalidRealloc" diagnosis was right about the mechanism and wrong about the remedy.
+`initializePositionAndAddLiquidityByStrategy` cannot do this: it asks
+`initializePosition` for the FULL width in one instruction, so the realloc happens
+inside a CPI and dies above 70.
 
-Do NOT widen the 70-bin cap — it is a program constant. Open work if the full universe
-is wanted: (a) pre-create the position account at final size in a top-level instruction
-so `initializePosition` never reallocs inside a CPI, or (b) chunk the range into
-multiple ≤70-bin positions — route (b) breaks the one-position-per-pool assumption in
-DB/monitor/close/claim and is a big refactor. Neither is started.
+Verified against mainnet by simulation on 7 Sep 2026 (`scripts/simWidePosition.cjs`,
+`sigVerify:false`, nothing sent):
+
+| width | result |
+|---|---|
+| 70 / 100 / 300 / 600 / 1200 / 1400 | OK — one transaction, 1400 bins = 17 ix, 772 bytes, 153k CU |
+| 1401 and above | `InvalidPositionWidth` (custom 6040) at `increase_position_length.rs:52` |
+
+**1400 is a hard program limit. The BINDING limit on this wallet is rent, not 1400.**
+A position account is rent-exempt and rent scales linearly with width: ~0.057 SOL at 70
+bins, ~0.996 SOL at 1400. Bin arrays cost a further 0.0714 SOL EACH for any that do not
+exist yet, and a wide range spans many — on a liquid pool that is zero, on a fresh pool
+it is the larger of the two costs. The live envelope leaves `deployableSol -
+maxExposureSol` = **0.20 SOL** for rent, which admits **278 bins**.
+
+Measured against the live 600-pool scan, for the engine's −45%/+15% range:
+
+| bin cap | pools admitted | share |
+|---|---|---|
+| 70 (before) | 114 | 19.0% |
+| 278 (now, rent-limited at 1.15 SOL) | 446 | **74.3%** |
+| 1400 (program max, needs more capital) | 559 | 93.2% |
+| >1400 — impossible in one position | 41 | 6.8% |
+
+The last row is `bin_step` 1–5, which need 1477–7378 bins. Those are the tight-spread
+majors, and `MAX_TVL_USD` rejects most of them anyway. Reaching them at all needs route
+(b) below.
+
+What is live:
+
+1. `openLivePosition` gates TWICE before the balancing swap, both as
+   `BinWidthExceededError` (a routine `seekNewEntry` skip, no operator page): once on
+   the 1400-bin program limit, once on whether the open is AFFORDABLE. The affordability
+   figure comes from the SDK's `quoteCreatePosition`, which reads the chain — estimating
+   bin-array rent from the width alone is wrong in both directions.
+2. `dlmmExecutor.openPosition` keeps the narrow path (≤70 bins) as ONE atomic
+   transaction, and takes a two-phase path above it: `createExtendedEmptyPosition`
+   (init + resizes), then `addLiquidityByStrategyChunkable`. The liquidity transactions
+   cannot be built in advance — the SDK reads the position account to build them — so
+   two phases is forced, not a choice. Every failure after the create is reported as
+   `DlmmPartialExecutionError` naming the position address, because at that point a
+   funded-but-empty account exists and its rent is recoverable only by closing it.
+3. Rent is charged to `ONCHAIN_MAX_LAMPORTS_PER_TX` on BOTH paths. It was not before:
+   the ceiling saw only the deposit, while CLAUDE.md described it as bounding the
+   transaction. Same defect class as the coverage gate — advertised bound, unenforced.
+4. Any open failure after the swap still auto-unwinds: the catch block sells the paired
+   token back to SOL via Jupiter and puts the rescue signature in `StrandedSwapError`.
+
+**Do not hand-write these constants again.** `DLMM_BINS_PER_INIT`,
+`DLMM_MAX_BINS_PER_POSITION`, `DLMM_POSITION_MIN_SIZE` and
+`DLMM_POSITION_BIN_DATA_SIZE` live in `onchainExecutor.ts` and
+`onchainExecutor.test.ts` asserts every one of them against the installed SDK, plus
+that `MAX_RESIZE_LENGTH x 112 <= 10240`. An SDK bump that moves any of them fails the
+build instead of the wallet. That test is the actual fix here; the number is just its
+first output.
+
+Raising `LIVE_CAPITAL_SOL` is the sanctioned lever for more coverage — it buys rent
+headroom, and rent is recovered when the position closes. Open work for the last 6.8%:
+chunk the range into multiple <=1400-bin positions. That breaks the
+one-position-per-pool assumption in DB/monitor/close/claim and is a real refactor;
+write the design down before starting it. Not started.
 
 ## Commands
 

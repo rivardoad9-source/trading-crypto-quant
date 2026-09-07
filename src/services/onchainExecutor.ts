@@ -956,6 +956,117 @@ export function binRangeFromPrices(
   return { minBinId, maxBinId };
 }
 
+/*
+ * DLMM one-position limits.
+ *
+ * These mirror the SDK's own exported constants (`DEFAULT_BIN_PER_POSITION`,
+ * `POSITION_MAX_LENGTH`, `POSITION_MIN_SIZE`, `POSITION_BIN_DATA_SIZE`) rather than
+ * being independent guesses, and `onchainExecutor.test.ts` fails the build if they
+ * ever drift from the installed SDK. They are duplicated here because the SDK loads
+ * asynchronously through `loadDlmmSdk()` and a module-level constant cannot await.
+ *
+ * The distinction between the two bin numbers is the whole reason wide positions
+ * were thought impossible:
+ *
+ *  - `DLMM_BINS_PER_INIT` (70) is all `initializePosition` allocates in one go. The
+ *    SDK's `initializePositionAndAddLiquidityByStrategy` asks for the FULL width in
+ *    that single instruction, so any width above 70 makes the program's Anchor `init`
+ *    grow the account inside a CPI, and Solana caps a CPI realloc at 10240 bytes —
+ *    the "Account data size realloc limited to 10240 in inner instructions" failure.
+ *  - `DLMM_MAX_BINS_PER_POSITION` (1400) is what one position account can actually
+ *    hold. The account is grown to it by TOP-LEVEL `increasePositionLength`
+ *    instructions of at most 91 bins each (91 x 112 = 10192 bytes, just under the
+ *    same 10240 cap — which is exactly why the SDK's MAX_RESIZE_LENGTH is 91).
+ *
+ * Verified against mainnet by simulation (sigVerify:false, nothing sent) on
+ * 7 Sep 2026: widths 70/100/300/600/1200/1400 all simulate clean in ONE transaction
+ * (1400 bins = 17 instructions, 772 bytes, 153k CU); width 1401 and above fail with
+ * AnchorError custom 6040 (InvalidPositionWidth) thrown at
+ * `increase_position_length.rs:52`. 1400 is therefore a hard program limit, not a
+ * tuning knob.
+ */
+export const DLMM_BINS_PER_INIT = 70;
+export const DLMM_MAX_BINS_PER_POSITION = 1400;
+export const DLMM_POSITION_MIN_SIZE = 8112;
+export const DLMM_POSITION_BIN_DATA_SIZE = 112;
+
+/**
+ * On-chain byte size of a position account spanning `binWidth` bins.
+ *
+ * Matches the SDK's `calculatePositionSize`. It matters to the caller because the
+ * account is rent-exempt and rent scales LINEARLY with it: 70 bins costs ~0.052 SOL,
+ * 1400 bins ~0.996 SOL. On a 1 SOL wallet the rent, not the program limit, is what
+ * actually bounds how wide a position can be opened — see the affordability gate in
+ * `liveExecution.ts`.
+ */
+export function positionAccountBytes(binWidth: number): number {
+  if (!Number.isInteger(binWidth) || binWidth < 1) {
+    throw new DlmmExecutionError(`bin width ${binWidth} is not a positive integer`);
+  }
+  const extra = Math.max(binWidth - DLMM_BINS_PER_INIT, 0);
+  return DLMM_POSITION_MIN_SIZE + extra * DLMM_POSITION_BIN_DATA_SIZE;
+}
+
+/**
+ * What opening this range will COST in SOL, before anything is spent.
+ *
+ * Asked of the SDK rather than computed here, because the honest figure has three
+ * parts and only the chain knows two of them:
+ *
+ *  - the position account's rent, which scales with the width;
+ *  - the `increasePositionLength` realloc cost for anything past 70 bins;
+ *  - rent for bin arrays that do not exist YET. Bin arrays are shared per pool, so a
+ *    liquid pool usually charges nothing here and a fresh one charges 0.0714 SOL per
+ *    array. Estimating this from the width alone would be wrong in both directions.
+ *
+ * This is a QUOTE, not a spend, and it opens no transaction. It exists so the live
+ * bridge can refuse an unaffordable range BEFORE the balancing swap, which is the
+ * ordering that stops a failed open stranding a memecoin balance.
+ */
+export interface OpenCostQuote {
+  binWidth: number;
+  /** Position account rent + realloc + any bitmap extension. */
+  positionSol: number;
+  binArraysToCreate: number;
+  binArraySol: number;
+  totalSol: number;
+  /** The SDK's own estimate of how many transactions create + fund will take. */
+  transactionCount: number;
+}
+
+export async function quoteOpenCost(params: {
+  poolAddress: string;
+  lowerBinPrice: number;
+  upperBinPrice: number;
+  strategy: OpenPositionParams["strategy"];
+}): Promise<OpenCostQuote> {
+  const { StrategyType: Strategy } = await loadDlmmSdk();
+  const pool = await openPool(params.poolAddress);
+  const { minBinId, maxBinId } = binRangeFromPrices(
+    pool,
+    params.lowerBinPrice,
+    params.upperBinPrice,
+  );
+
+  const quote = await pool.quoteCreatePosition({
+    strategy: {
+      minBinId,
+      maxBinId,
+      strategyType: Strategy[STRATEGY_TYPE[params.strategy]],
+    },
+  });
+
+  const positionSol = quote.positionCost + quote.positionReallocCost + quote.bitmapExtensionCost;
+  return {
+    binWidth: maxBinId - minBinId + 1,
+    positionSol,
+    binArraysToCreate: quote.binArraysCount,
+    binArraySol: quote.binArrayCost,
+    totalSol: positionSol + quote.binArrayCost,
+    transactionCount: quote.transactionCount,
+  };
+}
+
 /** Which side of the pair is wSOL, or null when neither is. */
 export function solSide(pool: {
   tokenX: { publicKey: PublicKey };
@@ -1070,7 +1181,20 @@ export const dlmmExecutor: DlmmExecutor = {
     const sol = new BN(Math.floor(params.amountLamports));
 
     const positionKeypair = Keypair.generate();
-    const transaction = await pool.initializePositionAndAddLiquidityByStrategy({
+    const positionAddress = positionKeypair.publicKey.toBase58();
+    const binWidth = maxBinId - minBinId + 1;
+
+    if (binWidth > DLMM_MAX_BINS_PER_POSITION) {
+      throw new DlmmExecutionError(
+        `pool ${params.poolAddress} needs ${binWidth} bins for range ` +
+          `[${params.lowerBinPrice}, ${params.upperBinPrice}], over the ` +
+          `${DLMM_MAX_BINS_PER_POSITION}-bin maximum of one DLMM position account. ` +
+          `Widening past this needs several positions, which the engine's ` +
+          `one-position-per-pool model does not support.`,
+      );
+    }
+
+    const deposit = {
       positionPubKey: positionKeypair.publicKey,
       user: auth.wallet,
       totalXAmount: side === "X" ? sol : paired,
@@ -1082,16 +1206,140 @@ export const dlmmExecutor: DlmmExecutor = {
       },
       // The SDK takes slippage as a PERCENTAGE; our bound is in bps.
       slippage: slippageBps / 100,
-    });
+    };
 
-    const sent = await sendAndConfirm(
+    /*
+     * What this open will actually cost in rent, asked of the SDK because bin-array
+     * rent depends on which arrays already exist on-chain.
+     *
+     * It is charged to the spend ceiling. `assertWithinSpendLimit` bounds the number it
+     * is handed, so a ceiling applied only to the deposit would leave the largest
+     * remaining lamport movement in the transaction unbounded — and CLAUDE.md describes
+     * this ceiling as bounding the transaction, not the deposit. Rent is recoverable on
+     * close, but "recoverable" is not "unbounded".
+     */
+    const cost = await pool.quoteCreatePosition({
+      strategy: { minBinId, maxBinId, strategyType: Strategy[STRATEGY_TYPE[params.strategy]] },
+    });
+    const positionRentLamports = Math.ceil(
+      (cost.positionCost + cost.positionReallocCost + cost.bitmapExtensionCost) * 1e9,
+    );
+    const binArrayRentLamports = Math.ceil(cost.binArrayCost * 1e9);
+
+    /*
+     * Narrow range: unchanged single-transaction path.
+     *
+     * Kept as one transaction rather than routed through the wide path, because this
+     * one is ATOMIC — the position cannot exist without its liquidity — and every
+     * invariant in `liveExecution.ts` about not recording a row until the open confirms
+     * is easier to hold when there is exactly one thing to confirm.
+     */
+    if (binWidth <= DLMM_BINS_PER_INIT) {
+      // One transaction moves all three, so the ceiling faces their sum.
+      assertWithinSpendLimit(
+        auth,
+        params.amountLamports + positionRentLamports + binArrayRentLamports,
+        "dlmm openPosition (deposit + rent)",
+      );
+
+      const transaction = await pool.initializePositionAndAddLiquidityByStrategy(deposit);
+
+      const sent = await sendAndConfirm(
+        auth,
+        async ({ blockhash, plan }) =>
+          asVersionedTransaction(transaction, blockhash, plan, auth.wallet, [positionKeypair]),
+        { label: "dlmm openPosition" },
+      );
+
+      return { sent: [sent], position: positionAddress };
+    }
+
+    /*
+     * Wide range: create the account first, then fund it. Necessarily TWO phases.
+     *
+     * `initializePositionAndAddLiquidityByStrategy` cannot do this — it asks
+     * `initializePosition` for the full width in one instruction and dies in the CPI
+     * realloc cap above 70 bins. `createExtendedEmptyPosition` instead emits
+     * `initializePosition(70)` plus top-level `increasePositionLength` instructions,
+     * which is the only shape the program accepts for a wide account.
+     *
+     * The liquidity transactions cannot be built ahead of time: the SDK reads the
+     * position account to build them, so it must already exist on-chain. That is what
+     * makes this two phases rather than one, and why the failure mode below is real
+     * rather than theoretical.
+     *
+     * The rent is charged here too, and it is NOT small — it scales with the width
+     * (~0.996 SOL at 1400 bins). It faces the spend ceiling for the same reason the
+     * deposit does: a per-transaction bound that ignores the largest lamport movement
+     * in the transaction is not a bound.
+     */
+    assertWithinSpendLimit(
       auth,
-      async ({ blockhash, plan }) =>
-        asVersionedTransaction(transaction, blockhash, plan, auth.wallet, [positionKeypair]),
-      { label: "dlmm openPosition" },
+      positionRentLamports,
+      "dlmm openPosition (wide position account rent)",
+    );
+    // The funding transactions carry the deposit and any new bin arrays.
+    assertWithinSpendLimit(
+      auth,
+      params.amountLamports + binArrayRentLamports,
+      "dlmm openPosition (deposit + bin array rent)",
     );
 
-    return { sent: [sent], position: positionKeypair.publicKey.toBase58() };
+    console.log(
+      `[onchain/dlmm] ${params.poolAddress}: ${binWidth} bins needs a wide position ` +
+        `(${positionAccountBytes(binWidth)} bytes, ` +
+        `${(positionRentLamports / 1e9).toFixed(4)} SOL account rent + ` +
+        `${(binArrayRentLamports / 1e9).toFixed(4)} SOL for ${cost.binArraysCount} bin arrays, ` +
+        `~${cost.transactionCount} tx); creating the account before funding it`,
+    );
+
+    const createTx = await pool.createExtendedEmptyPosition(
+      minBinId,
+      maxBinId,
+      positionKeypair.publicKey,
+      auth.wallet,
+    );
+
+    const created = await sendAndConfirm(
+      auth,
+      async ({ blockhash, plan }) =>
+        asVersionedTransaction(createTx, blockhash, plan, auth.wallet, [positionKeypair]),
+      { label: "dlmm openPosition (create wide position)" },
+    );
+
+    /*
+     * From here the position EXISTS and holds rent. Every failure below is therefore a
+     * partial execution, never a clean one: reporting it as a plain error would leave
+     * the operator with a funded-but-empty account nothing in the engine knows about.
+     * `DlmmPartialExecutionError` names the address so it can be closed and the rent
+     * recovered.
+     */
+    let funded: SendResult[] = [];
+    try {
+      const liquidityTxs = await pool.addLiquidityByStrategyChunkable(deposit);
+
+      if (liquidityTxs.length === 0) {
+        throw new DlmmExecutionError(
+          `the SDK produced no liquidity transaction for a ${binWidth}-bin range`,
+        );
+      }
+
+      funded = await sendSequentially(auth, liquidityTxs, {
+        operation: "openPosition (fund wide position)",
+        position: positionAddress,
+        extraSigners: [],
+      });
+    } catch (err) {
+      const alreadyLanded = err instanceof DlmmPartialExecutionError ? err.landed : [];
+      throw new DlmmPartialExecutionError(
+        "openPosition",
+        positionAddress,
+        [created, ...alreadyLanded],
+        err,
+      );
+    }
+
+    return { sent: [created, ...funded], position: positionAddress };
   },
 
   async claimFees(
