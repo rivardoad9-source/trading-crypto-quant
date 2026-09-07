@@ -168,6 +168,27 @@ was closed the same evening via `scripts/closeOrphanPosition.cjs` (SDK
 recovered, wallet back to 3.08 SOL. The script is kept as the template for closing
 any future empty position account the engine leaves behind.
 
+### Second strike, same class (SOLCAT-SOL, same evening) — now fixed structurally
+
+SOLCAT-SOL (77 bins, wide path) repeated the STONK failure pattern: the SDK's
+funding builder packed 2x `InitializeBinArray` into funding tx 1/N and died on the
+CU meter AFTER the balancing swap confirmed. The rehearsal could not see it (it
+only simulates the create phase — the funding phase needs the swapped token), and
+the SDK's own budget for that transaction was the too-small number. Auto-unwind
+worked again (verified), 0.0572 SOL orphan closed via
+`scripts/forceClosePosition.cjs` (generic by pool+position args).
+
+Structural fix (commit after `9b96d7e`):
+1. `dlmmExecutor.ensureBinArrays` — missing bin arrays are now pre-created BEFORE
+   the balancing swap (liveExecution, wide ranges only). A failure there costs
+   nothing and is a routine refusal, not a stranded balance. The executor's own
+   post-swap prep remains as defence-in-depth.
+2. Executor wide-path catch now AUTO-CLOSES a created-but-unfunded position
+   (best effort, `closePosition2` on the account it just created) — no more
+   orphan accounts waiting for a human-run script.
+Residual risk: funding can still fail for reasons other than missing arrays; those
+now cost only the swap round-trip (auto-unwind) with no orphan left behind.
+
 ### The compute budget: `ONCHAIN_COMPUTE_UNIT_LIMIT` is a FLOOR, not a cap
 
 **This is the root cause of the 7 Sep failure, and it was bigger than the pool it
