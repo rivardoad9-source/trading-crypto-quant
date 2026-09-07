@@ -165,7 +165,10 @@ paused. Fixes landed the same day (commit 35f6366 + follow-up):
    only ever run against STONK-SOL.
 
 Orphan account `6MdbD6GjaM49fm7fQTwnvyZUVfbjgogbAkVuVEu5MURs` (0.2657 SOL rent)
-still needs a manual close to recover the rent.
+was closed the same evening via `scripts/closeOrphanPosition.cjs` (SDK
+`closePosition2`; valid because the position held zero liquidity) — 0.265727 SOL
+recovered, wallet back to 3.08 SOL. The script is kept as the template for closing
+any future empty position account the engine leaves behind.
 
 ## Commands
 
