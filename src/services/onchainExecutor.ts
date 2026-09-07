@@ -835,8 +835,28 @@ export interface DlmmExecutor {
  */
 let dlmmSdk: Promise<typeof import("@meteora-ag/dlmm")> | null = null;
 
+/*
+ * Loads the DLMM SDK through its CJS build, not its ESM one.
+ *
+ * `await import("@meteora-ag/dlmm")` always rejects here: the package's ESM build
+ * (`dist/index.mjs`) opens with `import { bs58 } from
+ * "@coral-xyz/anchor/dist/cjs/utils/bytes"` — a directory import, which Node's ESM
+ * resolver forbids (CJS tolerated it). In the engine that surfaces as
+ * "Directory import ... is not supported resolving ES modules" inside
+ * seekNewEntry/liveExecution, killing every live entry attempt after screening
+ * passes. The CJS build (`dist/index.js`, chosen by createRequire through the
+ * "require" condition of the package exports) loads cleanly and exports the same
+ * surface — module.exports IS the DLMM class, with the named exports attached as
+ * statics. We shape it back into an ESM-namespace-like object so the
+ * `const { default: DLMM } = await loadDlmmSdk()` call sites stay unchanged.
+ */
 function loadDlmmSdk(): Promise<typeof import("@meteora-ag/dlmm")> {
-  dlmmSdk ??= import("@meteora-ag/dlmm");
+  dlmmSdk ??= (async () => {
+    const { createRequire } = await import("node:module");
+    const require = createRequire(import.meta.url);
+    const cjsModule = require("@meteora-ag/dlmm");
+    return { default: cjsModule, ...cjsModule };
+  })();
   return dlmmSdk;
 }
 

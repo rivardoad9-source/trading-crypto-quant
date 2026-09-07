@@ -259,7 +259,15 @@ export async function claimLiveFees(params: {
 async function describePair(
   poolAddress: string,
 ): Promise<{ pairedMint: PublicKey; pairedTokenProgram: PublicKey }> {
-  const { default: DLMM } = await import("@meteora-ag/dlmm");
+  // Load the SDK via its CJS build: the ESM build (`dist/index.mjs`) imports an
+  // Anchor CJS directory (`@coral-xyz/anchor/dist/cjs/utils/bytes`), which Node's
+  // ESM resolver rejects — every live entry then dies in seekNewEntry. CJS
+  // `module.exports` IS the DLMM class, so `.default` may be absent; normalise both
+  // shapes before calling `.create`.
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const dlmmModule = require("@meteora-ag/dlmm") as { default?: unknown };
+  const DLMM = (dlmmModule.default ?? dlmmModule) as typeof import("@meteora-ag/dlmm")["default"];
   const pool = await DLMM.create(getConnection(), new PublicKey(poolAddress));
   const wsol = new PublicKey(WSOL_MINT);
 
