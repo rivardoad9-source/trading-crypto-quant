@@ -127,6 +127,35 @@ chunk the range into multiple <=1400-bin positions. That breaks the
 one-position-per-pool assumption in DB/monitor/close/claim and is a real refactor;
 write the design down before starting it. Not started.
 
+### Live deployment config (7 Sep 2026 — wallet ~3.10 SOL)
+
+The live server runs env overrides on top of the code defaults (`.env` is untracked;
+`.env.example` mirrors them):
+
+- `DRY_RUN=false`, `LIVE_MICRO_CAPITAL=true`, `ONCHAIN_EXECUTION_ARMED=true`
+- `LIVE_CAPITAL_SOL=3.05` (code default 1.15 stays the reviewed micro envelope)
+- `LIVE_MAX_POSITION_SOL=1.8` — deployable = 3.05 − 0.15 reserve = 2.90, leaving
+  1.10 SOL rent headroom: admits everything up to the 1400-bin program limit (93.2%,
+  was 74.3% at the 0.20 SOL headroom of the default profile)
+- `ONCHAIN_MAX_LAMPORTS_PER_TX=1800000000` (1.8 SOL) — MUST track
+  `LIVE_MAX_POSITION_SOL`: the boot validator refuses to start when the spend
+  ceiling is below the max position deposit (hit live on 7 Sep after raising the
+  position to 1.8 without touching the ceiling)
+
+First attempt at the new envelope exposed a real bug (7 Sep, live, real money):
+STONK-SOL (371 bins) passed both pre-swap gates and the balancing swap, but the
+wide-create transaction died on COMPUTE: the create carries 2x `InitializeBinArray`
+(~192k CU each) plus overhead in one tx, over the 399,700 CU budget. Net result:
+position account `6MdbD6GjaM49fm7fQTwnvyZUVfbjgogbAkVuVEu5MURs` exists but empty
+(0.2657 SOL rent locked), zero bin arrays initialized, and the V1.1 auto-unwind
+worked exactly as designed — the 0.9 SOL of paired tokens was sold back to SOL
+on-chain (verified: wallet back to 2.81 SOL, no token dust).
+
+The pool stays a candidate, so every 30-min cycle re-attempts it until blocked or
+paused. Fix direction (not started): initialize the required bin arrays in their own
+transactions, one per tx — the same chunking the liquidity phase already uses —
+instead of inside the create. Until then: block the pool or keep the engine paused.
+
 ## Commands
 
 ```bash
