@@ -195,6 +195,29 @@ export async function openLivePosition(params: {
   const swapLamports = Math.floor(totalLamports / 2);
   const depositSolLamports = totalLamports - swapLamports;
 
+  /*
+   * Operator denylist (POOL_DENYLIST: comma-separated pool addresses or pair names,
+   * case-insensitive). Checked BEFORE any network call or swap so a denied pool is a
+   * routine skip, never a spend. Added after STONK-SOL cost real money twice on
+   * 7 Sep 2026 — once through a pre-fix width failure, once through the wide-create
+   * CU bug — and the operator wanted that specific pool gone, not just fixed.
+   */
+  const deniedPools = (process.env.POOL_DENYLIST ?? "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  if (
+    deniedPools.includes(params.poolAddress.toLowerCase()) ||
+    deniedPools.includes(params.pairName.toLowerCase())
+  ) {
+    throw new BinWidthExceededError(
+      params.pairName,
+      0,
+      params.poolAddress,
+      "the operator POOL_DENYLIST",
+    );
+  }
+
   const { pairedMint, pairedTokenProgram, binWidth } = await describePair(
     params.poolAddress,
     params.lowerBinPrice,

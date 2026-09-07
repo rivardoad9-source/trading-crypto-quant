@@ -7,7 +7,7 @@ import {
   TransactionMessage,
   VersionedTransaction,
   type BlockhashWithExpiryBlockHeight,
-  type Transaction,
+  Transaction,
   type TransactionInstruction,
 } from "@solana/web3.js";
 import BN from "bn.js";
@@ -1147,6 +1147,68 @@ async function sendSequentially(
  * and `env.ts` still refuses to boot on `DRY_RUN=false`. What changed is that the
  * instructions are now real ones produced by the SDK rather than a throw.
  */
+
+/**
+ * Creates every bin array a wide range needs that does not exist on-chain yet, ONE
+ * PER TRANSACTION, before the funding phase runs.
+ *
+ * Why this exists (measured live on 7 Sep 2026, real money): the SDK's chunked
+ * funding builder emits `InitializeBinArray` inline for missing arrays — two of
+ * them in one funding transaction blew the 399,700 CU budget (~192k per init:
+ * the second init died at 191,723 of 191,723 remaining). The swap had already
+ * happened and auto-unwound, but a funded-but-empty position account was left
+ * holding rent. Pre-creating each missing array in its own transaction means the
+ * funding builder finds every array on-chain and emits pure liquidity
+ * transactions, which are the ones that were already chunked safely.
+ */
+async function preCreateMissingBinArrays(
+  auth: ExecutionAuthorization,
+  pool: DlmmPool,
+  minBinId: number,
+  maxBinId: number,
+): Promise<void> {
+  const { deriveBinArray, getBinArrayIndexesCoverage } = await loadDlmmSdk();
+
+  const indexes = getBinArrayIndexesCoverage(new BN(minBinId), new BN(maxBinId));
+  const candidates: { index: BN; pubkey: PublicKey }[] = [];
+  for (const raw of indexes) {
+    const index = new BN(raw);
+    const [pubkey] = deriveBinArray(pool.pubkey, index, pool.program.programId);
+    candidates.push({ index, pubkey });
+  }
+
+  const infos = await pool.program.provider.connection.getMultipleAccountsInfo(
+    candidates.map((c) => c.pubkey),
+  );
+  const missing = candidates.filter((_, i) => infos[i] === null);
+  if (missing.length === 0) return;
+
+  const { BIN_ARRAY_FEE } = await loadDlmmSdk();
+  assertWithinSpendLimit(
+    auth,
+    Math.ceil(missing.length * BIN_ARRAY_FEE * 1e9),
+    "dlmm openPosition (missing bin array rent)",
+  );
+
+  for (const { index, pubkey } of missing) {
+    const initIx = await pool.program.methods
+      .initializeBinArray(index)
+      .accountsPartial({ binArray: pubkey, funder: auth.wallet, lbPair: pool.pubkey })
+      .instruction();
+    const initTx = new Transaction().add(initIx);
+    await sendAndConfirm(
+      auth,
+      async ({ blockhash, plan }) =>
+        asVersionedTransaction(initTx, blockhash, plan, auth.wallet, []),
+      { label: "dlmm openPosition (init bin array)" },
+    );
+    console.log(
+      `[onchain/dlmm] ${pool.pubkey.toBase58()}: initialized bin array ${index.toString()} ` +
+        `(${pubkey.toBase58().slice(0, 8)}…) before funding`,
+    );
+  }
+}
+
 export const dlmmExecutor: DlmmExecutor = {
   async openPosition(
     auth: ExecutionAuthorization,
@@ -1316,6 +1378,10 @@ export const dlmmExecutor: DlmmExecutor = {
      */
     let funded: SendResult[] = [];
     try {
+      // See preCreateMissingBinArrays: the SDK would otherwise pack two
+      // InitializeBinArray instructions into funding tx 1/N and blow the CU meter.
+      await preCreateMissingBinArrays(auth, pool, minBinId, maxBinId);
+
       const liquidityTxs = await pool.addLiquidityByStrategyChunkable(deposit);
 
       if (liquidityTxs.length === 0) {
