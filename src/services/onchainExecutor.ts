@@ -965,6 +965,19 @@ export interface ClosePositionParams {
   slippageBps?: number;
 }
 
+export interface EnsureBinArraysParams {
+  poolAddress: string;
+  lowerBinPrice: number;
+  upperBinPrice: number;
+}
+
+export interface EnsureBinArraysResult {
+  /** Bin arrays this call created on-chain, one transaction each. */
+  created: number;
+  /** Bin arrays the range needs that already existed. */
+  existed: number;
+}
+
 /**
  * What a DLMM operation actually did.
  *
@@ -1016,6 +1029,10 @@ export class DlmmPartialExecutionError extends Error {
  */
 export interface DlmmExecutor {
   openPosition(auth: ExecutionAuthorization, params: OpenPositionParams): Promise<DlmmSendResult>;
+  ensureBinArrays(
+    auth: ExecutionAuthorization,
+    params: EnsureBinArraysParams,
+  ): Promise<EnsureBinArraysResult>;
   claimFees(auth: ExecutionAuthorization, params: ClaimFeesParams): Promise<DlmmSendResult>;
   closePosition(
     auth: ExecutionAuthorization,
@@ -1640,7 +1657,7 @@ async function preCreateMissingBinArrays(
   pool: DlmmPool,
   minBinId: number,
   maxBinId: number,
-): Promise<number> {
+): Promise<EnsureBinArraysResult> {
   const sdk = await loadDlmmSdk();
   const { deriveBinArray, getBinArrayIndexesCoverage, BIN_ARRAY_FEE } = sdk;
 
@@ -1685,7 +1702,9 @@ async function preCreateMissingBinArrays(
   }
 
   const missing = candidates.filter((_, i) => infos[i] === null);
-  if (missing.length === 0) return 0;
+  if (missing.length === 0) {
+    return { created: 0, existed: candidates.length };
+  }
 
   /*
    * Bin-array rent faces the per-transaction ceiling. Charged for the WHOLE set rather
@@ -1755,10 +1774,23 @@ async function preCreateMissingBinArrays(
     `[onchain/dlmm] ${pool.pubkey.toBase58()}: created ${created} bin array(s) ` +
       `(${(created * BIN_ARRAY_FEE).toFixed(4)} SOL of pool-shared rent) before funding`,
   );
-  return created;
+  return { created, existed: candidates.length - created };
 }
 
 export const dlmmExecutor: DlmmExecutor = {
+  async ensureBinArrays(
+    auth: ExecutionAuthorization,
+    params: EnsureBinArraysParams,
+  ): Promise<EnsureBinArraysResult> {
+    const pool = await openPool(params.poolAddress);
+    const { minBinId, maxBinId } = binRangeFromPrices(
+      pool,
+      params.lowerBinPrice,
+      params.upperBinPrice,
+    );
+    return preCreateMissingBinArrays(auth, pool, minBinId, maxBinId);
+  },
+
   async openPosition(
     auth: ExecutionAuthorization,
     params: OpenPositionParams,
@@ -1953,6 +1985,42 @@ export const dlmmExecutor: DlmmExecutor = {
       });
     } catch (err) {
       const alreadyLanded = err instanceof DlmmPartialExecutionError ? err.landed : [];
+
+      /*
+       * BEST-EFFORT AUTO-CLOSE of the created-but-unfunded position. The account
+       * exists and holds rent; if it holds no liquidity (funding never landed), the
+       * program's closePosition refunds that rent to the wallet. Without this, every
+       * wide-open failure leaves an orphan account that only a human-run script can
+       * close (STONK-SOL 0.2657 SOL, SOLCAT-SOL 0.0572 SOL, both on 7 Sep 2026).
+       * The close itself is safe to attempt: on an account that somehow DID receive
+       * liquidity, closePosition2 refuses and this catch swallows the refusal.
+       */
+      try {
+        // Runtime only consumes `position.publicKey` (accountsPartial
+        // { rentReceiver, position, sender }); the full LbPosition shape is a TS
+        // requirement. Fetching via getPositionsByUserAndLbPair can miss a freshly
+        // created-but-empty account (observed with the SOLCAT-SOL orphan), so cast.
+        const closeTx = await pool.closePosition({
+          owner: auth.wallet,
+          position: { publicKey: positionKeypair.publicKey } as unknown as LbPosition,
+        });
+        const closed = await sendAndConfirm(
+          auth,
+          async ({ blockhash, plan }) =>
+            asVersionedTransaction(closeTx, blockhash, plan, auth.wallet, []),
+          { label: "dlmm openPosition (auto-close unfunded position)" },
+        );
+        console.log(
+          `[onchain/dlmm] ${positionAddress}: auto-closed unfunded position ` +
+            `(rent recovered, ${closed.signature})`,
+        );
+      } catch (closeErr) {
+        console.warn(
+          `[onchain/dlmm] ${positionAddress}: could not auto-close unfunded position: ` +
+            `${closeErr instanceof Error ? closeErr.message : String(closeErr)}`,
+        );
+      }
+
       throw new DlmmPartialExecutionError(
         "openPosition",
         positionAddress,

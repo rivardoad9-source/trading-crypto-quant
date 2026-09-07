@@ -12,6 +12,7 @@ import {
   poolDenylist,
 } from "./executionGuard.js";
 import {
+  DLMM_BINS_PER_INIT,
   DLMM_MAX_BINS_PER_POSITION,
   WSOL_MINT,
   authorizeExecution,
@@ -526,6 +527,62 @@ export async function openLivePosition(params: {
     `[live] ${params.pairName}: swapping ${(swapLamports / LAMPORTS_PER_SOL).toFixed(4)} SOL ` +
       `-> ${pairedMint.toBase58()} to balance the deposit`,
   );
+
+  /*
+   * PRE-CREATE MISSING BIN ARRAYS — BEFORE ANY SPEND. Only for wide ranges: a wide
+   * position's funding transactions are built by the SDK AFTER the swap, and the SDK
+   * packs every bin array the range still needs into the first funding transaction as
+   * InitializeBinArray instructions. Two of them exceed any compute budget that fits
+   * with the liquidity work (measured twice with real money on 7 Sep 2026: STONK-SOL
+   * 0.2657 SOL of orphaned rent, SOLCAT-SOL another 0.0572). The rehearsal cannot see
+   * it — the funding phase cannot be simulated before the swap funds the deposit —
+   * and the executor's own post-swap prep runs after the swap has already spent.
+   *
+   * Creating the arrays HERE means every post-swap transaction is pure liquidity.
+   * A failure at this stage costs nothing: no swap has happened, so the entry is a
+   * routine refusal instead of a stranded balance.
+   */
+  if (binWidth > DLMM_BINS_PER_INIT) {
+    try {
+      const prep = await dlmmExecutor.ensureBinArrays(auth, {
+        poolAddress: params.poolAddress,
+        lowerBinPrice: params.lowerBinPrice,
+        upperBinPrice: params.upperBinPrice,
+      });
+      if (prep.created > 0) {
+        console.log(
+          `[live] ${params.pairName}: pre-created ${prep.created} bin array(s) ` +
+            `(${prep.existed} already existed) BEFORE the swap`,
+        );
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      const walletOrInfra = /insufficient|balance|lamports|rate.?limit|timeout|fetch|network|429/i.test(
+        reason,
+      );
+      if (!walletOrInfra) {
+        try {
+          recordPoolExecutionFailure({
+            poolAddress: params.poolAddress,
+            pairName: params.pairName,
+            stage: "bin-array-prep",
+            reason: reason.slice(0, 500),
+          });
+        } catch (bookkeeping) {
+          console.warn(
+            `[live] could not record bin-array-prep failure for ${params.pairName}:`,
+            bookkeeping,
+          );
+        }
+      }
+      throw new OpenRehearsalFailedError(
+        params.pairName,
+        params.poolAddress,
+        "bin-array-prep",
+        reason,
+      );
+    }
+  }
 
   const { result: swap } = await executeJupiterSwap(auth, {
     inputMint: WSOL_MINT,
