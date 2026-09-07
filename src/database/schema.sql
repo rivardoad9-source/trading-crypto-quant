@@ -87,6 +87,29 @@ CREATE TABLE IF NOT EXISTS scan_funnel_cycles (
 -- est_priority_micro_lamports) and the post-trade reflection (post_mortem,
 -- post_mortem_at).
 
+-- Execution-failure breaker (live path only).
+--
+-- Deliberately NOT the same thing as the V1.1 cooldown/lockout, which is reconstructed
+-- from closed simulated_positions rows and counts failed EXITS. A failed OPEN never
+-- writes a position row — "the chain decides, the database records" — so that gate is
+-- blind to it by construction. On 7 Sep 2026 one pool was therefore re-elected every
+-- 30 minutes and spent real money twice before an operator added a manual denylist
+-- entry. This table is the automatic version of that intervention: it answers "can the
+-- engine OPEN this pool at all", which is a different question from "did the last
+-- trade on it go well".
+--
+-- One row per pool, upserted. `consecutive_failures` resets to 0 on a confirmed open.
+CREATE TABLE IF NOT EXISTS pool_execution_failures (
+    pool_address         TEXT PRIMARY KEY,
+    pair_name            TEXT,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    last_failure_at      DATETIME,
+    last_stage           TEXT,               -- rehearsal | swap | open | fund | unknown
+    last_reason          TEXT,
+    total_failures       INTEGER NOT NULL DEFAULT 0,
+    last_success_at      DATETIME
+);
+
 CREATE INDEX IF NOT EXISTS idx_positions_status    ON simulated_positions(status);
 CREATE INDEX IF NOT EXISTS idx_positions_pool      ON simulated_positions(pool_address);
 CREATE INDEX IF NOT EXISTS idx_positions_closed_at ON simulated_positions(closed_at);

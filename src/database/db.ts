@@ -109,6 +109,14 @@ export function initDatabase(): void {
   addColumnIfMissing("simulated_positions", "deposited_paired_amount", "TEXT");
   addColumnIfMissing("simulated_positions", "rent_paid_lamports", "INTEGER");
 
+  /*
+   * Candidates dropped by the execution guard (operator denylist, or the execution
+   * breaker). A gate that removes candidates and does not appear in the funnel puts
+   * the funnel back in the state it was built to fix: reconstructible only by reading
+   * stdout. Zero in paper mode, where the guard does not run.
+   */
+  addColumnIfMissing("scan_funnel_cycles", "execution_rejected", "INTEGER DEFAULT 0");
+
   initialised = true;
   console.log(`[db] ready at ${dbPath}`);
 }

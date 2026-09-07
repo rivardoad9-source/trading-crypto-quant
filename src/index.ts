@@ -9,6 +9,7 @@ import { startApiServer, stopApiServer } from "./api/server.js";
 import { startTelegramCommands, stopTelegramCommands } from "./services/telegramCommands.js";
 import { liveMicroCapital } from "./config/liveConfig.js";
 import { InsufficientGasReserveError, runLivePreflight } from "./services/livePreflight.js";
+import { describeExecutionGuard } from "./services/executionGuard.js";
 import {
   describeLiveExecutionBlockers,
   isLiveExecutionActive,
@@ -94,6 +95,13 @@ async function preflight(): Promise<void> {
         "[main]     every entry swaps half the SOL into the pool's other token, then\n" +
         "[main]     opens a real DLMM position. Exits close it on-chain.\n",
     );
+    /*
+     * Printed rather than assumed. A denylist that is silently empty because of a typo
+     * in `.env` is worse than no denylist at all, because it is believed - and the
+     * whole reason this line exists is that an operator entry was the only thing
+     * standing between the engine and a pool that had already cost money twice.
+     */
+    console.warn(`[main]     ${describeExecutionGuard()}`);
   }
 
   // Best-effort, and only to render the envelope summary. A missing price must not

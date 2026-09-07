@@ -28,15 +28,19 @@ import {
   DlmmPartialExecutionError,
   ExecutionLimitError,
   ExecutionNotArmedError,
+  SOLANA_MAX_COMPUTE_UNITS,
   USDC_MINT,
   WSOL_MINT,
   assertWithinSpendLimit,
   authorizeExecution,
+  computeBudgetInstructions,
   positionAccountBytes,
   binRangeFromPrices,
   dlmmExecutor,
   isExecutionArmable,
   planPriorityFee,
+  readRequestedComputeUnits,
+  resolveComputeUnitLimit,
   resolveOnchainConfig,
   resolveSlippageBps,
   solSide,
@@ -673,5 +677,302 @@ describe("onchain executor — DLMM position limits track the SDK, not a hand-wr
     for (const bad of [0, -1, 1.5, Number.NaN]) {
       assert.throws(() => positionAccountBytes(bad), DlmmExecutionError, `width ${bad}`);
     }
+  });
+});
+
+describe("onchain executor — the SDK's compute budget is a floor to raise, never a cap to override", () => {
+  /*
+   * These tests exist because of a defect that cost real money on 7 Sep 2026, and they
+   * are written to fail if it is reintroduced.
+   *
+   * `asVersionedTransaction` has to strip the SDK's compute-budget instructions —
+   * two `setComputeUnitLimit`s in one transaction is a runtime rejection, and the
+   * priority fee has to be ours for `sendAndConfirm`'s escalation to mean anything.
+   * What it did was strip them WITHOUT READING THEM, replacing an estimate the SDK had
+   * sized per call (usually by simulating against the cluster) with one flat constant.
+   * Every operation the SDK had sized above that constant then died on the compute
+   * meter — after the balancing swap had already spent.
+   */
+  const floor = 400_000;
+
+  it("keeps the configured floor when the SDK asked for less, or asked for nothing", () => {
+    assert.deepEqual(resolveComputeUnitLimit(null, floor), { units: floor, source: "floor" });
+    assert.deepEqual(resolveComputeUnitLimit(30_000, floor), { units: floor, source: "floor" });
+    assert.deepEqual(resolveComputeUnitLimit(floor, floor), { units: floor, source: "floor" });
+  });
+
+  it("takes the SDK's figure whenever it is larger — the actual bug", () => {
+    // 1,000,000 is the SDK's DEFAULT_ADD_LIQUIDITY_CU: the budget the wide funding
+    // path carries, and the one a flat 400k truncated.
+    assert.deepEqual(resolveComputeUnitLimit(1_000_000, floor), {
+      units: 1_000_000,
+      source: "sdk",
+    });
+    // 350,000 x 2 is two InitializeBinArray instructions, which is what actually blew
+    // the meter on 7 Sep 2026.
+    assert.equal(resolveComputeUnitLimit(700_000, floor).units, 700_000);
+  });
+
+  it("never exceeds Solana's per-transaction ceiling, whoever asked", () => {
+    assert.equal(SOLANA_MAX_COMPUTE_UNITS, 1_400_000);
+    assert.equal(resolveComputeUnitLimit(5_000_000, floor).units, SOLANA_MAX_COMPUTE_UNITS);
+    assert.equal(resolveComputeUnitLimit(null, 9_000_000).units, SOLANA_MAX_COMPUTE_UNITS);
+  });
+
+  it("treats a nonsense request as 'no limit stated' rather than as zero", () => {
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      assert.equal(
+        resolveComputeUnitLimit(bad, floor).units,
+        floor,
+        `a requested ${bad} must not starve the transaction`,
+      );
+    }
+  });
+
+  it("is a MAX and not a MIN — the one-line inversion that would restore the bug", () => {
+    /*
+     * Stated as its own assertion because the inversion is a plausible-looking
+     * "optimisation": taking the smaller number does read as cheaper, and the priority
+     * fee genuinely is price x REQUESTED units. It is also exactly the defect.
+     */
+    for (const asked of [1, 100, 399_999, 400_001, 1_000_000, 1_400_000]) {
+      const { units } = resolveComputeUnitLimit(asked, floor);
+      assert.ok(
+        units >= Math.min(asked, SOLANA_MAX_COMPUTE_UNITS),
+        `resolved ${units} CU is below the ${asked} CU the SDK asked for`,
+      );
+      assert.ok(units >= floor, `resolved ${units} CU is below the configured floor`);
+    }
+  });
+
+  it("reads a limit back out of a built instruction, and is not fooled by a price", async () => {
+    const { ComputeBudgetProgram } = await import("@solana/web3.js");
+
+    assert.equal(readRequestedComputeUnits([]), null);
+    assert.equal(
+      readRequestedComputeUnits([ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 777 })]),
+      null,
+      "a unit PRICE was read as a unit COUNT — they share a programId",
+    );
+    assert.equal(
+      readRequestedComputeUnits([
+        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 777 }),
+        ComputeBudgetProgram.setComputeUnitLimit({ units: 654_321 }),
+      ]),
+      654_321,
+    );
+  });
+
+  it("emits exactly one limit and one price, at the resolved figure", async () => {
+    const { ComputeBudgetInstruction, ComputeBudgetProgram } = await import("@solana/web3.js");
+
+    const ixs = computeBudgetInstructions(
+      { microLamportsPerCu: 50_000, computeUnitLimit: floor, estimatedLamports: 1, source: "floor" },
+      1_000_000,
+    );
+
+    const limits = ixs.filter(
+      (ix) => ComputeBudgetInstruction.decodeInstructionType(ix) === "SetComputeUnitLimit",
+    );
+    const prices = ixs.filter(
+      (ix) => ComputeBudgetInstruction.decodeInstructionType(ix) === "SetComputeUnitPrice",
+    );
+
+    assert.equal(limits.length, 1, "two compute-unit limits in one transaction is a hard reject");
+    assert.equal(prices.length, 1);
+    assert.ok(ixs.every((ix) => ix.programId.equals(ComputeBudgetProgram.programId)));
+    assert.equal(
+      ComputeBudgetInstruction.decodeSetComputeUnitLimit(limits[0]!).units,
+      1_000_000,
+      "the SDK's larger budget did not reach the built instruction",
+    );
+  });
+});
+
+describe("onchain executor — the bin-array helpers this depends on still exist in the SDK", () => {
+  /*
+   * The same guard the position-size constants get, for the same reason: an SDK bump
+   * that renames one of these makes a destructure yield `undefined`, and the throw
+   * lands mid-open — after the balancing swap, with a position account already funded.
+   * That is precisely the 0.2657 SOL failure mode. Failing the BUILD is the fix; the
+   * runtime check in `preCreateMissingBinArrays` only covers a node_modules that
+   * disagrees with the test run.
+   */
+  it("exports deriveBinArray, getBinArrayIndexesCoverage and BIN_ARRAY_FEE", async () => {
+    const { createRequire } = await import("node:module");
+    const require = createRequire(import.meta.url);
+    const sdk = require("@meteora-ag/dlmm") as Record<string, unknown>;
+
+    assert.equal(typeof sdk.deriveBinArray, "function", "deriveBinArray is gone from the SDK");
+    assert.equal(
+      typeof sdk.getBinArrayIndexesCoverage,
+      "function",
+      "getBinArrayIndexesCoverage is gone from the SDK",
+    );
+    assert.equal(typeof sdk.BIN_ARRAY_FEE, "number", "BIN_ARRAY_FEE is gone from the SDK");
+    assert.ok(
+      (sdk.BIN_ARRAY_FEE as number) > 0 && (sdk.BIN_ARRAY_FEE as number) < 1,
+      "BIN_ARRAY_FEE is meant to be a SOL amount per array (~0.0714)",
+    );
+  });
+
+  it("still holds 70 bins per array, which is what makes a narrow range span two", async () => {
+    const { createRequire } = await import("node:module");
+    const require = createRequire(import.meta.url);
+    const sdk = require("@meteora-ag/dlmm") as Record<string, unknown>;
+
+    /*
+     * Load-bearing for the rehearsal's cost estimate and for reasoning about the
+     * narrow path: a range of up to 70 bins straddles TWO bin arrays unless it happens
+     * to align to the array boundary, so "narrow" never meant "at most one array".
+     */
+    assert.equal(Number(String(sdk.MAX_BIN_ARRAY_SIZE)), 70);
+  });
+});
+
+describe("onchain executor — the SDK still sizes its own transactions on every path we use", () => {
+  /*
+   * The compute-budget fix rests on one assumption: that the SDK attaches a
+   * `setComputeUnitLimit` sized for the call, which `resolveComputeUnitLimit` can then
+   * honour. If an SDK bump stopped doing that, every transaction would silently fall
+   * back to our configured floor — which is precisely the state that cost real money —
+   * and nothing else in the build would notice.
+   *
+   * Asserted against the shipped build rather than mocked, because the claim is about
+   * the installed dependency, not about our code. A failure here is a prompt to
+   * re-measure, not necessarily a bug.
+   */
+  async function sdkSource(): Promise<string> {
+    const { createRequire } = await import("node:module");
+    const require = createRequire(import.meta.url);
+    const entry = require.resolve("@meteora-ag/dlmm");
+    return readFileSync(entry, "utf8");
+  }
+
+  function methodBody(source: string, name: string): string {
+    const start = source.indexOf(`async ${name}(`);
+    assert.ok(start > 0, `the SDK no longer exposes ${name}`);
+    const rest = source.slice(start);
+    const end = rest.indexOf("\n  async ", 1);
+    return end > 0 ? rest.slice(0, end) : rest.slice(0, 20_000);
+  }
+
+  it("sizes the NARROW open path, which is the one a 70-bin range still takes", async () => {
+    /*
+     * `initializePositionAndAddLiquidityByStrategy` fuses the position create, any
+     * missing bin-array inits and the deposit into ONE transaction. A range of up to 70
+     * bins spans two bin arrays unless it aligns to the array boundary, so on a thin
+     * pool this single transaction can carry two inits at 350k CU each — over any
+     * 400k floor. It survives only because the SDK simulates the whole instruction set
+     * and asks for what it measured.
+     */
+    const body = methodBody(await sdkSource(), "initializePositionAndAddLiquidityByStrategy");
+    assert.ok(
+      body.includes("getEstimatedComputeUnitIxWithBuffer"),
+      "the narrow open path no longer attaches a simulated compute budget: it would " +
+        "fall back to ONCHAIN_COMPUTE_UNIT_LIMIT, which is the 7 Sep 2026 defect",
+    );
+    assert.ok(
+      body.includes("createBinArraysIfNeeded"),
+      "the narrow path no longer inlines bin-array creation — re-check whether " +
+        "preCreateMissingBinArrays should now cover it too",
+    );
+  });
+
+  it("sizes the CLOSE path, where a starved budget is worse than a failed open", async () => {
+    /*
+     * A close that will not fit its compute budget is the worst failure in the system:
+     * the capital is already committed, the row stays ACTIVE, and the stop-loss is what
+     * stops being enforceable. This path has never executed against a cluster, so the
+     * only evidence available before it does is that the SDK sizes it itself.
+     */
+    const source = await sdkSource();
+    for (const method of ["removeLiquidity", "claimSwapFee"]) {
+      assert.ok(
+        methodBody(source, method).includes("getEstimatedComputeUnitIxWithBuffer"),
+        `${method} no longer attaches a simulated compute budget`,
+      );
+    }
+  });
+
+  it("keeps its own ceiling at Solana's, so our clamp is not silently lowering it", async () => {
+    const source = await sdkSource();
+    assert.ok(
+      source.includes("var MAX_CU = 14e5"),
+      "the SDK's MAX_CU moved; SOLANA_MAX_COMPUTE_UNITS should be re-checked against it",
+    );
+    /*
+     * The SDK adds a buffer to its simulated estimate WITHOUT re-clamping to MAX_CU, so
+     * a heavy transaction can be handed back above 1.4M and be rejected outright. Our
+     * clamp is what stops that, which makes it load-bearing rather than defensive.
+     */
+    assert.ok(source.includes("var MAX_CU_BUFFER = 2e5"));
+  });
+});
+
+describe("onchain executor — every builder pins the blockhash the retry loop tracks", () => {
+  /*
+   * The rebroadcast rule in `sendAndConfirm` is the double-spend guard: the same signed
+   * bytes are re-broadcast while their blockhash lives, and a NEW transaction is built
+   * only once that blockhash is definitively expired, which makes the old signature
+   * permanently unlandable.
+   *
+   * That argument holds only if the transaction actually CARRIES the blockhash the loop
+   * is tracking. `confirmTransaction` is given the loop's blockhash and
+   * lastValidBlockHeight, so a transaction stamped with a NEWER one stays landable for
+   * a few slots after the loop has declared expiry and moved on to a rebuild — and both
+   * can land. CLAUDE.md states this as an invariant; until 7 Sep 2026 the Jupiter swap
+   * silently broke it, because Jupiter builds the transaction server-side and stamps its
+   * own (necessarily younger) blockhash.
+   *
+   * Asserted at source level because it is a rule about every FUTURE builder too. A
+   * behavioural test cannot reach it: signing requires a private key that CI does not
+   * have, by design.
+   */
+  const HERE = dirname(fileURLToPath(import.meta.url));
+  const SOURCE = readFileSync(resolve(HERE, "../services/onchainExecutor.ts"), "utf8");
+
+  it("destructures blockhash in every sendAndConfirm builder", () => {
+    // The builder is the callback passed to sendAndConfirm: `async ({ ... }) =>`.
+    const builders = [...SOURCE.matchAll(/async \(\{([^}]*)\}\) =>/g)].map((m) => m[1] ?? "");
+    assert.ok(builders.length >= 5, `expected several builders, found ${builders.length}`);
+
+    for (const params of builders) {
+      assert.ok(
+        params.includes("blockhash"),
+        `a sendAndConfirm builder takes { ${params.trim()} } and never sees the loop's ` +
+          `blockhash: the transaction it builds cannot be pinned to the expiry the ` +
+          `retry loop is tracking`,
+      );
+    }
+  });
+
+  it("re-pins the Jupiter transaction BEFORE signing it", () => {
+    /*
+     * Order matters and is not cosmetic: the signature covers the message, so setting
+     * `recentBlockhash` after `signTransaction` would produce bytes the cluster rejects
+     * — a change that would look correct in review and fail every live swap.
+     */
+    const build = SOURCE.slice(
+      SOURCE.indexOf("export async function buildJupiterSwap"),
+      SOURCE.indexOf("export async function executeJupiterSwap"),
+    );
+    const pin = build.indexOf("tx.message.recentBlockhash = blockhash.blockhash");
+    const sign = build.indexOf("return signTransaction(tx)");
+
+    assert.ok(pin > 0, "the Jupiter swap no longer re-pins to the retry loop's blockhash");
+    assert.ok(sign > pin, "the blockhash is pinned AFTER signing, which invalidates the signature");
+
+    /*
+     * Required, not optional. Optional made the fix depend on every caller remembering
+     * to pass it, policed only by the source-level test above; required makes a caller
+     * that forgets a compile error, which is a stronger guard than any test here.
+     */
+    assert.ok(
+      /blockhash: BlockhashWithExpiryBlockHeight,/.test(build),
+      "buildJupiterSwap's blockhash parameter is optional again — the compiler no " +
+        "longer enforces that callers pin it",
+    );
+    assert.ok(!build.includes("if (blockhash)"), "the re-pin is guarded, so it can be skipped");
   });
 });

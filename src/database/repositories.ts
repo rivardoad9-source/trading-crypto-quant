@@ -680,6 +680,7 @@ export interface ScanFunnelRecord {
   screenRejections: Record<string, number>;
   candidates: number;
   cooldownRejected: number;
+  executionRejected: number;
   antirugPassed: number;
   antirugRejected: number;
   volatilityRejected: number;
@@ -709,12 +710,12 @@ export interface ScanFunnelRow extends ScanFunnelRecord {
 export function recordScanFunnel(record: ScanFunnelRecord): void {
   db.prepare(
     `INSERT INTO scan_funnel_cycles (
-       scanned, screen_rejections, candidates, cooldown_rejected,
+       scanned, screen_rejections, candidates, cooldown_rejected, execution_rejected,
        antirug_passed, antirug_rejected, volatility_rejected,
        coverage_rejected, micro_rejected, reached_decision, opened,
        skip_reason, positions_checked, positions_closed, duration_ms
      ) VALUES (
-       @scanned, @screenRejections, @candidates, @cooldownRejected,
+       @scanned, @screenRejections, @candidates, @cooldownRejected, @executionRejected,
        @antirugPassed, @antirugRejected, @volatilityRejected,
        @coverageRejected, @microRejected, @reachedDecision, @opened,
        @skipReason, @positionsChecked, @positionsClosed, @durationMs
@@ -734,6 +735,7 @@ interface RawFunnelRow {
   screen_rejections: string | null;
   candidates: number;
   cooldown_rejected: number;
+  execution_rejected: number | null;
   antirug_passed: number;
   antirug_rejected: number;
   volatility_rejected: number;
@@ -762,6 +764,7 @@ export function getScanFunnel(limit = 100): ScanFunnelRow[] {
     screenRejections: parseRejections(r.screen_rejections),
     candidates: r.candidates,
     cooldownRejected: r.cooldown_rejected,
+    executionRejected: r.execution_rejected ?? 0,
     antirugPassed: r.antirug_passed,
     antirugRejected: r.antirug_rejected,
     volatilityRejected: r.volatility_rejected,
@@ -789,4 +792,117 @@ function parseRejections(raw: string | null): Record<string, number> {
   } catch {
     return {};
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* Execution-failure breaker                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One pool's on-chain EXECUTION history, which is a different fact from its trading
+ * history.
+ *
+ * `getPoolExitHistory` above answers "how did the last trades on this pool turn out",
+ * reconstructed from closed position rows. This answers "can the engine open this pool
+ * at all". Nothing links the two, and nothing should: a failed open writes no position
+ * row by design, so the V1.1 lockout cannot see it, and a pool that trades badly is a
+ * different problem from a pool that cannot be entered.
+ */
+export interface PoolExecutionRecord {
+  poolAddress: string;
+  pairName: string | null;
+  consecutiveFailures: number;
+  lastFailureAt: string | null;
+  lastStage: string | null;
+  lastReason: string | null;
+  totalFailures: number;
+  lastSuccessAt: string | null;
+}
+
+interface RawExecutionRow {
+  pool_address: string;
+  pair_name: string | null;
+  consecutive_failures: number;
+  last_failure_at: string | null;
+  last_stage: string | null;
+  last_reason: string | null;
+  total_failures: number;
+  last_success_at: string | null;
+}
+
+function toExecutionRecord(r: RawExecutionRow): PoolExecutionRecord {
+  return {
+    poolAddress: r.pool_address,
+    pairName: r.pair_name,
+    consecutiveFailures: r.consecutive_failures,
+    lastFailureAt: r.last_failure_at,
+    lastStage: r.last_stage,
+    lastReason: r.last_reason,
+    totalFailures: r.total_failures,
+    lastSuccessAt: r.last_success_at,
+  };
+}
+
+/** Every pool with an execution history, keyed by address. */
+export function getPoolExecutionHistory(): Map<string, PoolExecutionRecord> {
+  const rows = db
+    .prepare(`SELECT * FROM pool_execution_failures`)
+    .all() as RawExecutionRow[];
+
+  return new Map(rows.map((r) => [r.pool_address, toExecutionRecord(r)]));
+}
+
+export function getPoolExecutionRecord(poolAddress: string): PoolExecutionRecord | undefined {
+  const row = db
+    .prepare(`SELECT * FROM pool_execution_failures WHERE pool_address = ?`)
+    .get(poolAddress) as RawExecutionRow | undefined;
+  return row ? toExecutionRecord(row) : undefined;
+}
+
+/**
+ * Counts one execution failure against a pool.
+ *
+ * `last_failure_at` is written with SQLite's `CURRENT_TIMESTAMP`, which is UTC with no
+ * zone marker — read it back through `parseDbTimestamp`, never `new Date()`, or the
+ * bench expires seven hours early on an Asia/Jakarta box. Same rule the cooldown gate
+ * already follows.
+ */
+export function recordPoolExecutionFailure(input: {
+  poolAddress: string;
+  pairName: string | null;
+  stage: string;
+  reason: string;
+}): void {
+  db.prepare(
+    `INSERT INTO pool_execution_failures (
+       pool_address, pair_name, consecutive_failures, last_failure_at,
+       last_stage, last_reason, total_failures
+     ) VALUES (@poolAddress, @pairName, 1, CURRENT_TIMESTAMP, @stage, @reason, 1)
+     ON CONFLICT(pool_address) DO UPDATE SET
+       pair_name            = COALESCE(excluded.pair_name, pool_execution_failures.pair_name),
+       consecutive_failures = pool_execution_failures.consecutive_failures + 1,
+       last_failure_at      = CURRENT_TIMESTAMP,
+       last_stage           = excluded.last_stage,
+       last_reason          = excluded.last_reason,
+       total_failures       = pool_execution_failures.total_failures + 1`,
+  ).run(input);
+}
+
+/**
+ * Clears a pool's consecutive-failure run after a confirmed open.
+ *
+ * `total_failures` is deliberately NOT reset: it is the lifetime count an operator
+ * reads to tell "flaky once" from "fails most of the time", and a gate that erases its
+ * own evidence on every success cannot support that judgement.
+ */
+export function recordPoolExecutionSuccess(poolAddress: string, pairName: string | null): void {
+  db.prepare(
+    `INSERT INTO pool_execution_failures (
+       pool_address, pair_name, consecutive_failures, last_success_at, total_failures
+     ) VALUES (@poolAddress, @pairName, 0, CURRENT_TIMESTAMP, 0)
+     ON CONFLICT(pool_address) DO UPDATE SET
+       pair_name            = COALESCE(excluded.pair_name, pool_execution_failures.pair_name),
+       consecutive_failures = 0,
+       last_success_at      = CURRENT_TIMESTAMP`,
+  ).run({ poolAddress, pairName });
 }

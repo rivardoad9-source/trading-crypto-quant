@@ -8,12 +8,17 @@ import {
   sizeNextPositionSol,
 } from "../config/liveConfig.js";
 import {
-  BinWidthExceededError,
+  LiveEntryRefusedError,
   closeLivePosition,
   isLiveExecutionActive,
   openLivePosition,
   type LiveOpenOutcome,
 } from "../services/liveExecution.js";
+import {
+  assessExecutionBreaker,
+  isPoolDenied,
+  poolDenylist,
+} from "../services/executionGuard.js";
 import { MAX_CANDIDATE_POOLS, POSITION_STATUS, type PositionStatus } from "../config/constants.js";
 import {
   assessBreakeven,
@@ -59,6 +64,7 @@ import {
   closePosition,
   countActivePositions,
   getActivePositions,
+  getPoolExecutionHistory,
   getPoolExitHistory,
   getPoolExitRecord,
   getRecentFailurePostMortems,
@@ -1141,6 +1147,13 @@ export interface EntrySummary {
     hoursRemaining: number;
     reason: string;
   }>;
+  /**
+   * Candidates dropped because the engine cannot EXECUTE the pool — an operator
+   * denylist entry, or the execution breaker. Separate from `cooldownRejected`, which
+   * is the V1.1 anti-churn gate over trading outcomes: this one is about whether an
+   * open is possible at all, and it is empty in paper mode by construction.
+   */
+  executionRejected: Array<{ pairName: string; poolAddress: string; reason: string }>;
   rugRejected: Array<{ pairName: string; verdict: string; reasons: string[] }>;
   /** Candidates dropped for having already pumped, or for an unknown 24h change. */
   volatilityRejected: Array<{
@@ -1223,6 +1236,7 @@ async function seekNewEntry(): Promise<EntrySummary> {
     candidates: 0,
     safeCandidates: 0,
     cooldownRejected: [],
+    executionRejected: [],
     rugRejected: [],
     volatilityRejected: [],
     breakevenRejected: [],
@@ -1271,14 +1285,69 @@ async function seekNewEntry(): Promise<EntrySummary> {
     console.warn(`[cooldown] skipped ${r.pairName} (${r.kind}): ${r.reason}`);
   }
 
-  const fresh = cooldownFilter.allowed;
+  /*
+   * EXECUTION guard. Additive to the anti-churn gate above and deliberately separate
+   * from it: that one asks how the pool's last trades turned out, this one asks whether
+   * the engine can open the pool at all. A failed open writes no position row, so the
+   * V1.1 lockout is structurally blind to it — see `executionGuard.ts`.
+   *
+   * Filtered HERE, before the LLM sees the candidate list, rather than only refused at
+   * execution time. `seekNewEntry` acts on the single pool the model selects and
+   * returns as soon as that pool is refused, so a pool the engine cannot execute would
+   * otherwise consume every cycle it is elected in — which is exactly what happened on
+   * 7 Sep 2026. Removing it from the list lets the model pick something else instead.
+   *
+   * INERT IN PAPER MODE. Nothing on this path runs unless live execution is active, so
+   * a dry run's candidate list is byte-identical to what it was before this existed.
+   */
+  let fresh = cooldownFilter.allowed;
+
+  if (isLiveExecutionActive()) {
+    const executionHistory = getPoolExecutionHistory();
+    const executable: typeof fresh = [];
+
+    for (const pool of fresh) {
+      if (isPoolDenied(poolDenylist, pool.address, pool.pairName)) {
+        summary.executionRejected.push({
+          pairName: pool.pairName,
+          poolAddress: pool.address,
+          reason: "on the operator POOL_DENYLIST",
+        });
+        continue;
+      }
+
+      const verdict = assessExecutionBreaker(executionHistory.get(pool.address));
+      if (verdict.blocked) {
+        summary.executionRejected.push({
+          pairName: pool.pairName,
+          poolAddress: pool.address,
+          reason: verdict.reason ?? "benched by the execution breaker",
+        });
+        continue;
+      }
+
+      executable.push(pool);
+    }
+
+    for (const r of summary.executionRejected) {
+      console.warn(`[guard] skipped ${r.pairName}: ${r.reason}`);
+    }
+
+    fresh = executable;
+  }
+
   summary.candidates = fresh.length;
 
   if (fresh.length === 0) {
     summary.skipReason =
-      summary.cooldownRejected.length > 0 && held.length === summary.cooldownRejected.length
-        ? `every candidate is on cooldown or locked out (${summary.cooldownRejected.length} pools)`
-        : "no pool passed the quantitative filters";
+      summary.executionRejected.length > 0 &&
+      summary.cooldownRejected.length + summary.executionRejected.length === held.length
+        ? `every candidate is benched: ${summary.cooldownRejected.length} on cooldown or ` +
+          `locked out, ${summary.executionRejected.length} unexecutable ` +
+          `(denylist or execution breaker)`
+        : summary.cooldownRejected.length > 0 && held.length === summary.cooldownRejected.length
+          ? `every candidate is on cooldown or locked out (${summary.cooldownRejected.length} pools)`
+          : "no pool passed the quantitative filters";
     return summary;
   }
 
@@ -1648,12 +1717,17 @@ async function seekNewEntry(): Promise<EntrySummary> {
       });
     } catch (err) {
       /*
-       * BinWidthExceededError is a routine SCREENING outcome, not a fault: the
-       * requested price range cannot fit in one DLMM position account (70-bin cap),
-       * and the gate fires before any swap, so nothing was spent and nothing is
-       * stranded. Log it as a skip like any other gate; do not page the operator.
+       * A refusal is a routine SCREENING outcome, not a fault. Every subclass of
+       * `LiveEntryRefusedError` fires BEFORE the balancing swap — the width cap, the
+       * rent budget, the operator denylist, the execution breaker and the pre-swap
+       * rehearsal — so nothing was spent and nothing is stranded. Log it as a skip like
+       * any other gate; do not page the operator.
+       *
+       * Catching the BASE class matters: it used to catch `BinWidthExceededError`
+       * specifically, so any new refusal would have fallen through to the branch below
+       * and paged the operator for a pool the engine had merely declined to enter.
        */
-      if (err instanceof BinWidthExceededError) {
+      if (err instanceof LiveEntryRefusedError) {
         summary.skipReason = `skipped ${chosen.pairName}: ${err.message}`;
         console.warn(`[dlmm] ${summary.skipReason}`);
         return summary;
@@ -1815,6 +1889,7 @@ function recordFunnel(entry: EntrySummary, monitor: MonitorSummary, durationMs: 
     `[funnel] scanned ${screenerRan ? entry.scanned : "n/a"} -> ` +
       `candidates ${entry.candidates} -> ` +
       `cooldown -${entry.cooldownRejected.length} -> ` +
+      `exec-guard -${entry.executionRejected.length} -> ` +
       `antirug ${entry.safeCandidates}/-${entry.rugRejected.length} -> ` +
       `vol -${entry.volatilityRejected.length} -> ` +
       `coverage -${entry.breakevenRejected.length} -> ` +
@@ -1830,6 +1905,7 @@ function recordFunnel(entry: EntrySummary, monitor: MonitorSummary, durationMs: 
       screenRejections: entry.screenRejections,
       candidates: entry.candidates,
       cooldownRejected: entry.cooldownRejected.length,
+      executionRejected: entry.executionRejected.length,
       antirugPassed: entry.safeCandidates,
       antirugRejected: entry.rugRejected.length,
       volatilityRejected: entry.volatilityRejected.length,
@@ -1898,6 +1974,7 @@ export async function runDlmmTradingCycle(
           candidates: 0,
           safeCandidates: 0,
           cooldownRejected: [],
+          executionRejected: [],
           rugRejected: [],
           volatilityRejected: [],
           breakevenRejected: [],
@@ -1916,6 +1993,7 @@ export async function runDlmmTradingCycle(
       `[dlmm] cycle done — checked ${monitor.checked}, closed ${monitor.closed}, ` +
         `stale ${monitor.stale}, candidates ${entry.candidates}, ` +
         `cooldown-rejected ${entry.cooldownRejected.length}, ` +
+        `exec-guard-rejected ${entry.executionRejected.length}, ` +
         `safe ${entry.safeCandidates}, rug-rejected ${entry.rugRejected.length}, ` +
         `vol-rejected ${entry.volatilityRejected.length}, ` +
         `cost-rejected ${entry.breakevenRejected.length}, ` +

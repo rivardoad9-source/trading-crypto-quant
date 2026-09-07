@@ -319,6 +319,34 @@ const EnvSchema = z
     /** How long a tripped pool stays locked out, measured from its last failure. */
     POOL_LOCKOUT_HOURS: numeric(24),
 
+    /* ---- Execution-failure guards (live path only) ---- */
+    /**
+     * Operator denylist: pool addresses and/or pair names, comma-separated,
+     * case-insensitive.
+     *
+     * The escape hatch for "that pool specifically, gone" — checked before any network
+     * call or swap, so a denied pool costs nothing. It lives HERE rather than being
+     * read from `process.env` at the call site (which is how it first shipped) so that
+     * it gets what every other setting gets: parsed once at boot, placeholder values
+     * treated as unset, and a value the boot log can print. A safety gate that is
+     * silently empty because of a typo is worse than no gate, because it is believed.
+     */
+    POOL_DENYLIST: z.string().optional().default(""),
+    /**
+     * How many consecutive EXECUTION failures on one pool bench it. Set to 0 to
+     * disable.
+     *
+     * Deliberately separate from `POOL_LOCKOUT_CONSECUTIVE_FAILURES`, which counts
+     * failed EXITS reconstructed from closed position rows. A failed OPEN writes no
+     * row — "the chain decides, the database records" — so the V1.1 lockout is blind
+     * to it by construction, and on 7 Sep 2026 the same pool was therefore re-elected
+     * every 30 minutes and spent real money twice before an operator intervened. This
+     * counter measures the other half: whether the engine can OPEN the pool at all.
+     */
+    EXECUTION_FAILURE_LOCKOUT_COUNT: numeric(2),
+    /** How long a pool benched by execution failures stays benched. */
+    EXECUTION_FAILURE_LOCKOUT_HOURS: numeric(24),
+
     // ---- Post-trade reflection ----
     POST_MORTEM_ENABLED: booleanish(true),
 
@@ -394,6 +422,8 @@ const EnvSchema = z
       "POOL_COOLDOWN_HOURS",
       "POOL_LOCKOUT_HOURS",
       "POOL_LOCKOUT_CONSECUTIVE_FAILURES",
+      "EXECUTION_FAILURE_LOCKOUT_COUNT",
+      "EXECUTION_FAILURE_LOCKOUT_HOURS",
     ] as const) {
       if (cfg[key] < 0) {
         ctx.addIssue({
