@@ -2,6 +2,7 @@ import { PublicKey } from "@solana/web3.js";
 import { isLiveTradingEnabled } from "../config/env.js";
 import { liveMicroCapital, LAMPORTS_PER_SOL } from "../config/liveConfig.js";
 import {
+  DLMM_MAX_BINS_PER_POSITION,
   WSOL_MINT,
   authorizeExecution,
   binRangeFromPrices,
@@ -9,6 +10,7 @@ import {
   executeJupiterSwap,
   getConnection,
   onchainConfig,
+  quoteOpenCost,
   type ExecutionAuthorization,
 } from "./onchainExecutor.js";
 import { sendError } from "./telegram.js";
@@ -95,28 +97,45 @@ export class StrandedSwapError extends Error {
 }
 
 /**
- * The DLMM program creates ONE position account per initializePosition call and that
- * account spans at most `MAX_BIN_PER_POSITION` (70) bins — IDL constant, verified
- * on-chain by simulation: width 74 is rejected by the program ("InvalidPositionWidth"),
- * width 100+ dies in the runtime ("realloc limited to 10240 in inner instructions"),
- * width 1-70 initialises cleanly. The engine's -45%/+15% price range maps to a bin
- * width that grows as the pool's bin_step shrinks, and below ~106 bps it exceeds 70 —
- * the open then fails AFTER the balancing swap has already spent the SOL (7 Sep 2026:
- * 0.4 SOL stranded as an unmonitored memecoin). Raising this lets the entry be skipped
- * BEFORE any swap when the range cannot fit in one position.
+ * The requested price range does not fit in ONE DLMM position account.
+ *
+ * Two different limits produce this, and the message says which, because the operator
+ * response differs: the program one is permanent, the rent one is a funding decision.
+ *
+ *  - PROGRAM. A position account holds at most `DLMM_MAX_BINS_PER_POSITION` (1400)
+ *    bins. That is a hard constant — width 1401 fails with InvalidPositionWidth — so a
+ *    pool needing more can only be traded by splitting the range across several
+ *    positions, which the one-position-per-pool model does not support.
+ *  - RENT. A position account is rent-exempt and its rent scales linearly with width
+ *    (~0.052 SOL at 70 bins, ~0.996 SOL at 1400). The live envelope reserves only
+ *    `deployableSol - maxExposureSol` for rent, so a range can be perfectly legal
+ *    on-chain and still be unaffordable. Raising `LIVE_CAPITAL_SOL` is the lever.
+ *
+ * Both fire BEFORE the balancing swap. That ordering is the whole point: on 7 Sep 2026
+ * a width failure landed AFTER the swap and stranded 0.4 SOL as an unmonitored
+ * memecoin. `seekNewEntry` treats this as a routine skip, not a fault.
  */
 export class BinWidthExceededError extends Error {
-  constructor(pairName: string, binWidth: number, poolAddress: string) {
+  constructor(pairName: string, binWidth: number, poolAddress: string, limit: string) {
     super(
-      `[live] ${pairName} needs ${binWidth} bins, over the DLMM one-position maximum of ` +
-        `${MAX_DLMM_POSITION_BINS} (pool ${poolAddress}); skipped before any swap`,
+      `[live] ${pairName} needs ${binWidth} bins, over ${limit} (pool ${poolAddress}); ` +
+        `skipped before any swap`,
     );
     this.name = "BinWidthExceededError";
   }
 }
 
-/** Hard on-chain limit: the DLMM program IDL's MAX_BIN_PER_POSITION. */
-const MAX_DLMM_POSITION_BINS = 70;
+/*
+ * The program's hard maximum, re-exported from the executor so there is ONE definition.
+ *
+ * This was 70 until 7 Sep 2026, which was wrong in a way that cost universe coverage:
+ * 70 is `DEFAULT_BIN_PER_POSITION`, all a single `initializePosition` allocates, not
+ * what the account can hold. Mainnet simulation (nothing sent) confirmed one account
+ * reaching 1400 bins via top-level `increasePositionLength` instructions, and 1401
+ * failing. Measured against the live 600-pool scan, the gate at 70 admitted 19.2% of
+ * the universe; at 1400 it admits 93.2%.
+ */
+const MAX_DLMM_POSITION_BINS = DLMM_MAX_BINS_PER_POSITION;
 
 /**
  * Reads a token balance from the chain rather than trusting the swap's quote.
@@ -183,13 +202,61 @@ export async function openLivePosition(params: {
   );
 
   /*
-   * Gate BEFORE the balancing swap spends anything. One DLMM position account holds
-   * at most 70 bins; a wider range makes the open fail after the swap has already
-   * converted SOL into the paired token, stranding an unmonitored memecoin balance.
+   * Two gates BEFORE the balancing swap spends anything, because a failure after the
+   * swap strands an unmonitored memecoin balance (7 Sep 2026, 0.4 SOL).
    * `seekNewEntry` treats BinWidthExceededError as a routine skip, not a fault.
    */
   if (binWidth > MAX_DLMM_POSITION_BINS) {
-    throw new BinWidthExceededError(params.pairName, binWidth, params.poolAddress);
+    throw new BinWidthExceededError(
+      params.pairName,
+      binWidth,
+      params.poolAddress,
+      `the DLMM one-position maximum of ${MAX_DLMM_POSITION_BINS} bins`,
+    );
+  }
+
+  /*
+   * Rent affordability. A range can be perfectly legal on-chain and still be
+   * unfundable, and the two costs behave differently:
+   *
+   *  - the POSITION account's rent scales with the width (0.057 SOL at 70 bins,
+   *    0.996 at 1400) and is always charged;
+   *  - BIN ARRAY rent is 0.0714 SOL per array that does not exist yet, and a wide
+   *    range spans many. On a liquid pool they already exist and this is zero; on a
+   *    fresh one it is the LARGER of the two. Estimating it from the width would be
+   *    wrong in both directions, so the SDK is asked instead — it reads the chain.
+   *
+   * The budget is what the envelope leaves over after exposure and the reserve, which
+   * is exactly the "rent headroom" the 1.15 SOL capital base exists to provide.
+   *
+   * Skipped entirely when the live micro-capital profile is off, so an unarmed engine
+   * behaves exactly as it did before this gate existed.
+   */
+  if (liveMicroCapital.enabled) {
+    const cost = await quoteOpenCost({
+      poolAddress: params.poolAddress,
+      lowerBinPrice: params.lowerBinPrice,
+      upperBinPrice: params.upperBinPrice,
+      strategy: params.strategy,
+    });
+    const rentBudgetSol = liveMicroCapital.deployableSol - liveMicroCapital.maxExposureSol;
+
+    if (cost.totalSol > rentBudgetSol) {
+      throw new BinWidthExceededError(
+        params.pairName,
+        binWidth,
+        params.poolAddress,
+        `the ${rentBudgetSol.toFixed(4)} SOL rent budget (opening it costs ` +
+          `${cost.totalSol.toFixed(4)} SOL: ${cost.positionSol.toFixed(4)} position + ` +
+          `${cost.binArraySol.toFixed(4)} for ${cost.binArraysToCreate} new bin arrays; ` +
+          `raise LIVE_CAPITAL_SOL to admit it)`,
+      );
+    }
+
+    console.log(
+      `[live] ${params.pairName}: ${binWidth} bins, open cost ${cost.totalSol.toFixed(4)} SOL ` +
+        `of a ${rentBudgetSol.toFixed(4)} SOL rent budget, ~${cost.transactionCount} tx`,
+    );
   }
 
   console.log(
