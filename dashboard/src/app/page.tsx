@@ -221,7 +221,12 @@ export default function CommandCenter() {
         */}
         <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-[1fr_400px]">
           <div className="space-y-5">
-            <TradeHistory active={active} history={history} loading={loading} />
+            <TradeHistory
+              active={active}
+              history={history}
+              loading={loading}
+              isDryRun={overview?.isDryRun}
+            />
             {/*
               Above the funnel: the funnel explains why nothing traded, this explains
               whether what DID trade actually made the money the rest of the page says

@@ -3,7 +3,9 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "FlowMetrix — Quant Command Center",
-  description: "Meteora DLMM paper-trading engine and macro research dashboard.",
+  // Static metadata cannot read DRY_RUN, so it must not assert either mode. It said
+  // "paper-trading engine", which is false on the deployment that matters.
+  description: "Meteora DLMM liquidity engine and macro research dashboard.",
 };
 
 export default function RootLayout({

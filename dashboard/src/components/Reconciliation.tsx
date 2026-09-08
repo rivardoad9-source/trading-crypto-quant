@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback } from "react";
 import { Scale } from "lucide-react";
-import { fetchReconciliation, formatSignedUsd, type ReconciliationReport } from "@/lib/api";
+import { fetchReconciliation, formatSignedUsd } from "@/lib/api";
+import { usePolled } from "@/lib/usePolled";
 
 /**
  * The engine's book against the wallet.
@@ -29,20 +30,19 @@ import { fetchReconciliation, formatSignedUsd, type ReconciliationReport } from 
  * positions and this is correctly absent rather than an empty card.
  */
 export default function Reconciliation() {
-  const [report, setReport] = useState<ReconciliationReport | null>(null);
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    fetchReconciliation(controller.signal)
-      .then(setReport)
-      .catch(() => {
-        // An older engine has no /api/reconciliation. A missing panel, not an error
-        // worth colouring the page red for — the poll loop owns connection reporting.
-        if (!controller.signal.aborted) setFailed(true);
-      });
-    return () => controller.abort();
-  }, []);
+  /*
+   * Polled, not fetched once. This panel renders nothing until a live position has
+   * closed, so a one-shot read on mount meant the check stayed ABSENT through the very
+   * first live close on any dashboard already open — the one moment it exists for.
+   *
+   * Kept out of the page's `Promise.all` for the original reason: an older engine has no
+   * /api/reconciliation and a 404 there would take the whole refresh down. `failed`
+   * means the route has never answered, so a single dropped poll leaves the last good
+   * reading up instead of hiding the panel.
+   */
+  const { data: report, failed } = usePolled(
+    useCallback((signal: AbortSignal) => fetchReconciliation(signal), []),
+  );
 
   if (failed || !report) return null;
   // Nothing has closed on-chain yet. An empty card claiming "$0.00 drift" would assert a
@@ -50,7 +50,19 @@ export default function Reconciliation() {
   if (report.measured === 0 && report.unmeasured === 0) return null;
 
   const drifted = report.measured > 0;
-  const bookBetter = report.driftUsd < 0;
+
+  /*
+   * The direction is taken from the ROUNDED figure, for the same reason `splitAmount`
+   * signs off the rounded magnitude: this panel prints the drift to the cent, and a
+   * drift below half a cent renders "$0.00". Testing the raw value made `driftUsd === 0`
+   * — the book and the chain agreeing exactly — fall into the "did BETTER than the book"
+   * branch, which tells the operator to go and explain a deposit or a manual trade that
+   * never happened. An exact match is now its own sentence, and only a genuine positive
+   * drift raises the question.
+   */
+  const driftCents = Math.round(report.driftUsd * 100);
+  const direction: "book-optimistic" | "exact" | "wallet-ahead" =
+    driftCents < 0 ? "book-optimistic" : driftCents > 0 ? "wallet-ahead" : "exact";
 
   return (
     <section className="rounded-lg border border-zinc-800 bg-zinc-900/40">
@@ -81,12 +93,18 @@ export default function Reconciliation() {
             <Figure
               label="Drift"
               value={formatSignedUsd(report.driftUsd)}
-              tone={bookBetter ? "down" : "up"}
+              tone={
+                direction === "book-optimistic"
+                  ? "down"
+                  : direction === "wallet-ahead"
+                    ? "up"
+                    : "neutral"
+              }
             />
           </div>
 
           <p className="text-[11px] leading-relaxed text-zinc-500">
-            {bookBetter ? (
+            {direction === "book-optimistic" ? (
               <>
                 The wallet did{" "}
                 <span className="text-rose-400">
@@ -98,6 +116,15 @@ export default function Reconciliation() {
                 )}
                 . That is the expected direction: swap slippage, priority fees and
                 unrecoverable bin-array rent are all real and none are in the book.
+              </>
+            ) : direction === "exact" ? (
+              <>
+                The book and the wallet agree to the cent over{" "}
+                <span className="font-mono text-zinc-400">{report.measured}</span> measured
+                position{report.measured === 1 ? "" : "s"}. Worth a second look rather than
+                a tick: swap slippage, priority fees and bin-array rent are all real costs
+                the book cannot see, so exact agreement usually means the trades were too
+                small to move the balance by a cent — not that nothing was spent.
               </>
             ) : (
               <>
