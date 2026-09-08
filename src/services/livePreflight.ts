@@ -8,6 +8,7 @@ import {
 import { getWalletBalanceSol, type WalletBalance } from "./solana.js";
 import { sendMessage } from "./telegram.js";
 import {
+  describePinSuggestion,
   describeStartingBalance,
   seedStartingBalanceFromWallet,
 } from "../config/startingBalance.js";
@@ -61,6 +62,14 @@ export interface PreflightDeps {
    * percentage already reported against the old number.
    */
   existingTrades?: number;
+  /**
+   * Realised PnL already booked by those trades.
+   *
+   * Only used to derive the baseline the operator would have to pin BY HAND once the
+   * seed has refused. It is not an input to any gate: a wallet that passes the reserve
+   * floor passes it regardless of what the book says.
+   */
+  realisedPnlUsd?: number;
   /** Injected for tests; defaults to the real RPC read. */
   readBalance?: (address: string) => Promise<WalletBalance>;
   /** Injected for tests; defaults to the real Telegram dispatch. */
@@ -184,7 +193,26 @@ export async function runLivePreflight(deps: PreflightDeps = {}): Promise<Prefli
       walletSol: balance.sol,
       existingTrades: deps.existingTrades ?? 0,
     });
-    if (!seed.applied) log(`[preflight]   baseline not seeded: ${seed.reason}`);
+    if (!seed.applied) {
+      log(`[preflight]   baseline not seeded: ${seed.reason}`);
+      /*
+       * A refusal used to end here, which left the operator holding a $1,000 baseline
+       * under a real wallet and no number to replace it with. The obvious replacement —
+       * the wallet's own balance — double-counts every trade already booked, so the
+       * preflight states the one that does not. Suggested, never applied: rebasing under
+       * existing trades re-scales every percentage already reported, which is a decision
+       * to record in `.env`, not something a boot does quietly.
+       */
+      if ((deps.existingTrades ?? 0) > 0) {
+        for (const line of describePinSuggestion({
+          walletUsd: balance.sol * deps.solPriceUsd,
+          realisedPnlUsd: deps.realisedPnlUsd ?? 0,
+          closedTrades: deps.existingTrades ?? 0,
+        })) {
+          log(`[preflight] ${line}`);
+        }
+      }
+    }
   } else {
     log("[preflight]   baseline not seeded: no SOL/USD price available");
   }
