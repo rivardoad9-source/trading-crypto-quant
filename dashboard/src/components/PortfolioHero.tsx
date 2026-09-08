@@ -231,9 +231,33 @@ function TodayPnl({
       <span className={`font-mono text-sm font-medium tabular-nums ${tone}`}>
         Today&apos;s PnL: {sign}${Math.abs(value).toFixed(2)}
       </span>
-      {isDryRun && (
-        <span className="rounded border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-zinc-500">
+      {/*
+        Tagged in BOTH modes, because the figure is the engine's in both.
+
+        It was tagged only while `isDryRun`, on the reasoning that a paper number needs
+        the warning and a real one does not. But this is `todayRealizedPnLUSD` — the same
+        valuation model that values simulated positions, which cannot see the balancing
+        swap's slippage, the priority fees or bin-array rent. Untagged and sitting
+        directly under a balance read from the chain, it reads as the amount that
+        balance moved today. That is the custody claim the KPI card one row down was
+        relabelled "Book Equity" to avoid, left standing in the more prominent place.
+
+        `undefined` means the overview has not loaded, so nothing is asserted yet.
+      */}
+      {isDryRun === true && (
+        <span
+          title="Paper PnL — this engine is in dry run and holds no on-chain positions."
+          className="rounded border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-zinc-500"
+        >
           paper
+        </span>
+      )}
+      {isDryRun === false && (
+        <span
+          title="Engine accounting, not the wallet: the valuation model does not see swap slippage, priority fees or bin-array rent. The Wallet Reconciliation panel measures the gap."
+          className="rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-amber-500/80"
+        >
+          book
         </span>
       )}
     </div>

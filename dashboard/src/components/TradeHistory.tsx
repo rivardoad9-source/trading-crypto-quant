@@ -18,6 +18,11 @@ interface Props {
   active: Position[];
   history: Position[];
   loading: boolean;
+  /**
+   * Whether the engine is in dry run. `undefined` while the overview is still loading,
+   * so the empty state can decline to call the positions anything until it knows.
+   */
+  isDryRun: boolean | undefined;
 }
 
 const STATUS_STYLES: Record<string, string> = {
@@ -28,7 +33,7 @@ const STATUS_STYLES: Record<string, string> = {
   CLOSED_TIMEOUT: "border-zinc-600/40 bg-zinc-700/20 text-zinc-300",
 };
 
-export default function TradeHistory({ active, history, loading }: Props) {
+export default function TradeHistory({ active, history, loading, isDryRun }: Props) {
   // null means "no explicit choice yet" — the tab is then derived from what data exists,
   // so the panel is never empty by default. Derived rather than synced in an effect.
   const [pinnedTab, setPinnedTab] = useState<Tab | null>(null);
@@ -75,8 +80,19 @@ export default function TradeHistory({ active, history, loading }: Props) {
               <EmptyRow>Loading…</EmptyRow>
             ) : rows.length === 0 ? (
               <EmptyRow>
+                {/*
+                  Two things were wrong in one sentence. It called the positions
+                  SIMULATED unconditionally — the same defect as the Telegram alert that
+                  announced live positions as paper — and it put the screener at ten
+                  minutes when the V1.1 cadence is thirty. The schedule is now stated
+                  once, by the funnel panel that owns "why nothing opened"; restating a
+                  guardrail the dashboard cannot read is how the two copies came to
+                  disagree.
+                */}
                 {tab === "active"
-                  ? "No open simulated positions. The engine screens pools every 10 minutes."
+                  ? isDryRun === true
+                    ? "No open paper positions."
+                    : "No open positions."
                   : "No closed trades yet."}
               </EmptyRow>
             ) : (

@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback } from "react";
 import { Filter } from "lucide-react";
-import { fetchFunnel, type FunnelCycle } from "@/lib/api";
+import { fetchFunnel, parseSqliteDate, type FunnelCycle } from "@/lib/api";
+import { formatAge, usePolled } from "@/lib/usePolled";
 
 /**
  * Why the engine did not trade.
@@ -19,20 +20,20 @@ import { fetchFunnel, type FunnelCycle } from "@/lib/api";
  * rejections would put the largest bar on the least interesting stage.
  */
 export default function ScanFunnel() {
-  const [cycles, setCycles] = useState<FunnelCycle[] | null>(null);
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    fetchFunnel(48, controller.signal)
-      .then(setCycles)
-      .catch(() => {
-        // An older engine has no /api/funnel. That is a missing panel, not an error
-        // worth colouring the page red for — the poll loop owns connection reporting.
-        if (!controller.signal.aborted) setFailed(true);
-      });
-    return () => controller.abort();
-  }, []);
+  /*
+   * Polled rather than fetched once on mount. The screener writes a row every 30
+   * minutes, so a one-shot read left a panel headed "why nothing opened" answering
+   * about whichever cycle happened to be latest when the tab was opened — and on a
+   * dashboard left open all day, that answer never changed.
+   *
+   * Kept outside the page's `Promise.all` for the original reason: an older engine has
+   * no /api/funnel, and a 404 in that batch would take the whole refresh down. `failed`
+   * therefore means the route has NEVER answered, so one dropped poll does not blink a
+   * working panel out.
+   */
+  const { data: cycles, failed } = usePolled(
+    useCallback((signal: AbortSignal) => fetchFunnel(48, signal), []),
+  );
 
   if (failed) return null;
 
@@ -46,9 +47,16 @@ export default function ScanFunnel() {
           Entry Funnel
           <span className="font-normal text-zinc-600">— why nothing opened</span>
         </h2>
+        {/*
+          The AGE of the last cycle, not just its duration. Without it a funnel from
+          three hours ago renders exactly like one from a minute ago, and this is the
+          panel an operator reads to find out why nothing has opened LATELY.
+        */}
         {latest && (
           <span className="font-mono text-[10px] text-zinc-600">
-            last cycle {latest.durationMs}ms
+            {formatAge(parseSqliteDate(latest.cycleAt))}
+            <span className="mx-1 text-zinc-700">·</span>
+            {latest.durationMs}ms
           </span>
         )}
       </div>
