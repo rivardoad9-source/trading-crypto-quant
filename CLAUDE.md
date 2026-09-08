@@ -2,50 +2,106 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## ⛔ LIVE TRADING HALTED — 8 Sep 2026. Read this before anything else.
+## ⛔ LIVE TRADING HALTED — 8 Sep 2026. Root cause FOUND; re-arming needs one test.
 
 The engine is STOPPED (`pm2 stop flowmetrix-engine`). Wallet ~3.00 SOL, net **−0.10 SOL
 (−3.3%) on the 3.10 SOL live capital, with ZERO successful live opens ever**.
 
-**The problem, stated plainly:** the WIDE path (position > 70 bins, i.e. the two-phase
-create-then-fund flow) has **never completed a single live open**. Three real-money
-incidents in ~36 hours, all the same shape — STONK-SOL (371 bins), SOLCAT-SOL (77 bins),
-ZCAT-SOL (95 bins):
+The WIDE path (position > 70 bins, the two-phase create-then-fund flow) had never
+completed a live open: three real-money incidents in ~36 hours — STONK-SOL (371 bins),
+SOLCAT-SOL (77), ZCAT-SOL (95) — all the same shape. The balancing swap confirms, then
+funding tx 1/N dies on a compute meter of **399,700 CU** carrying two
+`InitializeBinArray` instructions for arrays the rehearsal AND the `ensureBinArrays`
+probe had both reported as existing.
 
-1. The balancing swap (0.9 SOL) CONFIRMS first (design: swap happens in
-   `liveExecution` before `dlmmExecutor.openPosition` is called).
-2. The SDK's funding builder then packs `InitializeBinArray` instructions for bin
-   arrays the range still needs into funding tx 1/N — **arrays that both the
-   rehearsal AND the pre-swap `ensureBinArrays` probe reported as existing**.
-3. Two inits (~192k CU each) exceed the transaction's budget (~399,700 CU) by a
-   rounding hair → funding dies AFTER the swap spent. Auto-unwind rescues the
-   tokens every time (2/2 and 3/3), but each incident costs 0.02–0.06 SOL in fees
-   and created orphan position accounts (now auto-closed in code).
+**The published hypothesis was WRONG, and it is worth saying why.** It read: the SDK's
+`addLiquidityByStrategyChunkable` expands the bin range beyond `[minBinId, maxBinId]`
+and touches arrays outside `getBinArrayIndexesCoverage`'s probe. It does not.
+`chunkBinRange` partitions the range contiguously and `getBinArrayIndexesCoverage`
+returns a contiguous index run, so the union of the per-chunk coverage IS the probe's
+coverage. **The probe never missed an array.** Chasing the probe would have found
+nothing wrong with it, because nothing is.
 
-**Root-cause hypothesis (unproven):** the SDK's `addLiquidityByStrategyChunkable`
-expands the bin range beyond the strategy's `[minBinId, maxBinId]` (active-bin
-slippage allowance), touching bin arrays OUTSIDE the coverage that
-`preCreateMissingBinArrays` probes (`getBinArrayIndexesCoverage(min,max)` +
-`getMultipleAccountsInfo`). Every probe says "0 missing"; funding still inits 2.
-Investigate the SDK's range expansion before trusting any probe.
+**What actually happens** is one SDK flag disabling two safeguards at once.
+`addLiquidityByStrategyChunkable` calls `chunkDepositWithRebalanceEndpoint` with
+`isParallel: true`, and inside that function:
 
-**What is PROVEN:** the NARROW path (≤70 bins, single atomic tx) has **never
-failed** — all paper-era profits (41 paper opens, +$44.32 V1.1 harness) went
-through it. Every live execution attempt since 6 Sep was a WIDE open and every one
-failed. The live-wide gate was only opened on 7 Sep 2026 (commit `382a08c`,
-1400-bin fix) — that is when the losses began.
+- `if (!isParallel) addLiquidityIxs.unshift(ComputeBudgetProgram.setComputeUnitLimit(…))`
+  — so the chunked funding transactions, the only ones the wide path sends, carry **no
+  compute budget at all**. `readRequestedComputeUnits` correctly returned null,
+  `resolveComputeUnitLimit` correctly applied our 400,000 floor, and 400,000 − 2 × 150 CU
+  (what the two ComputeBudget instructions themselves cost) is the **399,700** in every
+  incident log. The SDK sizes the same work at `DEFAULT_ADD_LIQUIDITY_CU` = 1,000,000 per
+  chunk plus 350,000 per array. **The wide path could never have worked, on any pool.**
+- the parallel branch emits `initializeBinArray` for **every** array the chunk covers
+  with **no existence check** and **no de-duplication across chunks** — the non-parallel
+  branch has both, via `binArrayOrBitmapInitTracking`. So `preCreateMissingBinArrays`
+  never removed those instructions; it only made every one of them redundant. And a
+  redundant init is NOT free: simulated against mainnet on 8 Sep 2026,
+  `initializeBinArray` on an existing array **succeeds and still consumes 202,242 CU**.
+  Two of those is 404,484 CU — over budget before the liquidity work begins.
 
-**Options under discussion (user + Claude Code):**
-1. Cap live at ≤70 bins (narrow-only, proven path) until wide is validated at small
-   size (0.1 SOL controlled open).
-2. Keep halted; validate the wide path end-to-end with one small funded open before
-   re-enabling.
-3. Fix the probe to match the SDK's actual (expanded) array coverage.
+The NARROW path was never affected because `initializePositionAndAddLiquidityByStrategy`
+takes a different route entirely: `createBinArraysIfNeeded` does a `getAccountInfo` per
+array and emits an init only for the missing ones, and
+`getEstimatedComputeUnitIxWithBuffer` simulates the whole instruction set. That
+asymmetry — not luck, and not the position width — is why one path has a 100% success
+rate and the other a 0% one.
 
-Current fixes in place (before halt): auto-unwind after failed opens (works),
-auto-close of created-but-unfunded positions (works, verified on-chain),
-execution breaker benching pools after 2 failures (works), `POOL_DENYLIST`
-(denies STONK-SOL).
+**Reproduced without spending anything: `scripts/reproWideFunding.cjs`.** It builds the
+real funding transactions for a real pool and decodes them. The position pubkey is a
+throwaway `Keypair.generate()`, which is sound and is itself a finding —
+`chunkDepositWithRebalanceEndpoint` uses the position only as an account meta and never
+fetches it, so funding transactions CAN be built before the account exists. (CLAUDE.md
+said the opposite; the two-phase split is still forced, but by the CPI realloc cap on
+the create, not by the funding builder.) Against SOL-USDC on 8 Sep 2026:
+
+| width | arrays covered | probe says missing | inits the SDK emits | outside probe | SDK CU ix |
+|---|---|---|---|---|---|
+| 77 | 2 | **0** | 3 (2 distinct, one boundary array twice) | **0** | none |
+| 95 | 2 | **0** | 3 | **0** | none |
+| 371 | 6 | **0** | 11 (6 distinct) | **0** | none |
+
+Both defects are fixed in `onchainExecutor.ts`:
+
+1. `fundingComputeUnits()` supplies the budget the SDK declines to, from its own
+   constants (1,000,000 + 350,000 per surviving init, clamped to 1,400,000), passed to
+   `asVersionedTransaction` as a floor combined with `Math.max` — so an SDK bump that
+   starts attaching a larger budget is still honoured.
+2. `partitionFundingInstructions()` drops every `initializeBinArray` whose array
+   `preCreateMissingBinArrays` verified exists. It is fail-safe in both directions: an
+   instruction is dropped only when it decodes as `initializeBinArray`, its decoded
+   index derives to a verified array, AND that derived address is the account the
+   instruction actually names. Anything unrecognised is KEPT and paid for, because
+   wasting compute is cheaper than stranding the funding.
+
+`DEFAULT_ADD_LIQUIDITY_CU` and `DEFAULT_INIT_BIN_ARRAY_CU` are **not exported** by the
+SDK, so those two numbers are hand-written — the one place this repository does that on
+purpose. `onchainExecutor.test.ts` binds them to the installed bundle text AND asserts
+they are still unexported, so a bump that moves or exports either fails the build.
+
+**Still true, and the reason the engine stays capped:** the fix is proven by a builder
+and a simulator, not by a funded wide open. `LIVE_MAX_POSITION_BINS` (default **70**,
+narrow only) is the interim breaker. It is checked separately from the 1400-bin program
+limit and reports separately, because one is a setting an operator can change and the
+other is not — collapsing them is how 70 came to look like a hard maximum in the first
+place. Pools over the cap are filtered BEFORE the LLM sees them (inside
+`isLiveExecutionActive()`, so paper mode is byte-identical), because `seekNewEntry` acts
+on the one pool the model picks and would otherwise burn the whole cycle.
+
+**What the cap costs, stated so nobody reads it as a broken screener:** at the V1.1
+−45%/+15% floors a 70-bin position only covers pools of **bin_step 106 and up** —
+about 19% of the live 600-pool scan, against ~93% at 1400. `estimateBinWidth` in
+`meteora.ts` is the screening-time estimate behind that filter; it is measured at the
+`computeBinRange` floors, i.e. the NARROWEST range the engine can ever open, so nothing
+openable is filtered out. It is never used to place a position — `binRangeFromPrices`
+and the SDK remain the only authority there.
+
+**To re-arm the wide path:** land one small wide open (~0.1 SOL, a pool of 80–120 bins),
+confirm the funding transactions land, then set `LIVE_MAX_POSITION_BINS=1400`. Not done.
+
+Still in place from before the halt: auto-unwind after failed opens (worked 3/3),
+auto-close of created-but-unfunded positions, the execution breaker, `POOL_DENYLIST`.
 
 ## Official baseline: FlowMetrix DLMM AI Agent V1.1
 
@@ -147,9 +203,14 @@ What is live:
    bin-array rent from the width alone is wrong in both directions.
 2. `dlmmExecutor.openPosition` keeps the narrow path (≤70 bins) as ONE atomic
    transaction, and takes a two-phase path above it: `createExtendedEmptyPosition`
-   (init + resizes), then `addLiquidityByStrategyChunkable`. The liquidity transactions
-   cannot be built in advance — the SDK reads the position account to build them — so
-   two phases is forced, not a choice. Every failure after the create is reported as
+   (init + resizes), then `addLiquidityByStrategyChunkable`. Two phases is forced by
+   the CREATE, not by the funding: `initializePosition` asks for the full width in one
+   instruction and dies in the CPI realloc cap above 70 bins. This used to say the
+   funding transactions "cannot be built in advance — the SDK reads the position account
+   to build them", which is false in 1.9.14 and worth knowing: the funding builder uses
+   the position only as an account meta and never fetches it, which is what makes
+   `scripts/reproWideFunding.cjs` able to inspect real funding transactions for free.
+   Every failure after the create is reported as
    `DlmmPartialExecutionError` naming the position address, because at that point a
    funded-but-empty account exists and its rent is recoverable only by closing it.
 3. Rent is charged to `ONCHAIN_MAX_LAMPORTS_PER_TX` on BOTH paths. It was not before:
@@ -249,12 +310,15 @@ The SDK sizes every call, and it is the only party that can:
 |---|---|
 | `initializePositionAndAddLiquidityByStrategy` (narrow open), `removeLiquidity`, `claimSwapFee` | `getEstimatedComputeUnitIxWithBuffer` - **simulates** against the cluster, adds a 50k-200k buffer, falls back to 1.4M if the simulation itself fails |
 | `createExtendedEmptyPosition` (wide create) | a STATIC formula, no simulation: `min(30,000 + 30,000 x extendedBinCount, 1,400,000)`. It saturates at the 1.4M ceiling from ~117 bins upward, while measured consumption at 1400 bins is ~153k, so a wide create RESERVES about nine times what it uses. Harmless - a limit is a reservation, not a charge - but it is where the fee note below comes from. This row said "simulates" until an audit read the shipped build; the test suite covers the three rows above and not this one |
-| `addLiquidityByStrategyChunkable` (wide funding) | `DEFAULT_ADD_LIQUIDITY_CU` = **1,000,000** per chunk - its transactions depend on each other so they cannot be simulated ahead |
-| each inline `InitializeBinArray` | `DEFAULT_INIT_BIN_ARRAY_CU` = **350,000** |
+| `addLiquidityByStrategyChunkable` (wide funding) | **IT DOES NOT.** Corrected 8 Sep 2026 — this row used to say `DEFAULT_ADD_LIQUIDITY_CU` = 1,000,000 per chunk, and that constant is real but the instruction carrying it is never emitted: the branch that attaches it is `if (!isParallel)` and this path passes `isParallel: true`. So the transactions the wide path actually sends carry NO compute budget, and our floor applied to all of them. See the HALTED section at the top; `fundingComputeUnits()` supplies it now |
+| each inline `InitializeBinArray` | `DEFAULT_INIT_BIN_ARRAY_CU` = **350,000** in the SDK's accounting — but on the parallel path this too is never added up, and the instruction is emitted whether or not the array exists. Measured on-chain: **202,242 CU even when it does** |
 
 So the enforced budget was 400,000 wherever the SDK had asked for up to 1,400,000. That
 is not a STONK-SOL bug: **every path was affected, including the two that have never
-run.** A `removeLiquidity` that will not fit its budget is strictly worse than a failed
+run** — and on the wide funding path, where the SDK asked for nothing at all, taking the
+maximum of "nothing" and the floor still yields the floor. That is why this fix was
+necessary but not sufficient, and why the wide path kept failing for another day after
+it landed.** A `removeLiquidity` that will not fit its budget is strictly worse than a failed
 open — the capital is already committed, the row stays ACTIVE, and the stop-loss is what
 stops being enforceable.
 

@@ -346,6 +346,32 @@ const EnvSchema = z
     EXECUTION_FAILURE_LOCKOUT_COUNT: numeric(2),
     /** How long a pool benched by execution failures stays benched. */
     EXECUTION_FAILURE_LOCKOUT_HOURS: numeric(24),
+    /**
+     * The widest position, in bins, the LIVE path may open. Default 70 — narrow only.
+     *
+     * This is a CIRCUIT BREAKER on an execution path, not a view about what the DLMM
+     * program allows. The program allows 1400 (`DLMM_MAX_BINS_PER_POSITION`) and that
+     * gate still stands above this one. What this bounds is the two-phase
+     * create-then-fund flow, which as of 8 Sep 2026 had never completed a single live
+     * open in three real-money attempts (STONK-SOL 371 bins, SOLCAT-SOL 77, ZCAT-SOL
+     * 95) while the one-transaction narrow path had never failed.
+     *
+     * Both defects behind those three failures are now fixed in `onchainExecutor.ts`
+     * — the funding transactions were being starved of compute because the SDK
+     * attaches no budget to them, and they carried a full-price `InitializeBinArray`
+     * for every bin array in range whether or not it already existed. The fix is
+     * proven against the chain by `scripts/reproWideFunding.cjs`, which is a builder
+     * and a simulator; it has NOT yet been proven by a funded wide open. Until it is,
+     * the default keeps live capital on the path with the measured success rate.
+     *
+     * Raising it is the sanctioned lever and costs universe coverage in the other
+     * direction — 70 bins admitted 19.0% of the live 600-pool scan against 93.2% at
+     * 1400. Validate one small wide open (~0.1 SOL) first, then set it to 1400.
+     *
+     * INERT IN PAPER MODE: the gate lives inside the live execution path and the
+     * live-only candidate filter, so a dry run's candidate list is unchanged.
+     */
+    LIVE_MAX_POSITION_BINS: numeric(70),
 
     // ---- Post-trade reflection ----
     POST_MORTEM_ENABLED: booleanish(true),
@@ -432,6 +458,22 @@ const EnvSchema = z
           message: `${key} must be zero or positive (zero disables the gate).`,
         });
       }
+    }
+    /*
+     * Zero is NOT a neutral value here, and unlike the gates above it cannot mean
+     * "disabled": a cap of zero bins admits no position at all, so the engine would
+     * screen, decide and then refuse every entry while reporting itself healthy. A
+     * cap above the program's own 1400-bin maximum is equally meaningless — that
+     * gate binds first — so it is refused rather than silently clamped.
+     */
+    if (cfg.LIVE_MAX_POSITION_BINS < 1 || cfg.LIVE_MAX_POSITION_BINS > 1400) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["LIVE_MAX_POSITION_BINS"],
+        message:
+          "LIVE_MAX_POSITION_BINS must be between 1 and 1400 (the DLMM one-position " +
+          "maximum). 70 is narrow-only, the path with a measured success rate.",
+      });
     }
   });
 

@@ -468,6 +468,136 @@ export function resolveComputeUnitLimit(
 }
 
 /**
+ * What one chunked funding transaction costs, mirroring the SDK's own sizing.
+ *
+ * These two numbers are `DEFAULT_ADD_LIQUIDITY_CU` and `DEFAULT_INIT_BIN_ARRAY_CU`
+ * inside `@meteora-ag/dlmm`. Copying them breaks this file's own rule against
+ * hand-writing SDK constants, and it is done deliberately because the SDK does NOT
+ * export them — `onchainExecutor.test.ts` asserts that they are absent from the
+ * public surface AND that these values still appear in the installed bundle, so a
+ * bump that changes or exports either one fails the build instead of the wallet.
+ *
+ * The direction of error is also safe here in a way it is not for the bin constants:
+ * a compute limit is a RESERVATION, not a charge. Over-reserving costs priority fee
+ * on units that are never consumed; under-reserving kills the transaction. So these
+ * are floors that `resolveComputeUnitLimit` may raise and never lower.
+ *
+ * WHY WE MUST SIZE THIS OURSELVES. `addLiquidityByStrategyChunkable` calls the SDK's
+ * `chunkDepositWithRebalanceEndpoint` with `isParallel: true`, and the branch that
+ * attaches `setComputeUnitLimit` is guarded by `if (!isParallel)`. So the chunked
+ * funding transactions — the ONLY ones the wide path sends — carry no compute budget
+ * at all, and `readRequestedComputeUnits` correctly returns null for them. Before
+ * this existed that made `resolveComputeUnitLimit` fall back to the 400,000 floor for
+ * work the SDK itself sizes at 1,000,000 plus 350,000 per bin array, which is why the
+ * wide path had never completed a live open. `scripts/reproWideFunding.cjs` prints
+ * this against a real pool without spending anything.
+ */
+export const DLMM_FUNDING_CU_PER_CHUNK = 1_000_000;
+export const DLMM_FUNDING_CU_PER_BIN_ARRAY_INIT = 350_000;
+
+/**
+ * The compute budget one chunked funding transaction needs, given how many
+ * `InitializeBinArray` instructions survived `partitionFundingInstructions`.
+ *
+ * Clamped to Solana's ceiling, because a `setComputeUnitLimit` above 1,400,000 is
+ * rejected outright — the transaction would fail for a reason unrelated to its work.
+ */
+export function fundingComputeUnits(binArrayInits: number): number {
+  const inits = Number.isFinite(binArrayInits) && binArrayInits > 0 ? Math.floor(binArrayInits) : 0;
+  return Math.min(
+    DLMM_FUNDING_CU_PER_CHUNK + inits * DLMM_FUNDING_CU_PER_BIN_ARRAY_INIT,
+    SOLANA_MAX_COMPUTE_UNITS,
+  );
+}
+
+/** The shape `partitionFundingInstructions` needs back from an Anchor coder. */
+export interface DecodedDlmmInstruction {
+  name: string;
+  data?: { index?: unknown };
+}
+
+/**
+ * Splits a chunked funding transaction into the instructions we will send and the
+ * redundant `InitializeBinArray` instructions we will drop.
+ *
+ * THE SECOND HALF OF THE 8 SEP 2026 ROOT CAUSE. With `isParallel: true` the SDK emits
+ * an `initializeBinArray` for EVERY bin array the chunk covers, with no existence
+ * check and no de-duplication across chunks — the non-parallel branch has both. So
+ * `preCreateMissingBinArrays` running first does not remove those instructions, it
+ * only guarantees that every one of them is redundant. It is not a free redundancy:
+ * simulated against mainnet on 8 Sep 2026, `initializeBinArray` on an array that
+ * already exists SUCCEEDS and still consumes 202,242 CU — a full-price no-op. Two of
+ * them is 404,484 CU, which is why a 399,700 CU budget died before the liquidity work
+ * began, and why a boundary array shared by two chunks was paid for twice.
+ *
+ * The hypothesis this replaced was that the SDK widens the range past
+ * `[minBinId, maxBinId]` and touches arrays the probe never saw. It does not:
+ * `chunkBinRange` partitions the range contiguously and `getBinArrayIndexesCoverage`
+ * returns a contiguous index run, so the union of the per-chunk coverage is exactly
+ * the probe's coverage. The repro harness asserts that directly and has never found
+ * an array outside it.
+ *
+ * FAIL-SAFE IN BOTH DIRECTIONS. An instruction is dropped only when it decodes as
+ * `initializeBinArray`, its decoded index derives to a bin array we verified exists,
+ * AND that derived address is the one the instruction actually names. Anything we do
+ * not fully recognise is KEPT and paid for, because sending one redundant init wastes
+ * compute while dropping a needed one strands the funding.
+ */
+export function partitionFundingInstructions(
+  instructions: readonly TransactionInstruction[],
+  dlmmProgramId: PublicKey,
+  decode: (data: Buffer) => DecodedDlmmInstruction | null,
+  binArrayForIndex: (index: string) => PublicKey | null,
+  existingBinArrays: ReadonlySet<string>,
+): { kept: TransactionInstruction[]; dropped: string[]; keptBinArrayInits: number } {
+  const kept: TransactionInstruction[] = [];
+  const dropped: string[] = [];
+  let keptBinArrayInits = 0;
+
+  for (const ix of instructions) {
+    if (!ix.programId.equals(dlmmProgramId)) {
+      kept.push(ix);
+      continue;
+    }
+
+    let decoded: DecodedDlmmInstruction | null = null;
+    try {
+      decoded = decode(ix.data);
+    } catch {
+      decoded = null;
+    }
+
+    if (decoded?.name !== "initializeBinArray") {
+      kept.push(ix);
+      continue;
+    }
+
+    const rawIndex = decoded.data?.index;
+    const index = rawIndex === undefined || rawIndex === null ? null : String(rawIndex);
+    const derived = index === null ? null : binArrayForIndex(index);
+
+    /*
+     * The IDL orders `initialize_bin_array` as (lb_pair, bin_array, funder,
+     * system_program). Rather than trust that slot, the derived address is checked
+     * against the one the instruction names: if a future IDL reorders them the two
+     * disagree, and disagreement keeps the instruction.
+     */
+    const named = ix.keys[1]?.pubkey ?? null;
+    const recognised = derived !== null && named !== null && derived.equals(named);
+
+    if (recognised && existingBinArrays.has(derived.toBase58())) {
+      dropped.push(index as string);
+      continue;
+    }
+
+    keptBinArrayInits += 1;
+    kept.push(ix);
+  }
+
+  return { kept, dropped, keptBinArrayInits };
+}
+
+/**
  * The two compute-budget instructions every transaction this module builds carries.
  *
  * `sdkRequestedUnits` is what the SDK asked for in the transaction being rebuilt, or
@@ -1113,10 +1243,20 @@ function asVersionedTransaction(
   plan: PriorityFeePlan,
   payer: PublicKey,
   extraSigners: Keypair[] = [],
+  requestedUnitsFloor: number | null = null,
 ): VersionedTransaction {
   // What the SDK sized THIS transaction at, read before its instruction is dropped.
   // Dropping the instruction without first reading it is the bug that cost 0.2657 SOL.
-  const sdkRequestedUnits = readRequestedComputeUnits(legacy.instructions);
+  const fromSdk = readRequestedComputeUnits(legacy.instructions);
+
+  /*
+   * `requestedUnitsFloor` is for the transactions the SDK sizes at NOTHING — the
+   * chunked funding path, whose compute-budget branch is disabled by `isParallel`.
+   * Combined with MAX rather than replacing the read value, so a future SDK bump that
+   * starts attaching a larger budget is still honoured; see `fundingComputeUnits`.
+   */
+  const sdkRequestedUnits =
+    requestedUnitsFloor === null ? fromSdk : Math.max(fromSdk ?? 0, requestedUnitsFloor);
 
   const withoutComputeBudget: TransactionInstruction[] = legacy.instructions.filter(
     (ix) => !ix.programId.equals(ComputeBudgetProgram.programId),
@@ -1586,18 +1726,39 @@ async function requirePosition(
 async function sendSequentially(
   auth: ExecutionAuthorization,
   transactions: Transaction[],
-  context: { operation: string; position: string; extraSigners?: Keypair[] },
+  context: {
+    operation: string;
+    position: string;
+    extraSigners?: Keypair[];
+    /**
+     * Rewrites each transaction before it is signed, and says what compute budget it
+     * needs. Only the wide funding path uses it — see `partitionFundingInstructions`
+     * and `fundingComputeUnits`. Omitted, every transaction is sent as the SDK built
+     * it and sized by whatever budget it carries.
+     */
+    prepare?: (legacy: Transaction) => { transaction: Transaction; requestedUnits: number | null };
+  },
 ): Promise<SendResult[]> {
   const landed: SendResult[] = [];
 
-  for (const [index, legacy] of transactions.entries()) {
+  for (const [index, original] of transactions.entries()) {
     const label = `dlmm ${context.operation} ${index + 1}/${transactions.length}`;
+    const prepared = context.prepare?.(original);
+    const legacy = prepared?.transaction ?? original;
+    const requestedUnits = prepared?.requestedUnits ?? null;
     try {
       landed.push(
         await sendAndConfirm(
           auth,
           async ({ blockhash, plan }) =>
-            asVersionedTransaction(legacy, blockhash, plan, auth.wallet, context.extraSigners ?? []),
+            asVersionedTransaction(
+              legacy,
+              blockhash,
+              plan,
+              auth.wallet,
+              context.extraSigners ?? [],
+              requestedUnits,
+            ),
           { label },
         ),
       );
@@ -1632,13 +1793,21 @@ async function sendSequentially(
  * TRANSACTION, before any funding runs. Returns how many it created.
  *
  * WHY THIS EXISTS (measured live on 7 Sep 2026, real money). The SDK's chunked funding
- * builder emits `InitializeBinArray` inline for missing arrays and budgets the whole
- * chunk at its `DEFAULT_ADD_LIQUIDITY_CU` constant (1,000,000). Each init costs the
- * SDK's own `DEFAULT_INIT_BIN_ARRAY_CU` of 350,000, so three missing arrays cannot fit
- * that budget however the compute limit is resolved, and two plus the liquidity work
- * is marginal. Pre-creating each one alone means the funding builder finds every array
- * present and emits pure liquidity transactions, which are the ones already chunked
- * safely.
+ * builder emits `InitializeBinArray` inline and budgets the whole chunk at its
+ * `DEFAULT_ADD_LIQUIDITY_CU` constant (1,000,000). Each init costs the SDK's own
+ * `DEFAULT_INIT_BIN_ARRAY_CU` of 350,000, so three missing arrays cannot fit that
+ * budget however the compute limit is resolved. Creating them one per transaction,
+ * out of the funding path, is what keeps that work bounded.
+ *
+ * WHAT THIS DOES NOT DO, corrected 8 Sep 2026. This comment used to claim that
+ * pre-creating the arrays "means the funding builder finds every array present and
+ * emits pure liquidity transactions". It does not, and believing it is what left the
+ * wide path broken for three real-money incidents. The builder emits an init for
+ * every array it COVERS, existence unchecked — so this call does not remove those
+ * instructions, it only guarantees each one is a no-op. They still had to be dropped,
+ * which is why this now returns the set of arrays known to exist and why
+ * `partitionFundingInstructions` exists. `scripts/reproWideFunding.cjs` demonstrates
+ * the whole thing against a live pool without spending anything.
  *
  * That is a genuinely separate defect from the compute-limit one that
  * `resolveComputeUnitLimit` fixes, and BOTH are needed: honouring the SDK's budget
@@ -1652,12 +1821,24 @@ async function sendSequentially(
  * hand rent. Bin-array rent is spent either way — it belongs to the pool, is shared by
  * every LP, and this repository has no path that reclaims it.
  */
+/**
+ * What `preCreateMissingBinArrays` learned, including the part the funding phase needs.
+ *
+ * `existing` is every bin array in range that is on-chain by the time this returns —
+ * the ones that were already there plus the ones this call created. The wide funding
+ * path uses it to drop the SDK's redundant `initializeBinArray` instructions; see
+ * `partitionFundingInstructions` for why they are emitted at all.
+ */
+interface BinArrayPreparation extends EnsureBinArraysResult {
+  existing: Set<string>;
+}
+
 async function preCreateMissingBinArrays(
   auth: ExecutionAuthorization,
   pool: DlmmPool,
   minBinId: number,
   maxBinId: number,
-): Promise<EnsureBinArraysResult> {
+): Promise<BinArrayPreparation> {
   const sdk = await loadDlmmSdk();
   const { deriveBinArray, getBinArrayIndexesCoverage, BIN_ARRAY_FEE } = sdk;
 
@@ -1702,8 +1883,14 @@ async function preCreateMissingBinArrays(
   }
 
   const missing = candidates.filter((_, i) => infos[i] === null);
+  // Everything already on-chain. Grows below as each missing array is created, so the
+  // funding phase can be told exactly which inits are redundant.
+  const existing = new Set(
+    candidates.filter((_, i) => infos[i] !== null).map((c) => c.pubkey.toBase58()),
+  );
+
   if (missing.length === 0) {
-    return { created: 0, existed: candidates.length };
+    return { created: 0, existed: candidates.length, existing };
   }
 
   /*
@@ -1764,17 +1951,20 @@ async function preCreateMissingBinArrays(
       const nowExists = await connection.getAccountInfo(pubkey).catch(() => null);
       if (nowExists !== null) {
         console.log(`[onchain/dlmm] ${label}: already created by another party; continuing`);
+        existing.add(pubkey.toBase58());
         continue;
       }
       throw err;
     }
+
+    existing.add(pubkey.toBase58());
   }
 
   console.log(
     `[onchain/dlmm] ${pool.pubkey.toBase58()}: created ${created} bin array(s) ` +
       `(${(created * BIN_ARRAY_FEE).toFixed(4)} SOL of pool-shared rent) before funding`,
   );
-  return { created, existed: candidates.length - created };
+  return { created, existed: candidates.length - created, existing };
 }
 
 export const dlmmExecutor: DlmmExecutor = {
@@ -1945,7 +2135,7 @@ export const dlmmExecutor: DlmmExecutor = {
      * way round, as this did when the fix first landed, makes every one of these sends
      * a potential orphan-maker.
      */
-    await preCreateMissingBinArrays(auth, pool, minBinId, maxBinId);
+    const binArrays = await preCreateMissingBinArrays(auth, pool, minBinId, maxBinId);
 
     const createTx = await pool.createExtendedEmptyPosition(
       minBinId,
@@ -1978,10 +2168,69 @@ export const dlmmExecutor: DlmmExecutor = {
         );
       }
 
+      /*
+       * The funding transactions are NOT sent as the SDK built them, and both edits
+       * are the 8 Sep 2026 root cause:
+       *
+       *  - every `initializeBinArray` for an array `preCreateMissingBinArrays` just
+       *    verified is dropped. The SDK emits one per covered array per chunk with no
+       *    existence check (`isParallel: true` skips the branch that has one), and a
+       *    redundant init is not free — 202,242 CU measured against mainnet;
+       *  - the compute budget is supplied by us, because that same `isParallel` flag
+       *    disables the branch that would have attached one. Every wide funding
+       *    transaction ever sent therefore ran on the 400,000 CU floor against work
+       *    the SDK sizes at 1,000,000 upward.
+       *
+       * `deriveBinArray` and the Anchor coder come from the SDK, so neither the
+       * address derivation nor the instruction identification is reimplemented here.
+       */
+      const { deriveBinArray } = await loadDlmmSdk();
+      const binArrayForIndex = (index: string): PublicKey | null => {
+        try {
+          return deriveBinArray(pool.pubkey, new BN(index), pool.program.programId)[0];
+        } catch {
+          return null;
+        }
+      };
+
       funded = await sendSequentially(auth, liquidityTxs, {
         operation: "openPosition (fund wide position)",
         position: positionAddress,
         extraSigners: [],
+        prepare: (legacy) => {
+          const { kept, dropped, keptBinArrayInits } = partitionFundingInstructions(
+            legacy.instructions,
+            pool.program.programId,
+            /*
+             * Anchor's published `InstructionCoder` interface declares `encode` but
+             * not `decode`, though every shipped implementation (`BorshInstructionCoder`)
+             * has it. The cast is narrowed to that one method rather than to `any`, and
+             * `partitionFundingInstructions` treats a throw or a null as "unrecognised",
+             * which KEEPS the instruction — so an SDK without it costs compute, never
+             * correctness.
+             */
+            (data) =>
+              (
+                pool.program.coder.instruction as unknown as {
+                  decode(d: Buffer): DecodedDlmmInstruction | null;
+                }
+              ).decode(data),
+            binArrayForIndex,
+            binArrays.existing,
+          );
+
+          if (dropped.length > 0) {
+            console.log(
+              `[onchain/dlmm] ${positionAddress}: dropped ${dropped.length} redundant ` +
+                `InitializeBinArray instruction(s) (index ${dropped.join(", ")}) — those ` +
+                `arrays already exist; the SDK emits them regardless`,
+            );
+          }
+
+          const transaction = new Transaction();
+          transaction.add(...kept);
+          return { transaction, requestedUnits: fundingComputeUnits(keptBinArrayInits) };
+        },
       });
     } catch (err) {
       const alreadyLanded = err instanceof DlmmPartialExecutionError ? err.landed : [];

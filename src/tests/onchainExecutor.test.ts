@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Keypair, PublicKey } from "@solana/web3.js";
+import { Keypair, PublicKey, TransactionInstruction } from "@solana/web3.js";
 import bs58 from "bs58";
 import { isLiveTradingEnabled } from "../config/env.js";
 import {
@@ -38,6 +38,10 @@ import {
   binRangeFromPrices,
   dlmmExecutor,
   isExecutionArmable,
+  DLMM_FUNDING_CU_PER_CHUNK,
+  DLMM_FUNDING_CU_PER_BIN_ARRAY_INIT,
+  fundingComputeUnits,
+  partitionFundingInstructions,
   planPriorityFee,
   readRequestedComputeUnits,
   resolveComputeUnitLimit,
@@ -974,5 +978,260 @@ describe("onchain executor — every builder pins the blockhash the retry loop t
         "longer enforces that callers pin it",
     );
     assert.ok(!build.includes("if (blockhash)"), "the re-pin is guarded, so it can be skipped");
+  });
+});
+
+/*
+ * THE 8 SEP 2026 ROOT CAUSE, in two halves.
+ *
+ * The wide (create-then-fund) path had never completed a single live open across three
+ * real-money incidents. The standing hypothesis was that the SDK expands the bin range
+ * past [minBinId, maxBinId] and touches arrays the probe never checked. It does not —
+ * `chunkBinRange` partitions the range contiguously and `getBinArrayIndexesCoverage`
+ * returns a contiguous run, so the probe's coverage IS the funding path's coverage.
+ *
+ * What actually happens is that `addLiquidityByStrategyChunkable` calls
+ * `chunkDepositWithRebalanceEndpoint` with `isParallel: true`, and that flag disables
+ * two things at once: the existence check before emitting `initializeBinArray`, and the
+ * branch that attaches a compute budget at all. So every funding transaction carried
+ * full-price no-op inits AND ran on our 400,000 CU floor.
+ *
+ * These tests bind both facts to the installed SDK bundle, because the constants
+ * involved are private to it and cannot be imported.
+ */
+describe("onchain executor — the wide funding path is sized and stripped by us, not the SDK", () => {
+  async function sdkBundle(): Promise<string> {
+    const { createRequire } = await import("node:module");
+    const req = createRequire(join(repoRoot, "package.json"));
+    return readFileSync(req.resolve("@meteora-ag/dlmm"), "utf8");
+  }
+
+  it("still finds the SDK's private CU constants at the values we mirror", async () => {
+    const source = await sdkBundle();
+
+    /*
+     * `DEFAULT_ADD_LIQUIDITY_CU` and `DEFAULT_INIT_BIN_ARRAY_CU` are NOT exported, so
+     * they cannot be asserted the way DEFAULT_BIN_PER_POSITION is. Asserting them
+     * against the bundle text is the closest binding available, and it is the point of
+     * this test: an SDK bump that moves either number should fail the build rather
+     * than silently under-size a funding transaction.
+     */
+    assert.match(
+      source,
+      /DEFAULT_ADD_LIQUIDITY_CU\s*=\s*1e6/,
+      `the SDK's DEFAULT_ADD_LIQUIDITY_CU is no longer 1,000,000 — ` +
+        `DLMM_FUNDING_CU_PER_CHUNK (${DLMM_FUNDING_CU_PER_CHUNK}) must be re-derived`,
+    );
+    assert.match(
+      source,
+      /DEFAULT_INIT_BIN_ARRAY_CU\s*=\s*35e4/,
+      `the SDK's DEFAULT_INIT_BIN_ARRAY_CU is no longer 350,000 — ` +
+        `DLMM_FUNDING_CU_PER_BIN_ARRAY_INIT (${DLMM_FUNDING_CU_PER_BIN_ARRAY_INIT}) ` +
+        `must be re-derived`,
+    );
+  });
+
+  it("still exports neither constant, which is why they are hand-written here", async () => {
+    const { createRequire } = await import("node:module");
+    const sdk = createRequire(import.meta.url)("@meteora-ag/dlmm") as Record<string, unknown>;
+
+    /*
+     * If a future SDK starts exporting these, the hand-written copies above should be
+     * replaced by the real values and this test deleted. Failing here is good news.
+     */
+    assert.equal(sdk.DEFAULT_ADD_LIQUIDITY_CU, undefined);
+    assert.equal(sdk.DEFAULT_INIT_BIN_ARRAY_CU, undefined);
+  });
+
+  it("still builds the chunked funding path with isParallel=true, which suppresses the CU ix", async () => {
+    const source = await sdkBundle();
+
+    /*
+     * The load-bearing sentence of the whole investigation.
+     * `chunkDepositWithRebalanceEndpoint` only attaches setComputeUnitLimit under
+     * `if (!isParallel)`, and `addLiquidityByStrategyChunkable` passes true. If a bump
+     * changes either, our override becomes redundant rather than wrong —
+     * `asVersionedTransaction` takes the MAX of the two — but the reasoning in this
+     * file would be stale and should be revisited.
+     */
+    assert.match(
+      source,
+      /if \(!isParallel\) \{\s*addLiquidityIxs\.unshift\(/,
+      "the SDK no longer gates its funding compute-budget instruction on !isParallel",
+    );
+  });
+
+  it("sizes a funding chunk at the SDK's own figures, clamped to Solana's ceiling", () => {
+    assert.equal(fundingComputeUnits(0), 1_000_000);
+    assert.equal(fundingComputeUnits(1), 1_350_000);
+    // 1,000,000 + 2 x 350,000 = 1,700,000, above the 1.4M ceiling a tx may request.
+    assert.equal(fundingComputeUnits(2), SOLANA_MAX_COMPUTE_UNITS);
+    assert.equal(fundingComputeUnits(9), SOLANA_MAX_COMPUTE_UNITS);
+    // Nonsense counts must not shrink the budget below one chunk's worth.
+    for (const bad of [-1, Number.NaN]) {
+      assert.equal(fundingComputeUnits(bad), 1_000_000, `count ${bad}`);
+    }
+  });
+
+  it("is never the 400,000 floor that killed all three live attempts", () => {
+    /*
+     * The regression this whole change exists to prevent, written so that it FAILS
+     * against the pre-fix code rather than merely passing against the new code.
+     *
+     * Before the fix, funding transactions carried no budget at all, so `null` reached
+     * the resolver and it returned the bare 400,000 floor. Each ComputeBudget
+     * instruction costs the runtime 150 CU, so 400,000 - 300 = 399,700 was left for
+     * the program — the exact figure the cluster printed in all three incident logs,
+     * and reproduced by simulation on 8 Sep 2026 ("consumed 202242 of 399700").
+     *
+     * A `units > 399_700` assertion would NOT have caught it: the floor itself is
+     * 400,000. The assertion has to be that a whole chunk's SDK sizing fits.
+     */
+    const COMPUTE_BUDGET_IX_COST = 150;
+    const preFix = resolveComputeUnitLimit(null, 400_000);
+    assert.equal(preFix.source, "floor");
+    assert.equal(
+      preFix.units - 2 * COMPUTE_BUDGET_IX_COST,
+      399_700,
+      "the pre-fix budget is the 399,700 from the incident logs; if this moves, the " +
+        "story below no longer describes the numbers",
+    );
+
+    const { units, source } = resolveComputeUnitLimit(fundingComputeUnits(0), 400_000);
+    assert.equal(source, "sdk");
+    assert.ok(
+      units >= DLMM_FUNDING_CU_PER_CHUNK,
+      `a funding chunk must carry at least the ${DLMM_FUNDING_CU_PER_CHUNK} CU the SDK ` +
+        `sizes it at, never the ${preFix.units} floor it ran on for three live attempts`,
+    );
+  });
+});
+
+describe("onchain executor — redundant InitializeBinArray instructions are dropped, safely", () => {
+  const DLMM_PROGRAM = new PublicKey("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo");
+  const OTHER_PROGRAM = new PublicKey("11111111111111111111111111111111");
+
+  /** Deterministic stand-ins for bin arrays; only identity matters here. */
+  const arrayFor = new Map<string, PublicKey>([
+    ["-82", new PublicKey("So11111111111111111111111111111111111111112")],
+    ["-81", new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")],
+    ["-80", new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")],
+  ]);
+  const derive = (index: string): PublicKey | null => arrayFor.get(index) ?? null;
+
+  function initIx(index: string, binArray: PublicKey | null = null): TransactionInstruction {
+    // IDL order: lb_pair, bin_array, funder, system_program.
+    return new TransactionInstruction({
+      programId: DLMM_PROGRAM,
+      keys: [
+        { pubkey: DLMM_PROGRAM, isSigner: false, isWritable: false },
+        { pubkey: binArray ?? derive(index)!, isSigner: false, isWritable: true },
+      ],
+      data: Buffer.from(index, "utf8"),
+    });
+  }
+
+  const rebalance = new TransactionInstruction({
+    programId: DLMM_PROGRAM,
+    keys: [],
+    data: Buffer.from("rebalance"),
+  });
+  const foreign = new TransactionInstruction({
+    programId: OTHER_PROGRAM,
+    keys: [],
+    data: Buffer.from("wrap sol"),
+  });
+
+  /** Stands in for the Anchor coder: the instruction's data IS its bin-array index. */
+  const decode = (data: Buffer) => {
+    const text = data.toString("utf8");
+    if (text === "rebalance") return { name: "rebalanceLiquidity" };
+    return { name: "initializeBinArray", data: { index: text } };
+  };
+
+  it("drops the inits for arrays already on-chain and keeps everything else", () => {
+    const existing = new Set([derive("-82")!.toBase58(), derive("-81")!.toBase58()]);
+    const { kept, dropped, keptBinArrayInits } = partitionFundingInstructions(
+      [initIx("-82"), initIx("-81"), foreign, rebalance],
+      DLMM_PROGRAM,
+      decode,
+      derive,
+      existing,
+    );
+
+    assert.deepEqual(dropped, ["-82", "-81"]);
+    assert.equal(keptBinArrayInits, 0);
+    assert.deepEqual(kept, [foreign, rebalance]);
+  });
+
+  it("KEEPS an init for an array that genuinely does not exist, and pays for it", () => {
+    const { kept, dropped, keptBinArrayInits } = partitionFundingInstructions(
+      [initIx("-82"), initIx("-80"), rebalance],
+      DLMM_PROGRAM,
+      decode,
+      derive,
+      new Set([derive("-82")!.toBase58()]),
+    );
+
+    assert.deepEqual(dropped, ["-82"]);
+    assert.equal(keptBinArrayInits, 1, "the missing array's init must survive");
+    assert.equal(kept.length, 2);
+    // And the budget must grow to cover the init that survived.
+    assert.equal(fundingComputeUnits(keptBinArrayInits), 1_350_000);
+  });
+
+  it("keeps an init whose named account disagrees with the derived one", () => {
+    /*
+     * Fail-safe against an IDL reordering. If the account we would derive is not the
+     * account the instruction actually names, we do not understand the instruction, and
+     * dropping one we do not understand strands the funding. Wasting compute is the
+     * cheaper mistake.
+     */
+    const wrongSlot = initIx("-82", derive("-80")!);
+    const { kept, dropped, keptBinArrayInits } = partitionFundingInstructions(
+      [wrongSlot, rebalance],
+      DLMM_PROGRAM,
+      decode,
+      derive,
+      new Set([derive("-82")!.toBase58(), derive("-80")!.toBase58()]),
+    );
+
+    assert.deepEqual(dropped, []);
+    assert.equal(keptBinArrayInits, 1);
+    assert.equal(kept.length, 2);
+  });
+
+  it("keeps everything when the coder throws or returns null", () => {
+    const brokenCoders: Array<(d: Buffer) => { name: string } | null> = [
+      () => {
+        throw new Error("no coder");
+      },
+      () => null,
+    ];
+    for (const broken of brokenCoders) {
+      const { kept, dropped } = partitionFundingInstructions(
+        [initIx("-82"), rebalance],
+        DLMM_PROGRAM,
+        broken,
+        derive,
+        new Set([derive("-82")!.toBase58()]),
+      );
+      assert.deepEqual(dropped, []);
+      assert.equal(kept.length, 2);
+    }
+  });
+
+  it("never touches another program's instructions", () => {
+    const { kept, dropped } = partitionFundingInstructions(
+      [foreign, foreign],
+      DLMM_PROGRAM,
+      () => {
+        throw new Error("must not be called for a foreign program");
+      },
+      derive,
+      new Set(),
+    );
+    assert.deepEqual(dropped, []);
+    assert.equal(kept.length, 2);
   });
 });

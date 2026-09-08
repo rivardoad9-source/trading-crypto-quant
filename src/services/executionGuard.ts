@@ -211,5 +211,21 @@ export function describeExecutionGuard(): string {
         `(${poolDenylist.join(", ")})`
       : "empty";
 
-  return `[guard] execution breaker: ${breaker}; operator denylist: ${denylist}`;
+  /*
+   * The width cap belongs on this line because CLAUDE.md makes it the authority on
+   * what is actually armed, and a narrow-only engine filtering ~81% of the universe
+   * before the LLM sees it is the single most consequential thing an operator can
+   * misread as a broken screener. It is printed even when inert, so "no cap" is a
+   * stated fact rather than an absent line.
+   */
+  const cap =
+    env.LIVE_MAX_POSITION_BINS < 1400
+      ? `${env.LIVE_MAX_POSITION_BINS} bins` +
+        (env.LIVE_MAX_POSITION_BINS <= 70 ? " (NARROW ONLY - the wide path is benched)" : "")
+      : "1400 bins (the DLMM maximum; no operator cap)";
+
+  return (
+    `[guard] execution breaker: ${breaker}; operator denylist: ${denylist}; ` +
+    `live width cap: ${cap}`
+  );
 }
