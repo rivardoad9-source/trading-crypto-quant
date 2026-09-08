@@ -1274,6 +1274,34 @@ zero must stay distinguishable from an unknown); and **only the RPC host is publ
 SOL/USD outage nulls the USD figure only — it never discards the SOL reading, which is the
 number that matters.
 
+**Aligning the baseline with the wallet: the wallet balance is NOT the value to pin.**
+`seedStartingBalanceFromWallet` takes the baseline from the real wallet at preflight, but
+refuses once the database holds trades — rebasing under them re-scales every percentage
+already reported. That refusal used to end there, leaving a $1,000 baseline under a real
+wallet and no number to replace it with, and the number an operator reaches for first is
+wrong in a way that does not announce itself. The book computes
+`balance = base + realisedPnL`, so a base set to a wallet that has ALREADY lived through
+those trades counts every one of them twice: a $228 wallet after $12 of booked losses
+reports $216. `impliedStartingBalanceUsd` is that identity solved for the base
+(`wallet - realisedPnL`), and the preflight prints the exact `STARTING_BALANCE_USD` line
+to paste. Suggested, never applied — the same reason the seed refuses.
+
+Two limits are printed with it and must stay printed, because the number is otherwise
+read as "the book now tracks the wallet":
+
+- **It aligns the LEVEL, once, not the meaning.** `getLifetimeStats` filters on status and
+  the cohort cutoff and **never on `execution_mode`**, so `realisedPnL` sums PAPER and LIVE
+  trades alike. On an engine whose live opens have not succeeded, this matches the book to
+  the wallet using PnL that never touched it.
+- **They drift apart again from the next trade**, because the valuation model cannot see
+  swap slippage, priority fees or unrecoverable bin-array rent. `GET /api/reconciliation`
+  is what measures that gap; a matched baseline does not close it.
+
+Making the book track the wallet in MEANING rather than level needs the book restricted to
+live trades — an `execution_mode` filter, a sibling of the cohort filter and not a merge
+with it, since one control mixing "engine version" with "paper vs live" gives "Current Run"
+two meanings. Not started.
+
 **`npm run db:reset` backs up before it destroys.** It writes a timestamped copy to
 `data/backups/` (gitignored, never auto-pruned) and prints the restore command. That backup is
 why the script needs no confirmation prompt: a mistaken run costs a file copy, not the history.
