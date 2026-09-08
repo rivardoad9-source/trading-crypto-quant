@@ -12,9 +12,11 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_STARTING_BALANCE_USD } from "../config/constants.js";
 import {
+  describePinSuggestion,
   describeStartingBalance,
   getStartingBalanceInfo,
   getStartingBalanceUsd,
+  impliedStartingBalanceUsd,
   isStartingBalancePinned,
   resetStartingBalance,
   seedStartingBalanceFromWallet,
@@ -154,5 +156,96 @@ describe("starting balance — readers go through the resolver", () => {
       );
       assert.match(text, /getStartingBalanceUsd\(\)/, `${file} does not use the resolver`);
     }
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Aligning the baseline with a wallet that already has history        */
+/* ------------------------------------------------------------------ */
+
+describe("implied baseline — the wallet balance is NOT the answer", () => {
+  /*
+   * The whole point of this function. The book computes `balance = base + realisedPnL`,
+   * so pinning the base to a wallet that has already lived through those trades counts
+   * every one of them a second time. There is a test named after that inversion because
+   * the wrong number is the one an operator reaches for first, and it is wrong quietly:
+   * it produces a plausible figure, not an error.
+   */
+  it("subtracts booked PnL, so the book's balance lands ON the wallet", () => {
+    const walletUsd = 228;
+    const realisedPnlUsd = -12; // the account is down $12 on closed trades
+
+    const base = impliedStartingBalanceUsd({ walletUsd, realisedPnlUsd });
+    assert.equal(base, 240);
+
+    // The identity that matters: base + realisedPnL === the wallet.
+    assert.equal(base! + realisedPnlUsd, walletUsd);
+
+    // And the naive choice does not.
+    assert.notEqual(walletUsd + realisedPnlUsd, walletUsd);
+  });
+
+  it("subtracts a PROFIT too — the error flips sign, it does not disappear", () => {
+    const base = impliedStartingBalanceUsd({ walletUsd: 228, realisedPnlUsd: 28 });
+    assert.equal(base, 200);
+    assert.equal(base! + 28, 228);
+  });
+
+  it("is null when the wallet could not be read — never a fabricated baseline", () => {
+    assert.equal(impliedStartingBalanceUsd({ walletUsd: null, realisedPnlUsd: 0 }), null);
+    assert.equal(impliedStartingBalanceUsd({ walletUsd: 0, realisedPnlUsd: 0 }), null);
+    assert.equal(impliedStartingBalanceUsd({ walletUsd: Number.NaN, realisedPnlUsd: 0 }), null);
+  });
+
+  it("refuses a zero-or-negative implied baseline, like parseEnvValue does", () => {
+    // Booked profit exceeds what the wallet holds: the implied base is <= 0, which makes
+    // every percentage Infinity or sign-flipped.
+    assert.equal(impliedStartingBalanceUsd({ walletUsd: 100, realisedPnlUsd: 100 }), null);
+    assert.equal(impliedStartingBalanceUsd({ walletUsd: 100, realisedPnlUsd: 150 }), null);
+  });
+});
+
+describe("pin suggestion — states the number AND its limits", () => {
+  it("prints a pasteable env line carrying the corrected figure", () => {
+    const lines = describePinSuggestion({
+      walletUsd: 228,
+      realisedPnlUsd: -12,
+      closedTrades: 4,
+    });
+    const joined = lines.join("\n");
+
+    assert.match(joined, /STARTING_BALANCE_USD=240\.00/);
+    // The wallet balance itself must never be the suggested value.
+    assert.doesNotMatch(joined, /STARTING_BALANCE_USD=228\.00/);
+  });
+
+  it("says the alignment is of level, not of meaning", () => {
+    const joined = describePinSuggestion({
+      walletUsd: 228,
+      realisedPnlUsd: -12,
+      closedTrades: 4,
+    }).join("\n");
+
+    // Both caveats are load-bearing: the book mixes paper trades in, and the two drift
+    // apart again. A bare number here would read as "the book now tracks the wallet".
+    assert.match(joined, /PAPER/);
+    assert.match(joined, /drifts/);
+    assert.match(joined, /reconciliation/i);
+  });
+
+  it("explains itself rather than going silent when it cannot suggest one", () => {
+    const noWallet = describePinSuggestion({
+      walletUsd: null,
+      realisedPnlUsd: 0,
+      closedTrades: 4,
+    }).join("\n");
+    assert.match(noWallet, /no usable wallet reading/);
+
+    const underwater = describePinSuggestion({
+      walletUsd: 100,
+      realisedPnlUsd: 150,
+      closedTrades: 4,
+    }).join("\n");
+    assert.match(underwater, /zero or less/);
   });
 });

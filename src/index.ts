@@ -16,7 +16,7 @@ import {
   isLiveExecutionActive,
 } from "./services/liveExecution.js";
 import { fetchSolPriceUsd } from "./services/marketData.js";
-import { getClosedPositions } from "./database/repositories.js";
+import { getClosedPositions, getLifetimeStats } from "./database/repositories.js";
 import { describeStartingBalance } from "./config/startingBalance.js";
 
 /**
@@ -116,7 +116,10 @@ async function preflight(): Promise<void> {
   try {
     // The seed only applies on a clean slate, so the preflight needs the trade count.
     const existingTrades = getClosedPositions(1, 0).length;
-    await runLivePreflight({ solPriceUsd, existingTrades });
+    // And when it refuses, the realised PnL is what turns "not seeded" into the exact
+    // STARTING_BALANCE_USD the operator can paste to align the book with the wallet.
+    const realisedPnlUsd = getLifetimeStats().realizedPnlUsd;
+    await runLivePreflight({ solPriceUsd, existingTrades, realisedPnlUsd });
   } catch (err) {
     if (err instanceof InsufficientGasReserveError) {
       console.error(`\n${err.message}\n`);

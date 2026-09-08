@@ -126,6 +126,96 @@ export function seedStartingBalanceFromWallet(params: {
   return { applied: true };
 }
 
+/* ------------------------------------------------------------------ */
+/* Aligning the baseline with a wallet that already has history        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The baseline that would make the book's CURRENT balance equal the wallet today.
+ *
+ * `seedStartingBalanceFromWallet` refuses once the database holds trades, and that
+ * refusal is correct — but it left the operator with no number. The obvious next move,
+ * pasting the wallet's balance into `STARTING_BALANCE_USD`, is WRONG in a way that does
+ * not announce itself: the book computes `balance = base + realisedPnL`, so a base set
+ * to a wallet that has already lived through those trades counts every one of them
+ * twice. A wallet at $228 after $12 of booked losses would then report $216.
+ *
+ * The arithmetic is just that identity solved for the base:
+ *
+ *     balance = base + realisedPnL,  and we want balance === walletUsd
+ *     => base = walletUsd - realisedPnL
+ *
+ * ## What this does and does not buy
+ *
+ * It aligns the LEVEL, once. It does not make the book a custody figure, and two
+ * limits have to be said out loud wherever this number is printed:
+ *
+ *  - `realisedPnL` sums PAPER and LIVE trades alike — `getLifetimeStats` filters on
+ *    status and the cohort cutoff, never on `execution_mode`. So on an engine whose
+ *    live opens have not succeeded, this aligns the book to the wallet using profit
+ *    and loss that never touched it.
+ *  - They drift apart again from the next trade onward, because the valuation model
+ *    cannot see swap slippage, priority fees or unrecoverable bin-array rent. That gap
+ *    is what `reconcilePositions` measures; matching the base does not close it.
+ *
+ * @returns the implied baseline, or null when it cannot be stated honestly — an
+ * unreadable wallet, or an implied base of zero or less, which would make every
+ * percentage Infinity or sign-flipped for the same reason `parseEnvValue` refuses one.
+ */
+export function impliedStartingBalanceUsd(params: {
+  walletUsd: number | null;
+  realisedPnlUsd: number;
+}): number | null {
+  const { walletUsd, realisedPnlUsd } = params;
+  if (walletUsd === null || !Number.isFinite(walletUsd) || walletUsd <= 0) return null;
+  if (!Number.isFinite(realisedPnlUsd)) return null;
+
+  const implied = walletUsd - realisedPnlUsd;
+  return implied > 0 ? implied : null;
+}
+
+/**
+ * The lines the preflight prints when the baseline could not be seeded but the operator
+ * could pin one by hand.
+ *
+ * Deliberately a SUGGESTION and not an application. Rebasing under existing trades
+ * re-scales every percentage already reported, so it has to be a decision someone makes
+ * and records in `.env`, not something a boot quietly does — the same reasoning that
+ * makes the seed refuse in the first place.
+ */
+export function describePinSuggestion(params: {
+  walletUsd: number | null;
+  realisedPnlUsd: number;
+  closedTrades: number;
+}): string[] {
+  const implied = impliedStartingBalanceUsd(params);
+  if (implied === null) {
+    return params.walletUsd === null || params.walletUsd <= 0
+      ? ["  to align the baseline with the wallet: no usable wallet reading to derive one from"]
+      : [
+          `  to align the baseline with the wallet: the ${params.closedTrades} closed trade(s) ` +
+            `have booked more profit (+$${params.realisedPnlUsd.toFixed(2)}) than the wallet now ` +
+            `holds ($${params.walletUsd.toFixed(2)}), so the implied baseline is zero or less ` +
+            `and cannot be used`,
+        ];
+  }
+
+  // Signed explicitly: `$${-12}` renders "$-12.00", which reads as a typo in the one
+  // line an operator is meant to copy an exact number out of.
+  const booked = `${params.realisedPnlUsd < 0 ? "-" : "+"}$${Math.abs(params.realisedPnlUsd).toFixed(2)}`;
+
+  return [
+    `  to align the baseline with the wallet, pin it explicitly:`,
+    `  STARTING_BALANCE_USD=${implied.toFixed(2)}`,
+    `    = wallet $${(params.walletUsd ?? 0).toFixed(2)} less the ${booked} already booked by ` +
+      `${params.closedTrades} closed trade(s). Pinning the wallet balance itself would ` +
+      `count those trades twice.`,
+    `    NOTE: this matches the LEVEL today, not the meaning. Booked PnL includes PAPER`,
+    `    trades, and the book drifts from the wallet again as slippage, priority fees and`,
+    `    bin-array rent accrue — GET /api/reconciliation is what measures that gap.`,
+  ];
+}
+
 /** Test seam. Restores the env/default resolution. */
 export function resetStartingBalance(): void {
   resolved = initial();
