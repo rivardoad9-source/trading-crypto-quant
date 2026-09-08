@@ -103,6 +103,121 @@ confirm the funding transactions land, then set `LIVE_MAX_POSITION_BINS=1400`. N
 Still in place from before the halt: auto-unwind after failed opens (worked 3/3),
 auto-close of created-but-unfunded positions, the execution breaker, `POOL_DENYLIST`.
 
+## Reporting and reconciliation fixes (8 Sep 2026)
+
+Five defects found by auditing what the engine SAYS against what it DOES. None changed a
+trading rule; four were the engine reporting something untrue, and one was the emergency
+command not doing its job at all.
+
+**1. The funnel printed its stages in the wrong order.** `summary.candidates` is the
+survivor count from AFTER the cooldown and execution gates, and `recordFunnel` printed it
+in the slot BEFORE them, so a real cycle read `candidates 4 -> cooldown -0 -> exec-guard
+-26` — a funnel losing 26 of 4. Every count was correct; only the order was wrong, which is
+the worse failure, because it reads as corrupt data and sends the reader after a bug that
+is not there. The screener's own output had nowhere to be recorded (`candidates` was doing
+both jobs) and the `held` step was dropped silently, so the row could not be reconciled at
+all. Now `screener_candidates` and `held_excluded` are stored, `candidates` is printed
+last, and `screenerCandidates - heldExcluded - cooldownRejected - executionRejected ===
+candidates` is asserted by `src/tests/funnel.test.ts`.
+
+**`execution_rejected` is also split three ways** — `exec_bincap_rejected` /
+`exec_breaker_rejected` / `exec_denylist_rejected` — because the bin cap is the OPERATOR'S
+SETTING refusing most of the universe while the wide path is unvalidated, and the other two
+are facts about a pool. One column could answer neither "is something broken" nor "what is
+my cap costing me", and the second is the number the halt is waiting on. The dashboard
+panel showed neither gate and labelled `candidates` "Passed screen"; both are fixed, and
+`FunnelCycle` in `dashboard/src/lib/api.ts` had omitted `executionRejected` entirely.
+
+**2. Telegram announced LIVE positions as PAPER.** `sendPositionOpened` hard-coded
+`PAPER POSITION OPENED (DRY-RUN)` and `sendPositionClosed` `PAPER POSITION CLOSED`, with no
+dry-run branch anywhere — for the whole time the engine was armed with real capital. The
+same alert reported `virtualSol: env.VIRTUAL_SOL_PER_POSITION`, the paper constant, while
+the row was written with `sizing.sizeSol` from free capital: the alert and the position
+disagreed, with nothing else in the system to contradict either. And `ilUsd` was rendered
+"Impermanent loss" while carrying `netPnl - fees`, the LP VALUE CHANGE — about 5x larger
+for the same move, i.e. a working engine made to look broken. `live: boolean` is now
+REQUIRED on both payloads (a default is what let this go unnoticed when live execution
+landed), the field is `positionValueChangeUsd`, and the boot banner no longer says "this
+build still signs nothing" while armed to sign. `src/tests/liveLabelling.test.ts`.
+
+**3. `/close_all` marked LIVE rows closed without closing them on-chain.** The emergency
+command called `closePosition(...)` straight into SQLite for every active row — no
+`closeLivePosition`, no signature, nothing sent. The operator got "book flat" while the
+DLMM positions were untouched, and since the rows were no longer ACTIVE the fast monitor
+stopped watching them: real capital in a position with nothing enforcing its stop-loss.
+That is the exact failure the "no row is marked closed until the close confirms" rule
+exists to prevent, reached through the command an operator uses when something has already
+gone wrong. `forceCloseAllPositions` is now two-phase like the monitor and reuses
+`settleLiveCloses`; a live row whose close fails stays ACTIVE and is reported with the
+words "the ON-CHAIN POSITION IS STILL OPEN". `src/tests/manualClose.test.ts`.
+
+**4. Nothing ever compared the database's PnL to the wallet.** Every figure a LIVE position
+carries comes from the paper valuation model — `closeLivePosition` returned signatures and
+never amounts, so the chain was asked to close and never asked what came back. The model
+cannot see the balancing swap's slippage, the priority fees, or bin-array rent, and all
+three push the same way, so the drift was systematic, one-directional and unmeasured.
+`wallet_lamports_before` / `wallet_lamports_after` are now read from the chain either side
+of a live trade, `src/services/reconciliation.ts` compares the two accountings,
+`GET /api/reconciliation` serves it, and the boot log prints one line.
+
+Three properties there are load-bearing:
+
+- **It corrects nothing.** `realized_pnl_usd` keeps its definition, for the same reason gas
+  is recorded and not deducted — silently redefining a historical column is worse than a
+  reported gap. This measures the gap and names it.
+- **An unmeasured row is excluded from BOTH totals**, never counted as zero. Including a
+  model figure with no chain figure beside it would manufacture drift out of a missing
+  measurement, and `driftPctOfModel` is null rather than 0 when nothing is measured: "no
+  basis to compare" and "compared, and they agree" render identically otherwise.
+- **Overlapping windows are flagged.** The balance either side of one trade belongs to the
+  whole wallet, so at `LIVE_MAX_CONCURRENT_POSITIONS=1` attribution is clean and above 1
+  only the aggregate means anything. Saying so is the difference between a reconciliation
+  and a number.
+
+**5. The friction gates never priced the one cost that is unrecoverable.** Both charged
+`gas + slippage`. A bin array is a pool-level account shared by every LP — `close_bin_array`
+is in the IDL, the SDK exposes no wrapper, nothing here can reclaim it — so at 0.0714 SOL
+each against the 0.008 SOL gas floor, one new array is about NINE TIMES the entire modelled
+cost of the trade, against a $1.50 net-PnL bar.
+
+**The obvious fix is wrong and was rejected.** Charging one array to every candidate at
+screening time moves the binding bar from **7.50% to 29.82% fee/TVL** at the shipped 0.80
+SOL profile: it admits nothing, including on liquid pools whose real unrecoverable cost is
+exactly zero. That is the "broken screener" failure this file warns about twice, arrived at
+from the cautious side. So `LIVE_ENTRY_RENT_SOL` exists and **defaults to 0**, and the real
+gate is `openLivePosition` asking the CHAIN (`quoteCreatePosition`) how many arrays THIS
+range must create, then refusing — before the balancing swap, so the refusal is free — when
+that rent exceeds `LIVE_MAX_RENT_TO_PNL` (default 1) times the net PnL the entry was
+admitted on. "Can I afford it" and "is it worth it" are different questions and only the
+first was being asked. `UnrecoverableRentError` is a `LiveEntryRefusedError`, so it is a
+routine skip and earns no execution-breaker strike — the arrays exist or they do not, which
+is not evidence the chain would reject the open. `chargeEntryFrictionUsd` replaces
+`chargeRoundTripGasUsd` at both gate call sites, so the advertised bar and the enforced one
+stay one number.
+
+### What the narrow-only cap silently switched off
+
+`LIVE_MAX_POSITION_BINS=70` is the right interim breaker, but the entire pre-swap apparatus
+built after the 7-8 Sep failures runs on the WIDE path only, so the cap turns all of it off
+at once: `rehearseOpenPosition` plans steps only when `binWidth > DLMM_BINS_PER_INIT` and so
+always returns zero steps and `ok: true`; `preCreateMissingBinArrays` never runs; and the
+execution breaker's two FREE strike paths (rehearsal refusal, bin-array prep failure) can
+therefore never fire, leaving only the post-swap `stage: "open"` strike — the expensive one
+it exists to prevent a repeat of. That is acceptable, because the narrow path's fused
+transaction is budgeted by the SDK simulating it and `onchainExecutor.test.ts` asserts that.
+But it must not read as "verified", and it did.
+
+`binArraysToCreate` was `wide ? missing.length : 0`, so a narrow range about to create
+arrays reported zero, and `openLivePosition` printed **"no account creation needed (all bin
+arrays exist)"** — a false claim about the one spend that can never be undone. Now
+`binArraysToCreate` is always the chain's answer, `fusedIntoOpen` carries the separate fact
+that nothing was simulated, and the log says `NOTHING WAS REHEARSED` and prices the arrays.
+Also fixed: `liveExecution.ts` decided the narrow/wide boundary with a hand-written
+`binWidth <= 70` in the spend-ceiling check while the other two sites read
+`DLMM_BINS_PER_INIT` — invisible to the test that binds that constant to the SDK. The same
+discipline now covers rent: `DLMM_BIN_ARRAY_RENT_SOL` is exported and bound to the SDK's
+`BIN_ARRAY_FEE`. `src/tests/narrowOnly.test.ts`.
+
 ## Official baseline: FlowMetrix DLMM AI Agent V1.1
 
 **V1.1 is the only configuration the live engine runs.** There is no v1.0 code path, no legacy
@@ -367,7 +482,10 @@ Three boundaries are deliberate and must not be quietly "improved":
   does. The narrow path therefore has nothing to rehearse, and `openLivePosition` says
   so in as many words rather than logging a clean rehearsal that checked nothing. Its
   protection is the compute-budget fix — the SDK simulates that fused transaction
-  itself, which `onchainExecutor.test.ts` asserts.
+  itself, which `onchainExecutor.test.ts` asserts. **Under `LIVE_MAX_POSITION_BINS=70`
+  that means the rehearsal simulates nothing on EVERY entry** — see "What the
+  narrow-only cap silently switched off" above, which is also where the log line that
+  claimed "all bin arrays exist" on that path was corrected.
 - **It cannot cover the liquidity phase.** That deposits the paired token, and the
   wallet does not hold it until the swap this gate runs before. Simulating it here would
   fail for lack of funds on *every* pool — a false alarm, not a check.
@@ -454,12 +572,15 @@ exposes no wrapper and **nothing in this repository can reclaim it**. At the dep
 envelope the rent budget is 1.10 SOL, so a fresh pool can absorb up to ~15 arrays ×
 0.0714 SOL of permanently spent rent on a 1.8 SOL position.
 
-The friction gates do not see this. `assessBreakeven` (2.5×) and
-`assessMicroCapitalFriction` ($1.50) price gas and slippage; the affordability gate asks
-"can I afford it", never "is it worth it". Pricing rent into the entry economics would
-change which pools the engine admits — a change to the formula, out of scope here — so it
-is recorded as a known exposure rather than silently patched. `preCreateMissingBinArrays`
-logs the SOL it spends on arrays so it is at least visible in the run.
+**The friction gates now see this, and where they see it matters.** They used to price
+gas and slippage only, so the affordability gate asked "can I afford it" and nothing
+asked "is it worth it". The screening gates still do NOT charge it by default
+(`LIVE_ENTRY_RENT_SOL=0`): at screening time nobody knows whether the pool needs a new
+array, and charging one to every candidate moves the binding bar from 7.50% to 29.82%
+fee/TVL, refusing the universe over a cost most candidates never incur. Enforcement lives
+in `openLivePosition` instead, against the CHAIN’s own array count for that range and
+bounded by `LIVE_MAX_RENT_TO_PNL`. See "Reporting and reconciliation fixes" above.
+`preCreateMissingBinArrays` still logs the SOL it spends on arrays.
 
 ### The Jupiter swap was breaking the double-spend rule, silently
 

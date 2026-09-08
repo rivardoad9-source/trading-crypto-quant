@@ -9,6 +9,9 @@ export interface SimulatedPositionRow {
   swap_signature?: string | null;
   deposited_sol_lamports?: number | null;
   deposited_paired_amount?: string | null;
+  /** Chain-measured wallet lamports either side of a LIVE trade. NULL = not measured. */
+  wallet_lamports_before?: number | null;
+  wallet_lamports_after?: number | null;
   position_id: string;
   pool_address: string;
   pair_name: string;
@@ -113,6 +116,16 @@ export interface NewPositionInput {
   depositedSolLamports?: number | null;
   /** Base units. String because a token amount can exceed 2^53. */
   depositedPairedAmount?: string | null;
+  /**
+   * Wallet lamports read from the chain immediately before this entry spent anything.
+   *
+   * Half of the only chain-MEASURED figure a live position carries. Everything else on
+   * the row is the paper valuation model, which cannot see the balancing swap's
+   * slippage, the priority fees, or the bin-array rent that never comes back — so the
+   * database's PnL for a live trade drifts from the wallet in one direction and nothing
+   * compared them. Null means the read failed; it must never be coerced to 0.
+   */
+  walletLamportsBefore?: number | null;
 }
 
 export interface PositionUpdateInput {
@@ -143,4 +156,10 @@ export interface ClosePositionInput {
    * closes. A LIVE row closed without one would assert an exit nothing can verify.
    */
   closeSignature?: string | null;
+  /**
+   * Wallet lamports read from the chain after the close confirmed. With
+   * `walletLamportsBefore` this is the trade's true effect on the wallet, against which
+   * `realizedPnlUsd` — a model output — can finally be checked. Null when unmeasured.
+   */
+  walletLamportsAfter?: number | null;
 }

@@ -282,3 +282,61 @@ export function formatDuration(from: string, to: string | null): string {
   if (hours < 24) return `${hours.toFixed(1)}h`;
   return `${(hours / 24).toFixed(1)}d`;
 }
+
+/**
+ * One screener cycle's entry funnel, from `GET /api/funnel`.
+ *
+ * `scanned` is null — never 0 — when the cycle never reached the screener (engine
+ * paused, or already at capacity). "Not measured" and "measured zero" are different
+ * facts, and the UI renders them differently.
+ */
+export interface FunnelCycle {
+  id: number;
+  cycleAt: string;
+  scanned: number | null;
+  screenRejections: Record<string, number>;
+  /**
+   * Survivors of the quantitative screen alone — the FIRST stage of the local funnel.
+   * Null on a cycle recorded before this field existed, which the UI renders as
+   * unknown rather than as zero.
+   */
+  screenerCandidates: number | null;
+  /** Screener survivors dropped for already holding a position on that pool. */
+  heldExcluded: number;
+  /**
+   * Survivors of EVERY local filter — the LAST stage, not the first.
+   *
+   * The panel used to label this "Passed screen" and draw it directly under `scanned`,
+   * with no cooldown or exec-guard rows at all. So a cycle that screened 30 pools and
+   * had 26 refused by the width cap rendered as "Passed screen 4" with the gate that
+   * did the refusing nowhere on the page.
+   */
+  candidates: number;
+  cooldownRejected: number;
+  /** Total refused by the execution gates, broken out by gate below. */
+  executionRejected: number;
+  execDenylistRejected: number;
+  execBreakerRejected: number;
+  /**
+   * Refused by the operator's own `LIVE_MAX_POSITION_BINS`.
+   *
+   * Its own number because it is the only one of the three that is a setting rather
+   * than a fact about a pool, and it is what says whether the narrow-only cap is
+   * costing the engine its universe.
+   */
+  execBinCapRejected: number;
+  antirugPassed: number;
+  antirugRejected: number;
+  volatilityRejected: number;
+  coverageRejected: number;
+  microRejected: number;
+  reachedDecision: boolean;
+  opened: boolean;
+  skipReason: string | null;
+  positionsChecked: number;
+  positionsClosed: number;
+  durationMs: number;
+}
+
+export const fetchFunnel = (limit = 48, signal?: AbortSignal) =>
+  get<{ cycles: FunnelCycle[] }>(`/funnel?limit=${limit}`, signal).then((r) => r.cycles);

@@ -88,7 +88,7 @@ export function insertPosition(input: NewPositionInput): void {
        safety_verdict, est_gas_cost_usd, est_priority_micro_lamports,
        breakeven_coverage_ratio, expected_fee_24h_usd,
        execution_mode, position_address, open_signature, swap_signature,
-       deposited_sol_lamports, deposited_paired_amount
+       deposited_sol_lamports, deposited_paired_amount, wallet_lamports_before
      ) VALUES (
        @positionId, @poolAddress, @pairName, @strategyType,
        @entryPrice, @lowerBinPrice, @upperBinPrice, @virtualSolAmount,
@@ -98,7 +98,7 @@ export function insertPosition(input: NewPositionInput): void {
        @safetyVerdict, @estGasCostUsd, @estPriorityMicroLamports,
        @breakevenCoverageRatio, @expectedFee24hUsd,
        @executionMode, @positionAddress, @openSignature, @swapSignature,
-       @depositedSolLamports, @depositedPairedAmount
+       @depositedSolLamports, @depositedPairedAmount, @walletLamportsBefore
      )`,
   ).run({
     ...input,
@@ -116,6 +116,9 @@ export function insertPosition(input: NewPositionInput): void {
     swapSignature: input.swapSignature ?? null,
     depositedSolLamports: input.depositedSolLamports ?? null,
     depositedPairedAmount: input.depositedPairedAmount ?? null,
+    // Null, never 0: an unread balance is not an empty wallet, and a fabricated anchor
+    // would produce a fabricated reconciliation.
+    walletLamportsBefore: input.walletLamportsBefore ?? null,
     // SQLite has no boolean type; store 1 / 0 / null so "unknown" stays distinct
     // from "checked and still live".
     mintAuthorityRevoked:
@@ -299,10 +302,15 @@ export function closePosition(input: ClosePositionInput): void {
             floating_pnl_usd = 0,
             close_reason = @closeReason,
             close_signature = @closeSignature,
+            wallet_lamports_after = @walletLamportsAfter,
             closed_at = CURRENT_TIMESTAMP,
             last_checked_at = CURRENT_TIMESTAMP
       WHERE position_id = @positionId`,
-  ).run({ ...input, closeSignature: input.closeSignature ?? null });
+  ).run({
+    ...input,
+    closeSignature: input.closeSignature ?? null,
+    walletLamportsAfter: input.walletLamportsAfter ?? null,
+  });
 }
 
 export function getClosedPositions(
@@ -319,6 +327,24 @@ export function getClosedPositions(
         LIMIT ? OFFSET ?`,
     )
     .all(...params, limit, offset) as SimulatedPositionRow[];
+}
+
+/**
+ * Every position backed by a real on-chain account, open or closed, oldest first.
+ *
+ * Unfiltered by status on purpose: wallet reconciliation compares closed live trades
+ * against the chain, and has to know whether ANOTHER live position was open during the
+ * same window — an overlapping window makes the wallet delta a property of the account
+ * rather than of one trade, and that has to be reported, not assumed away.
+ */
+export function getLivePositions(): SimulatedPositionRow[] {
+  return db
+    .prepare(
+      `SELECT * FROM simulated_positions
+        WHERE execution_mode = 'LIVE' AND position_address IS NOT NULL
+        ORDER BY opened_at ASC`,
+    )
+    .all() as SimulatedPositionRow[];
 }
 
 export function getPositionById(positionId: string): SimulatedPositionRow | undefined {
@@ -678,9 +704,31 @@ export interface ScanFunnelRecord {
   scanned: number | null;
   /** `ScreenResult.rejected` bucket map, stored as JSON. */
   screenRejections: Record<string, number>;
+  /**
+   * Survivors of the quantitative screen alone, or null when the screener never ran.
+   *
+   * Null rather than 0 for the same reason `scanned` is: "not measured" and "measured
+   * zero" are different facts, and a row written before this column existed must not
+   * claim the screener produced nothing.
+   */
+  screenerCandidates: number | null;
+  /** Screener survivors dropped for already holding an open position on that pool. */
+  heldExcluded: number;
+  /**
+   * Survivors of EVERY local filter — the last step of the narrowing, not the first.
+   * `screenerCandidates - heldExcluded - cooldownRejected - executionRejected`.
+   */
   candidates: number;
   cooldownRejected: number;
   executionRejected: number;
+  /**
+   * `executionRejected` split by gate. The bin cap is the operator's own setting and
+   * the other two are facts about the pool, so a single total cannot answer either
+   * "is a pool broken" or "what is my width cap costing me".
+   */
+  execDenylistRejected: number;
+  execBreakerRejected: number;
+  execBinCapRejected: number;
   antirugPassed: number;
   antirugRejected: number;
   volatilityRejected: number;
@@ -710,12 +758,16 @@ export interface ScanFunnelRow extends ScanFunnelRecord {
 export function recordScanFunnel(record: ScanFunnelRecord): void {
   db.prepare(
     `INSERT INTO scan_funnel_cycles (
-       scanned, screen_rejections, candidates, cooldown_rejected, execution_rejected,
+       scanned, screen_rejections, screener_candidates, held_excluded,
+       candidates, cooldown_rejected, execution_rejected,
+       exec_denylist_rejected, exec_breaker_rejected, exec_bincap_rejected,
        antirug_passed, antirug_rejected, volatility_rejected,
        coverage_rejected, micro_rejected, reached_decision, opened,
        skip_reason, positions_checked, positions_closed, duration_ms
      ) VALUES (
-       @scanned, @screenRejections, @candidates, @cooldownRejected, @executionRejected,
+       @scanned, @screenRejections, @screenerCandidates, @heldExcluded,
+       @candidates, @cooldownRejected, @executionRejected,
+       @execDenylistRejected, @execBreakerRejected, @execBinCapRejected,
        @antirugPassed, @antirugRejected, @volatilityRejected,
        @coverageRejected, @microRejected, @reachedDecision, @opened,
        @skipReason, @positionsChecked, @positionsClosed, @durationMs
@@ -733,9 +785,14 @@ interface RawFunnelRow {
   cycle_at: string;
   scanned: number | null;
   screen_rejections: string | null;
+  screener_candidates: number | null;
+  held_excluded: number | null;
   candidates: number;
   cooldown_rejected: number;
   execution_rejected: number | null;
+  exec_denylist_rejected: number | null;
+  exec_breaker_rejected: number | null;
+  exec_bincap_rejected: number | null;
   antirug_passed: number;
   antirug_rejected: number;
   volatility_rejected: number;
@@ -762,9 +819,16 @@ export function getScanFunnel(limit = 100): ScanFunnelRow[] {
     // A row written before this column existed, or by a failed write, reads as {} —
     // never as a fabricated bucket map.
     screenRejections: parseRejections(r.screen_rejections),
+    // Null on a row written before the column existed. NOT coerced to 0: that would
+    // assert the screener produced nothing, which is a measurement this row never made.
+    screenerCandidates: r.screener_candidates,
+    heldExcluded: r.held_excluded ?? 0,
     candidates: r.candidates,
     cooldownRejected: r.cooldown_rejected,
     executionRejected: r.execution_rejected ?? 0,
+    execDenylistRejected: r.exec_denylist_rejected ?? 0,
+    execBreakerRejected: r.exec_breaker_rejected ?? 0,
+    execBinCapRejected: r.exec_bincap_rejected ?? 0,
     antirugPassed: r.antirug_passed,
     antirugRejected: r.antirug_rejected,
     volatilityRejected: r.volatility_rejected,
