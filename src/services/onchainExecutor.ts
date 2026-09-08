@@ -1366,6 +1366,21 @@ export const DLMM_POSITION_MIN_SIZE = 8112;
 export const DLMM_POSITION_BIN_DATA_SIZE = 112;
 
 /**
+ * Rent-exemption for ONE bin array, in SOL. Mirrors the SDK's `BIN_ARRAY_FEE`, and
+ * `onchainExecutor.test.ts` binds it to the installed build like the four above.
+ *
+ * This number is the engine's only UNRECOVERABLE cost. A bin array is a POOL-level
+ * account shared by every LP: `close_bin_array` exists in the IDL, the SDK exposes no
+ * wrapper for it, and nothing in this repository can reclaim the rent. The position
+ * account's rent comes back when the position closes; this does not, ever.
+ *
+ * It is exported so the friction gates can PRICE it. They could not before — they
+ * charged gas and slippage only, and at the 0.008 SOL round-trip gas floor a single
+ * new bin array is about nine times the entire modelled cost of the trade.
+ */
+export const DLMM_BIN_ARRAY_RENT_SOL = 0.07143744;
+
+/**
  * On-chain byte size of a position account spanning `binWidth` bins.
  *
  * Matches the SDK's `calculatePositionSize`. It matters to the caller because the
@@ -1483,7 +1498,30 @@ export interface OpenRehearsalStep {
 export interface OpenRehearsal {
   ok: boolean;
   binWidth: number;
+  /**
+   * Bin arrays the range needs that the chain does NOT have. A measurement, always.
+   *
+   * This used to be forced to 0 on the narrow path — `wide ? missing.length : 0` —
+   * because only the wide path creates them in their own transaction. That conflated
+   * "we will not create these separately" with "these exist", and `openLivePosition`
+   * then printed the second one: "no account creation needed (all bin arrays exist)"
+   * over a narrow range that was about to spend 0.0714 SOL per array, permanently,
+   * inside the fused open. Bin-array rent is the one cost this engine cannot get back,
+   * so the log claiming there is none is the wrong thing to be wrong about.
+   *
+   * `rehearsedSteps` below is what says whether anything was simulated. Keep the two
+   * apart: one is a fact about the chain, the other a fact about this function.
+   */
   binArraysToCreate: number;
+  /**
+   * Whether the narrow path's inits are FUSED into the open rather than sent alone.
+   *
+   * True on a narrow range, and it is why `steps` is empty there: the narrow path has
+   * no standalone account-creation transaction to rehearse, and the fused one cannot
+   * be simulated before the swap funds its deposit. The SDK budgets that transaction
+   * by simulating it itself, which `onchainExecutor.test.ts` asserts.
+   */
+  fusedIntoOpen: boolean;
   steps: OpenRehearsalStep[];
   /** The first step that failed, or null when every one simulated clean. */
   failure: OpenRehearsalStep | null;
@@ -1650,7 +1688,11 @@ export async function rehearseOpenPosition(params: {
   return {
     ok: failure === null,
     binWidth,
-    binArraysToCreate: wide ? missing.length : 0,
+    // The chain's answer, on both paths. See the field's note: forcing this to 0 on
+    // the narrow path is what let the operator log claim arrays existed when they did
+    // not, and bin-array rent is unrecoverable.
+    binArraysToCreate: missing.length,
+    fusedIntoOpen: !wide,
     steps,
     failure,
     tight,

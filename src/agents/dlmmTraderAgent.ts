@@ -3,7 +3,7 @@ import { z } from "zod";
 import { env } from "../config/env.js";
 import {
   assessMicroCapitalFriction,
-  chargeRoundTripGasUsd,
+  chargeEntryFrictionUsd,
   liveMicroCapital,
   sizeNextPositionSol,
 } from "../config/liveConfig.js";
@@ -277,6 +277,15 @@ export interface SafetyScreenedPool {
   safety: TokenSafetyReport | null;
   /** Filled in by the friction gate once position size is known. */
   breakeven?: BreakevenAssessment;
+  /**
+   * Projected net PnL from the live micro-capital gate, in USD. Carried forward rather
+   * than recomputed because `openLivePosition` needs it to judge whether the entry's
+   * UNRECOVERABLE bin-array rent is worth paying, and recomputing it there would be a
+   * second copy of a number two gates already share one basis for.
+   *
+   * Undefined in paper mode, where that gate does not run.
+   */
+  microProjectedNetPnlUsd?: number;
   /** Filled in by the volatility gates. */
   priceChange24hPct?: number;
   priceChange1hPct?: number;
@@ -714,10 +723,11 @@ async function monitorOpenPositions(): Promise<{
             entryPrice: row.entry_price,
             exitPrice: pool.currentPrice,
             feeUsd: totals.totalFeeUsd,
-            ilUsd: totals.netPnlUsd - totals.totalFeeUsd,
+            positionValueChangeUsd: totals.netPnlUsd - totals.totalFeeUsd,
             netPnlUsd: totals.netPnlUsd,
             netPnlPct: totals.netPnlPct,
             heldHours: totals.ageHours,
+            live: true,
           },
         });
       }
@@ -769,10 +779,13 @@ async function monitorOpenPositions(): Promise<{
         entryPrice: row.entry_price,
         exitPrice: pool.currentPrice,
         feeUsd: totals.totalFeeUsd,
-        ilUsd: totals.netPnlUsd - totals.totalFeeUsd,
+        positionValueChangeUsd: totals.netPnlUsd - totals.totalFeeUsd,
         netPnlUsd: totals.netPnlUsd,
         netPnlPct: totals.netPnlPct,
         heldHours: totals.ageHours,
+        // A PAPER row by construction: a live row took the two-phase branch above and
+        // never reaches this queue.
+        live: false,
       },
     });
   }
@@ -799,14 +812,20 @@ function isLivePosition(row: SimulatedPositionRow): boolean {
  */
 async function settleLiveCloses(
   pending: PendingLiveClose[],
-): Promise<{ closed: number; deferred: DeferredCloseWork[] }> {
+): Promise<{
+  closed: number;
+  deferred: DeferredCloseWork[];
+  /** Rows whose on-chain close did not confirm. They are still ACTIVE and still held. */
+  failed: Array<{ pairName: string; positionId: string; reason: string }>;
+}> {
   const deferred: DeferredCloseWork[] = [];
+  const failed: Array<{ pairName: string; positionId: string; reason: string }> = [];
   let closed = 0;
 
   for (const item of pending) {
     const { row } = item;
     try {
-      const { closeSignature } = await closeLivePosition({
+      const { closeSignature, walletLamportsAfter } = await closeLivePosition({
         poolAddress: row.pool_address,
         positionAddress: row.position_address ?? "",
         pairName: row.pair_name,
@@ -825,6 +844,7 @@ async function settleLiveCloses(
           positionValueChangeUsd: item.realizedPnlUsd - item.unclaimedFeeUsd,
           closeReason: item.closeReason,
           closeSignature,
+          walletLamportsAfter,
         });
       });
 
@@ -836,11 +856,12 @@ async function settleLiveCloses(
           `— ${closeSignature}`,
       );
     } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
       console.error(
         `[live] on-chain close FAILED for ${row.pair_name} (${row.position_address}); ` +
-          `the row stays ACTIVE and the next tick will retry: ` +
-          `${err instanceof Error ? err.message : String(err)}`,
+          `the row stays ACTIVE and the next tick will retry: ${reason}`,
       );
+      failed.push({ pairName: row.pair_name, positionId: row.position_id, reason });
       await sendError("settleLiveCloses", err).catch(() => undefined);
     } finally {
       // Released whatever happened, so a failed close can be retried next tick.
@@ -848,7 +869,7 @@ async function settleLiveCloses(
     }
   }
 
-  return { closed, deferred };
+  return { closed, deferred, failed };
 }
 
 /**
@@ -978,11 +999,28 @@ export type ManualClosePoolSource = (
 ) => Promise<Pick<DlmmPool, "currentPrice" | "feeTvlRatio24h"> | null>;
 
 /**
- * Emergency-close every active position (paper trading — no real funds).
+ * Emergency-close every active position.
  *
  * Values each position at the live pool price when available; falls back to the
  * last stored price (flagged) when the pool cannot be fetched. Only positions
  * with neither are left open and reported as failed.
+ *
+ * TWO-PHASE, for the same reason the monitor is, and this used to be neither.
+ *
+ * `/close_all` wrote `CLOSED_MANUAL` straight to the database for EVERY row, live ones
+ * included — no `closeLivePosition`, no signature, no chain. The operator's emergency
+ * command therefore reported a flat book while the on-chain positions were untouched,
+ * and because the rows were no longer ACTIVE the monitor stopped watching them: real
+ * capital left in a DLMM position with nothing enforcing its stop-loss, discovered only
+ * by looking at the chain by hand. That is the exact failure the "no row is marked
+ * closed until the close confirms" rule exists to prevent, in the one command an
+ * operator reaches for when something has already gone wrong.
+ *
+ * So phase one values under the lock and closes PAPER rows only; live rows are queued.
+ * Phase two runs `settleLiveCloses` with the lock released — several confirmed
+ * transactions each — and a row is marked closed only once the chain agrees. A live
+ * position whose close fails stays ACTIVE, is reported in `failed`, and is retried by
+ * the next monitor tick.
  *
  * `fetchPool` and `reflect` are injectable so tests can run this without
  * network or DeepSeek access.
@@ -998,14 +1036,38 @@ export async function forceCloseAllPositions(options: {
    * guarantees the active list read below is not one a concurrent pass is mid-way
    * through closing.
    */
-  return positionMutex.run(() => closeAllPositionsLocked(options));
+  const { result, pendingLiveCloses } = await positionMutex.run(() =>
+    closeAllPositionsLocked(options),
+  );
+
+  if (pendingLiveCloses.length === 0) return result;
+
+  const settled = await settleLiveCloses(pendingLiveCloses);
+  result.closed += settled.closed;
+  for (const item of pendingLiveCloses) {
+    if (settled.failed.some((f) => f.positionId === item.row.position_id)) continue;
+    result.totalNetPnlUsd += item.realizedPnlUsd;
+  }
+  for (const f of settled.failed) {
+    result.failed.push({
+      pairName: f.pairName,
+      positionId: f.positionId,
+      reason:
+        `on-chain close failed, the position is STILL OPEN and still held: ${f.reason}`,
+    });
+  }
+
+  // Alerts and post-mortems, outside the lock like every other close path.
+  await settleClosedPositions(settled.deferred);
+
+  return result;
 }
 
 async function closeAllPositionsLocked(options: {
   reason?: string;
   fetchPool?: ManualClosePoolSource;
   reflect?: (row: SimulatedPositionRow) => Promise<string | null>;
-}): Promise<ManualCloseResult> {
+}): Promise<{ result: ManualCloseResult; pendingLiveCloses: PendingLiveClose[] }> {
   const reason = options.reason ?? "Emergency manual close via Telegram /close_all";
   const fetchPool = options.fetchPool ?? fetchPoolByAddress;
   const reflect = options.reflect ?? reflectOnPosition;
@@ -1018,12 +1080,66 @@ async function closeAllPositionsLocked(options: {
     stalePriced: [],
     totalNetPnlUsd: 0,
   };
+  const pendingLiveCloses: PendingLiveClose[] = [];
+
+  /*
+   * Queue a LIVE row for phase two instead of closing it here.
+   *
+   * `closingOnChain` is consulted for the same reason the monitor consults it: the row
+   * stays ACTIVE until the chain confirms, so a monitor tick already settling this
+   * position must not have a second close submitted underneath it.
+   */
+  const queueLive = (
+    row: SimulatedPositionRow,
+    totals: ReturnType<typeof valuateAtPrice>,
+    exitPrice: number,
+    closeReason: string,
+  ): void => {
+    if (closingOnChain.has(row.position_id)) {
+      result.failed.push({
+        pairName: row.pair_name,
+        positionId: row.position_id,
+        reason: "an on-chain close is already in flight for this position",
+      });
+      return;
+    }
+    closingOnChain.add(row.position_id);
+    pendingLiveCloses.push({
+      row,
+      status: POSITION_STATUS.CLOSED_MANUAL,
+      closeReason,
+      exitPrice,
+      realizedPnlUsd: totals.netPnlUsd,
+      realizedPnlPct: totals.netPnlPct,
+      unclaimedFeeUsd: totals.totalFeeUsd,
+      divergenceVsHoldUsd: totals.divergenceVsHoldUsd,
+      notify: {
+        pairName: row.pair_name,
+        status: POSITION_STATUS.CLOSED_MANUAL,
+        reason: closeReason,
+        entryPrice: row.entry_price,
+        exitPrice,
+        feeUsd: totals.totalFeeUsd,
+        positionValueChangeUsd: totals.netPnlUsd - totals.totalFeeUsd,
+        netPnlUsd: totals.netPnlUsd,
+        netPnlPct: totals.netPnlPct,
+        heldHours: totals.ageHours,
+        live: true,
+      },
+    });
+  };
 
   for (const row of active) {
     const pool = await fetchPool(row.pool_address);
 
     if (pool && pool.currentPrice > 0) {
       const totals = valuateAtPrice(row, pool.currentPrice, pool.feeTvlRatio24h);
+
+      if (isLivePosition(row)) {
+        queueLive(row, totals, pool.currentPrice, reason);
+        continue;
+      }
+
       closePosition({
         positionId: row.position_id,
         status: POSITION_STATUS.CLOSED_MANUAL,
@@ -1050,10 +1166,11 @@ async function closeAllPositionsLocked(options: {
         entryPrice: row.entry_price,
         exitPrice: pool.currentPrice,
         feeUsd: totals.totalFeeUsd,
-        ilUsd: totals.netPnlUsd - totals.totalFeeUsd,
+        positionValueChangeUsd: totals.netPnlUsd - totals.totalFeeUsd,
         netPnlUsd: totals.netPnlUsd,
         netPnlPct: totals.netPnlPct,
         heldHours: totals.ageHours,
+        live: isLivePosition(row),
       });
 
       // Same reflection behaviour as a normal close; failures are retried later
@@ -1078,6 +1195,18 @@ async function closeAllPositionsLocked(options: {
     // unclaimed total is already in unclaimed_fee_usd.
     if (row.current_price !== null && row.current_price > 0) {
       const totals = valuateAtPrice(row, row.current_price, 0);
+
+      if (isLivePosition(row)) {
+        result.stalePriced.push(row.pair_name);
+        queueLive(
+          row,
+          totals,
+          row.current_price,
+          `${reason} (stale price: live pool data unavailable)`,
+        );
+        continue;
+      }
+
       closePosition({
         positionId: row.position_id,
         status: POSITION_STATUS.CLOSED_MANUAL,
@@ -1105,27 +1234,54 @@ async function closeAllPositionsLocked(options: {
         entryPrice: row.entry_price,
         exitPrice: row.current_price,
         feeUsd: totals.totalFeeUsd,
-        ilUsd: totals.netPnlUsd - totals.totalFeeUsd,
+        positionValueChangeUsd: totals.netPnlUsd - totals.totalFeeUsd,
         netPnlUsd: totals.netPnlUsd,
         netPnlPct: totals.netPnlPct,
         heldHours: totals.ageHours,
+        live: isLivePosition(row),
       });
       continue;
     }
 
+    /*
+     * Neither a live nor a stored price. The row stays ACTIVE and, on a LIVE row, so
+     * does the on-chain position — say so, because "failed" on an emergency flatten
+     * must not be read as "closed but unpriced".
+     */
     result.failed.push({
       pairName: row.pair_name,
       positionId: row.position_id,
-      reason: "no live pool data and no stored price",
+      reason: isLivePosition(row)
+        ? "no live pool data and no stored price - the ON-CHAIN POSITION IS STILL OPEN " +
+          "and was not touched; close it by hand or retry once pool data returns"
+        : "no live pool data and no stored price",
     });
   }
 
-  return result;
+  return { result, pendingLiveCloses };
 }
 
 /* ------------------------------------------------------------------ */
 /* Stage: screen + decide + open                                       */
 /* ------------------------------------------------------------------ */
+
+/**
+ * Which execution-level gate refused a pool.
+ *
+ * `denylist` and `breaker` are facts about the POOL. `binCap` is a fact about the
+ * OPERATOR'S CONFIGURATION — the same pool is admitted the moment
+ * `LIVE_MAX_POSITION_BINS` is raised — so the three must stay countable apart.
+ */
+export type ExecutionBlockKind = "denylist" | "breaker" | "binCap";
+
+/** Tallies execution refusals per gate. Every kind is present, zero included. */
+export function countExecutionBlocks(
+  rejected: ReadonlyArray<{ kind: ExecutionBlockKind }>,
+): Record<ExecutionBlockKind, number> {
+  const out: Record<ExecutionBlockKind, number> = { denylist: 0, breaker: 0, binCap: 0 };
+  for (const r of rejected) out[r.kind] += 1;
+  return out;
+}
 
 export interface EntrySummary {
   scanned: number;
@@ -1139,6 +1295,25 @@ export interface EntrySummary {
    * recorded the real figure. Empty when the cycle never reached the screener.
    */
   screenRejections: Record<string, number>;
+  /**
+   * Survivors of the quantitative screen ALONE, before anything local is applied.
+   *
+   * This is the number `candidates` was long assumed to be, and was not. It is the
+   * first figure in the funnel narrative and the only one that reconciles against
+   * `scanned` and `screenRejections`, whose buckets are exhaustive:
+   * `scanned - sum(screenRejections) === screenerCandidates`.
+   */
+  screenerCandidates: number;
+  /** Screener survivors dropped for already holding an open position on that pool. */
+  heldExcluded: number;
+  /**
+   * Pools that survived EVERY filter and were offered to the anti-rug screen.
+   *
+   * `screenerCandidates - heldExcluded - cooldownRejected - executionRejected`. It is
+   * the LAST step of the local narrowing, not the first — the funnel used to print it
+   * in the first slot and then subtract the stages that had already produced it, which
+   * reads as "candidates 4 -> exec-guard -26" and cannot be true of any funnel.
+   */
   candidates: number;
   /** Candidates remaining after the anti-rug screen. */
   safeCandidates: number;
@@ -1152,11 +1327,24 @@ export interface EntrySummary {
   }>;
   /**
    * Candidates dropped because the engine cannot EXECUTE the pool — an operator
-   * denylist entry, or the execution breaker. Separate from `cooldownRejected`, which
-   * is the V1.1 anti-churn gate over trading outcomes: this one is about whether an
-   * open is possible at all, and it is empty in paper mode by construction.
+   * denylist entry, the execution breaker, or the operator width cap. Separate from
+   * `cooldownRejected`, which is the V1.1 anti-churn gate over trading outcomes: this
+   * one is about whether an open is possible at all, and it is empty in paper mode by
+   * construction.
+   *
+   * `kind` is recorded because the three have completely different operator responses
+   * and only one of them is a property of the pool. A `binCap` rejection is the
+   * operator's own `LIVE_MAX_POSITION_BINS` refusing the pool — under a narrow-only
+   * cap that is most of the universe, and lumping it into one count is what makes a
+   * healthy engine look like a broken screener. It is also the number needed to answer
+   * "what is the cap costing me", which is the decision the halt is waiting on.
    */
-  executionRejected: Array<{ pairName: string; poolAddress: string; reason: string }>;
+  executionRejected: Array<{
+    pairName: string;
+    poolAddress: string;
+    kind: ExecutionBlockKind;
+    reason: string;
+  }>;
   rugRejected: Array<{ pairName: string; verdict: string; reasons: string[] }>;
   /** Candidates dropped for having already pumped, or for an unknown 24h change. */
   volatilityRejected: Array<{
@@ -1236,6 +1424,8 @@ async function seekNewEntry(): Promise<EntrySummary> {
   const summary: EntrySummary = {
     scanned: 0,
     screenRejections: {},
+    screenerCandidates: 0,
+    heldExcluded: 0,
     candidates: 0,
     safeCandidates: 0,
     cooldownRejected: [],
@@ -1259,9 +1449,14 @@ async function seekNewEntry(): Promise<EntrySummary> {
   const screened = screenPools(pools, defaultThresholds());
   summary.scanned = screened.scanned;
   summary.screenRejections = screened.rejected;
+  summary.screenerCandidates = screened.candidates.length;
 
   // Never stack a second simulated position on a pool already held.
   const held = screened.candidates.filter((c) => !hasActivePositionForPool(c.address));
+  // Recorded rather than silently dropped: without it the funnel's stages do not add
+  // up, and an auditor cannot tell a screener that found nothing from one whose output
+  // was entirely pools the engine was already in.
+  summary.heldExcluded = screened.candidates.length - held.length;
 
   /*
    * Anti-churn gate. Live paper trading re-opened CYBERLEEK-SOL within minutes of
@@ -1314,6 +1509,7 @@ async function seekNewEntry(): Promise<EntrySummary> {
         summary.executionRejected.push({
           pairName: pool.pairName,
           poolAddress: pool.address,
+          kind: "denylist",
           reason: "on the operator POOL_DENYLIST",
         });
         continue;
@@ -1324,6 +1520,7 @@ async function seekNewEntry(): Promise<EntrySummary> {
         summary.executionRejected.push({
           pairName: pool.pairName,
           poolAddress: pool.address,
+          kind: "breaker",
           reason: verdict.reason ?? "benched by the execution breaker",
         });
         continue;
@@ -1352,6 +1549,7 @@ async function seekNewEntry(): Promise<EntrySummary> {
           summary.executionRejected.push({
             pairName: pool.pairName,
             poolAddress: pool.address,
+            kind: "binCap",
             reason:
               `needs at least ${narrowest} bins at bin step ${pool.binStep}, over the ` +
               `operator cap LIVE_MAX_POSITION_BINS=${maxLivePositionBins()}`,
@@ -1373,12 +1571,21 @@ async function seekNewEntry(): Promise<EntrySummary> {
   summary.candidates = fresh.length;
 
   if (fresh.length === 0) {
+    /*
+     * Name the gate that actually emptied the list, and name the bin cap separately
+     * when it is the one doing it. "unexecutable (denylist or execution breaker)" was
+     * true of neither on a narrow-only engine: the cap refuses ~81% of the scan by
+     * configuration, and reporting that as a breaker bench sends the operator hunting
+     * a fault where there is a setting.
+     */
+    const byKind = countExecutionBlocks(summary.executionRejected);
     summary.skipReason =
-      summary.executionRejected.length > 0 &&
-      summary.cooldownRejected.length + summary.executionRejected.length === held.length
+      summary.executionRejected.length > 0
         ? `every candidate is benched: ${summary.cooldownRejected.length} on cooldown or ` +
           `locked out, ${summary.executionRejected.length} unexecutable ` +
-          `(denylist or execution breaker)`
+          `(${byKind.binCap} over LIVE_MAX_POSITION_BINS=${maxLivePositionBins()}, ` +
+          `${byKind.breaker} benched by the execution breaker, ` +
+          `${byKind.denylist} on the operator denylist)`
         : summary.cooldownRejected.length > 0 && held.length === summary.cooldownRejected.length
           ? `every candidate is on cooldown or locked out (${summary.cooldownRejected.length} pools)`
           : "no pool passed the quantitative filters";
@@ -1544,11 +1751,16 @@ async function seekNewEntry(): Promise<EntrySummary> {
   /*
    * The gas the 2.5x coverage gate is charged.
    *
-   * When the live profile is ARMED this is `chargeRoundTripGasUsd` — the identical
+   * When the live profile is ARMED this is `chargeEntryFrictionUsd` — the identical
    * basis `requiredFeeTvlRatioForCoverage` uses to compute the bar printed at boot, so
    * the advertised requirement and the enforced one are the same number. Before this,
    * boot advertised 9.00% while the gate enforced 5.1%; see
    * `reports/DRY_RUN_72H_REPORT.md`.
+   *
+   * It now carries the UNRECOVERABLE bin-array rent alongside gas. Both gates priced a
+   * trade as gas + slippage and neither saw the one cost that never comes back, so a
+   * candidate could clear a $1.50 net-PnL floor while the open burned several times
+   * that in rent. `LIVE_ENTRY_RENT_SOL=0` restores the previous economics exactly.
    *
    * When the profile is DISARMED the pre-profile expression is kept byte-for-byte,
    * including its 0.0035 SOL conservative fallback. The live floor is a live-capital
@@ -1557,7 +1769,7 @@ async function seekNewEntry(): Promise<EntrySummary> {
    * guardrails inert.
    */
   const gasRoundTripUsd = liveMicroCapital.enabled
-    ? chargeRoundTripGasUsd(liveRoundTripGasUsd, solPriceUsd).gasRoundTripUsd
+    ? chargeEntryFrictionUsd(liveRoundTripGasUsd, solPriceUsd).fixedCostUsd
     : (liveRoundTripGasUsd ?? 0.0035 * 2 * solPriceUsd);
 
   const affordable: typeof top = [];
@@ -1621,6 +1833,7 @@ async function seekNewEntry(): Promise<EntrySummary> {
       });
 
       if (micro.passes) {
+        entry.microProjectedNetPnlUsd = micro.projectedNetPnlUsd;
         worthwhile.push(entry);
         continue;
       }
@@ -1748,6 +1961,11 @@ async function seekNewEntry(): Promise<EntrySummary> {
         lowerBinPrice: lower,
         upperBinPrice: upper,
         strategy: decision.strategy,
+        // The projection this candidate was ADMITTED on, so the executor can refuse an
+        // open whose unrecoverable bin-array rent exceeds it. Undefined in paper mode,
+        // where the micro gate does not run and this path is not reached anyway.
+        projectedNetPnlUsd: chosenEntry?.microProjectedNetPnlUsd ?? null,
+        solPriceUsd,
       });
     } catch (err) {
       /*
@@ -1840,6 +2058,9 @@ async function seekNewEntry(): Promise<EntrySummary> {
       swapSignature: liveOutcome?.swapSignature ?? null,
       depositedSolLamports: liveOutcome?.depositedSolLamports ?? null,
       depositedPairedAmount: liveOutcome?.depositedPairedAmount ?? null,
+      // The reconciliation anchor. Null on a paper row and on a live row whose balance
+      // read failed — "not measured" stays distinct from "measured zero".
+      walletLamportsBefore: liveOutcome?.walletLamportsBefore ?? null,
     });
     return true;
   });
@@ -1867,7 +2088,17 @@ async function seekNewEntry(): Promise<EntrySummary> {
     upperBinPrice: upper,
     confidence: decision.confidenceScore,
     thesis: decision.thesis,
-    virtualSol: env.VIRTUAL_SOL_PER_POSITION,
+    /*
+     * The size ACTUALLY deployed, which is what the row was written with.
+     *
+     * This was `env.VIRTUAL_SOL_PER_POSITION` — the paper constant — while the live
+     * micro-capital profile sizes from FREE capital and produces a different number.
+     * So the alert an operator reads on their phone disagreed with the position that
+     * exists, in a direction nothing else in the system would have contradicted.
+     */
+    sizeSol: sizing.sizeSol,
+    live: liveOutcome !== null,
+    positionAddress: liveOutcome?.positionAddress ?? null,
   });
 
   return summary;
@@ -1919,11 +2150,32 @@ function recordFunnel(entry: EntrySummary, monitor: MonitorSummary, durationMs: 
     .map(([k, n]) => `${k}=${n}`)
     .join(" ");
 
+  const byKind = countExecutionBlocks(entry.executionRejected);
+
+  /*
+   * STAGES IN THE ORDER THEY RUN, and `candidates` LAST.
+   *
+   * This line used to print `candidates` in the first slot and then subtract the
+   * stages that had already produced it, so a real cycle rendered as
+   * "candidates 4 -> cooldown -0 -> exec-guard -26" — a funnel losing 26 of 4. The
+   * counts were right the whole time; only their order was wrong, which is the worse
+   * failure of the two because it reads as corrupt data and sends the reader after a
+   * bug that is not there.
+   *
+   * The exec-guard total is broken out by gate for the same reason it is stored that
+   * way: `binCap` is the operator's own setting refusing the universe, and it is the
+   * one number that says what re-arming the wide path would buy.
+   */
   console.log(
     `[funnel] scanned ${screenerRan ? entry.scanned : "n/a"} -> ` +
-      `candidates ${entry.candidates} -> ` +
+      `screened ${entry.screenerCandidates} -> ` +
+      `held -${entry.heldExcluded} -> ` +
       `cooldown -${entry.cooldownRejected.length} -> ` +
-      `exec-guard -${entry.executionRejected.length} -> ` +
+      `exec-guard -${entry.executionRejected.length}` +
+      (entry.executionRejected.length > 0
+        ? ` (bin-cap ${byKind.binCap}, breaker ${byKind.breaker}, denylist ${byKind.denylist})`
+        : "") +
+      ` -> candidates ${entry.candidates} -> ` +
       `antirug ${entry.safeCandidates}/-${entry.rugRejected.length} -> ` +
       `vol -${entry.volatilityRejected.length} -> ` +
       `coverage -${entry.breakevenRejected.length} -> ` +
@@ -1937,9 +2189,14 @@ function recordFunnel(entry: EntrySummary, monitor: MonitorSummary, durationMs: 
     recordScanFunnel({
       scanned: screenerRan ? entry.scanned : null,
       screenRejections: entry.screenRejections,
+      screenerCandidates: screenerRan ? entry.screenerCandidates : null,
+      heldExcluded: entry.heldExcluded,
       candidates: entry.candidates,
       cooldownRejected: entry.cooldownRejected.length,
       executionRejected: entry.executionRejected.length,
+      execDenylistRejected: byKind.denylist,
+      execBreakerRejected: byKind.breaker,
+      execBinCapRejected: byKind.binCap,
       antirugPassed: entry.safeCandidates,
       antirugRejected: entry.rugRejected.length,
       volatilityRejected: entry.volatilityRejected.length,
@@ -2005,6 +2262,8 @@ export async function runDlmmTradingCycle(
       ? {
           scanned: 0,
           screenRejections: {},
+          screenerCandidates: 0,
+          heldExcluded: 0,
           candidates: 0,
           safeCandidates: 0,
           cooldownRejected: [],

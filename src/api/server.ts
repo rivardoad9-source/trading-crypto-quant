@@ -18,6 +18,7 @@ import { DEFAULT_COHORT_ID, isCohortId, resolveCohort } from "../services/cohort
 import { localDateString } from "../agents/researcherAgent.js";
 import { readRpcHealth } from "../services/solana.js";
 import { readWalletBalance, resetWalletBalanceCache } from "../services/walletBalance.js";
+import { reconcilePositions } from "../services/reconciliation.js";
 import type { SimulatedPositionRow } from "../database/types.js";
 
 const serverStartedAt = Date.now();
@@ -307,6 +308,19 @@ export function buildServer(): FastifyInstance {
     const limit = intParam(req.query.limit, 100, 1, 1_000);
     return { cycles: getScanFunnel(limit) };
   });
+
+  /*
+   * Wallet reconciliation: the database's PnL for live trades against what the wallet
+   * actually did.
+   *
+   * Read-only, and deliberately its own route rather than a field on `/api/overview`.
+   * The overview's `currentBalanceUSD` is a simulation baseline and this is a
+   * measurement of the real account; merging them is the fabricated-balance failure the
+   * portfolio hero already guards against. A caller that wants the comparison asks for
+   * it and gets the unmeasured count alongside, so it can never quote agreement that
+   * was not measured.
+   */
+  app.get("/api/reconciliation", async () => reconcilePositions());
 
   /*
    * Feeds docs/analytics_dashboard.html.
