@@ -1,5 +1,5 @@
 import { PublicKey } from "@solana/web3.js";
-import { isLiveTradingEnabled } from "../config/env.js";
+import { env, isLiveTradingEnabled } from "../config/env.js";
 import { liveMicroCapital, LAMPORTS_PER_SOL } from "../config/liveConfig.js";
 import {
   getPoolExecutionRecord,
@@ -238,6 +238,35 @@ export class OpenRehearsalFailedError extends LiveEntryRefusedError {
 const MAX_DLMM_POSITION_BINS = DLMM_MAX_BINS_PER_POSITION;
 
 /**
+ * The OPERATOR's cap on live position width, which is a different question from the
+ * program's and is checked separately for that reason.
+ *
+ * `MAX_DLMM_POSITION_BINS` answers "can this exist on-chain at all". This answers
+ * "may live capital go down this code path today". They are deliberately not merged:
+ * collapsing them would make a temporary operational decision read months later like
+ * a program limit, which is exactly the confusion that made 70 look like a hard
+ * maximum until 7 Sep 2026.
+ *
+ * At the default of 70 the engine is narrow-only — one atomic transaction, the path
+ * that has never failed. See `LIVE_MAX_POSITION_BINS` in `env.ts` for what has to be
+ * true before it is raised.
+ */
+export function maxLivePositionBins(): number {
+  return Math.min(env.LIVE_MAX_POSITION_BINS, MAX_DLMM_POSITION_BINS);
+}
+
+/**
+ * Whether the operator cap is doing anything, i.e. whether it is stricter than the
+ * program limit that would apply anyway.
+ *
+ * The candidate filter and the boot line both ask this, because a cap equal to the
+ * program maximum should neither filter anything nor claim in the log that it did.
+ */
+export function isLivePositionBinCapActive(): boolean {
+  return maxLivePositionBins() < MAX_DLMM_POSITION_BINS;
+}
+
+/**
  * Reads a token balance from the chain rather than trusting the swap's quote.
  *
  * The quote says what Jupiter expected to deliver; only the account says what arrived.
@@ -335,6 +364,22 @@ export async function openLivePosition(params: {
       binWidth,
       params.poolAddress,
       `the DLMM one-position maximum of ${MAX_DLMM_POSITION_BINS} bins`,
+    );
+  }
+
+  /*
+   * The operator cap, checked after the program limit and reported as its own reason.
+   * A pool refused here is refused by CONFIGURATION and can be admitted by changing a
+   * setting; one refused above cannot. Saying which is which is the difference between
+   * an operator raising `LIVE_MAX_POSITION_BINS` and an operator hunting a bug.
+   */
+  if (binWidth > maxLivePositionBins()) {
+    throw new BinWidthExceededError(
+      params.pairName,
+      binWidth,
+      params.poolAddress,
+      `the operator cap LIVE_MAX_POSITION_BINS=${maxLivePositionBins()} ` +
+        `(the wide create-then-fund path is not yet validated by a funded open)`,
     );
   }
 

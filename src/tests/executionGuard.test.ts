@@ -5,10 +5,16 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   assessExecutionBreaker,
+  describeExecutionGuard,
   isPoolDenied,
   parseDenylist,
   type ExecutionBreakerThresholds,
 } from "../services/executionGuard.js";
+import {
+  isLivePositionBinCapActive,
+  maxLivePositionBins,
+} from "../services/liveExecution.js";
+import { env } from "../config/env.js";
 import type { PoolExecutionRecord } from "../database/repositories.js";
 
 /**
@@ -297,6 +303,96 @@ describe("execution guard - stays out of the V1.1 anti-churn gate", () => {
     assert.ok(
       gate > 0 && gate > before.lastIndexOf("summary.cooldownRejected ="),
       "the execution filter must sit inside an isLiveExecutionActive() block",
+    );
+  });
+});
+
+/*
+ * The operator width cap, `LIVE_MAX_POSITION_BINS`.
+ *
+ * A circuit breaker on the wide (create-then-fund) execution path, added 8 Sep 2026
+ * after it had never completed a live open in three real-money attempts. It is NOT a
+ * V1.1 guardrail and NOT a program limit; the properties below are what keep it from
+ * being mistaken for either.
+ */
+describe("execution guard - the operator width cap", () => {
+  const HERE = dirname(fileURLToPath(import.meta.url));
+  const SRC = resolve(HERE, "..");
+
+  it("defaults to the narrow-only path, which is the one with a success rate", () => {
+    assert.equal(env.LIVE_MAX_POSITION_BINS, 70);
+  });
+
+  it("is checked separately from the program limit, so the log says which refused", () => {
+    /*
+     * The two refusals mean different things to an operator: one is a setting they can
+     * change, the other is a constant they cannot. Collapsing them into a single
+     * comparison is how 70 came to look like a hard maximum until 7 Sep 2026 — the
+     * mistake this file exists to avoid repeating.
+     */
+    const text = readFileSync(join(SRC, "services/liveExecution.ts"), "utf8");
+    assert.ok(
+      text.includes("the DLMM one-position maximum of"),
+      "the program-limit refusal must keep naming the program",
+    );
+    assert.ok(
+      text.includes("the operator cap LIVE_MAX_POSITION_BINS="),
+      "the operator-cap refusal must name the setting an operator can change",
+    );
+  });
+
+  it("never widens past the program limit, however it is configured", () => {
+    /*
+     * `maxLivePositionBins` mins against the program constant, so even a misconfigured
+     * value above 1400 cannot make the engine attempt a position the chain rejects.
+     * `env.ts` refuses such a value at boot as well; this is the second line.
+     */
+    assert.ok(maxLivePositionBins() <= 1400);
+    assert.equal(maxLivePositionBins(), Math.min(env.LIVE_MAX_POSITION_BINS, 1400));
+  });
+
+  it("reports itself inert only when it is not stricter than the program limit", () => {
+    // At the default of 70 it is doing real work and must say so.
+    assert.equal(isLivePositionBinCapActive(), env.LIVE_MAX_POSITION_BINS < 1400);
+    assert.equal(isLivePositionBinCapActive(), true);
+  });
+
+  it("is announced at boot, because that line is the authority on what is armed", () => {
+    const line = describeExecutionGuard();
+    assert.match(line, /live width cap: 70 bins \(NARROW ONLY/);
+  });
+
+  it("filters candidates only while live execution is active", () => {
+    /*
+     * INERT IN PAPER MODE, the same discipline `defaultBacktestConfig()` and the
+     * execution breaker follow. The cap's candidate filter sits inside the
+     * `isLiveExecutionActive()` block in `seekNewEntry`, so a dry run's candidate list
+     * is byte-identical to what it was before the cap existed. A live-only rule that
+     * leaked into paper mode would silently rewrite every dry run.
+     */
+    const text = readFileSync(join(SRC, "agents/dlmmTraderAgent.ts"), "utf8");
+    const liveBlock = text.indexOf("if (isLiveExecutionActive()) {");
+    const capFilter = text.indexOf("if (isLivePositionBinCapActive()) {");
+    assert.ok(liveBlock > -1 && capFilter > liveBlock, "the cap filter must sit inside the live block");
+
+    // And the only other reader is the live path itself, never the screener.
+    const meteora = readFileSync(join(SRC, "services/meteora.ts"), "utf8");
+    assert.ok(
+      !meteora.includes("LIVE_MAX_POSITION_BINS"),
+      "the screener must not read the live width cap: screening is shared with paper mode",
+    );
+  });
+
+  it("is not a V1.1 guardrail and must not be counted as one", () => {
+    /*
+     * Stated as a test so the claim is checked rather than asserted in a comment. The
+     * six V1.1 values are fixed by `v11Baseline.test.ts`; this is an execution-path
+     * setting that sits beside them, exactly as the execution breaker's thresholds do.
+     */
+    const baseline = readFileSync(join(SRC, "tests/v11Baseline.test.ts"), "utf8");
+    assert.ok(
+      !baseline.includes("LIVE_MAX_POSITION_BINS"),
+      "LIVE_MAX_POSITION_BINS must not be pinned as part of the V1.1 baseline",
     );
   });
 });

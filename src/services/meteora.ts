@@ -658,6 +658,44 @@ export function isOutOfRange(price: number, lower: number, upper: number): boole
 }
 
 /**
+ * How many bins a price range spans in a pool of a given bin step.
+ *
+ * DLMM bins are geometric: bin n covers `price * (1 + binStep/10000)^n`, so the count
+ * is a logarithm of the price RATIO and does not depend on the price itself. That is
+ * why this can be answered at screening time from the pool listing alone, with no RPC
+ * call and no position — which is the whole point of it.
+ *
+ * It answers the screening question ("could this pool ever be opened under the
+ * operator's width cap") and never the execution one. `binRangeFromPrices` in
+ * `onchainExecutor.ts` remains the only thing that decides the bins an actual position
+ * gets, because that goes through the SDK's own `getBinIdFromPrice` after
+ * `toPricePerLamport` and accounts for the mints' decimals. Do not use this to place a
+ * position; a one-bin disagreement here is a rounding difference, there it is money.
+ *
+ * Returns null rather than a number when the inputs cannot describe a range — a bin
+ * step of zero, or a non-positive ratio. Absent is not the same fact as zero, and a
+ * zero here would read as "fits any cap".
+ */
+export function estimateBinWidth(binStep: number, downsidePct: number, upsidePct: number): number {
+  if (!Number.isFinite(binStep) || binStep <= 0) return Number.POSITIVE_INFINITY;
+  if (!Number.isFinite(downsidePct) || !Number.isFinite(upsidePct)) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const lower = 1 - downsidePct / 100;
+  const upper = 1 + upsidePct / 100;
+  /*
+   * `upper < lower` is incoherent; `upper === lower` is a legitimate single bin, so the
+   * comparison is strict. A downside cover of 100% or more puts the lower bound at or
+   * below zero, where the logarithm has no answer.
+   */
+  if (lower <= 0 || upper < lower) return Number.POSITIVE_INFINITY;
+
+  const step = Math.log1p(binStep / 10_000);
+  return Math.floor(Math.log(upper / lower) / step) + 1;
+}
+
+/**
  * Fraction of a rebalance window the price actually spent in range. DLMM only
  * accrues fees while active, so an out-of-range position earns nothing.
  */

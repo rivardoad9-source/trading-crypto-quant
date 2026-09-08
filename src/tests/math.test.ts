@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   assessBreakeven,
+  estimateBinWidth,
   estimateFeeYieldUsd,
   impermanentLossFraction,
   inRangeFactor,
@@ -409,5 +410,103 @@ describe("screenPools", () => {
   it("counts every scanned pool even when all are rejected", () => {
     const r = screenPools([basePool({ tvlUsd: 1 }), basePool({ tvlUsd: 2 })], thresholds);
     assert.equal(r.scanned, 2);
+  });
+});
+
+/*
+ * The screening-time width estimate behind the operator cap `LIVE_MAX_POSITION_BINS`.
+ *
+ * It exists so that a narrow-only engine can drop pools it could never open BEFORE the
+ * LLM picks one, rather than refusing them at execution time and burning the whole
+ * 30-minute cycle — the failure mode `executionGuard.ts` was written for.
+ *
+ * The load-bearing property is the DIRECTION of its error: it is measured at the
+ * `computeBinRange` floors, which is the NARROWEST range the engine can ever open, so a
+ * pool it rejects cannot fit at any wider cover either. Over-estimating would silently
+ * shrink the universe; that is what these tests are pinning.
+ */
+describe("estimateBinWidth", () => {
+  it("counts bins geometrically, independent of the price level", () => {
+    // A pool with binStep 100 (1% per bin) covering +/-0 is one bin.
+    assert.equal(estimateBinWidth(100, 0, 0), 1);
+    // ln(1.01/0.99) / ln(1.01) = 2.005 -> 3 bins inclusive.
+    assert.equal(estimateBinWidth(100, 1, 1), 3);
+  });
+
+  it("scales inversely with bin step, which is what makes tight pools unreachable", () => {
+    const wide = estimateBinWidth(125, 45, 15);
+    const tight = estimateBinWidth(4, 45, 15);
+    assert.ok(tight > wide);
+    // The V1.1 floors on a bin_step 4 pool need far more than one position can hold,
+    // which is the 6.8% of the universe CLAUDE.md records as unreachable.
+    assert.ok(tight > 1400, `bin_step 4 at -45/+15 needs ${tight} bins`);
+    // ...while bin_step 125 fits inside the narrow-only cap of 70.
+    assert.ok(wide <= 70, `bin_step 125 at -45/+15 needs ${wide} bins`);
+  });
+
+  it("puts the narrow-only cap at bin_step 106 and above, which is what it costs", () => {
+    /*
+     * The operational consequence of `LIVE_MAX_POSITION_BINS=70`, pinned here so it
+     * cannot drift silently. At the V1.1 floors a 70-bin position spans a price ratio
+     * of 1.15/0.55, and only a bin step of 106 or more covers that in 70 bins. Every
+     * tighter pool — which is most of them, and all of the majors — is filtered out
+     * before the LLM sees it while the cap is at 70.
+     *
+     * This is the same universe cost CLAUDE.md records from the other direction: the
+     * live 600-pool scan admitted 19.0% at 70 bins against 93.2% at 1400.
+     */
+    assert.ok(estimateBinWidth(105, 45, 15) > 70);
+    assert.ok(estimateBinWidth(106, 45, 15) <= 70);
+    // The tight-spread majors are nowhere near reachable, cap or no cap.
+    assert.equal(estimateBinWidth(1, 45, 15), 7377);
+    assert.equal(estimateBinWidth(4, 45, 15), 1845);
+  });
+
+  it("is monotonic in the cover percentages", () => {
+    let previous = 0;
+    for (const down of [5, 10, 20, 45]) {
+      const bins = estimateBinWidth(50, down, 15);
+      assert.ok(bins >= previous, `widening the cover must never need fewer bins`);
+      previous = bins;
+    }
+  });
+
+  it("returns Infinity, never 0, for inputs that cannot describe a range", () => {
+    /*
+     * Same rule as `est_gas_cost_usd`: absent is not zero. A 0 here would read as
+     * "fits every cap" and wave the pool through the gate it exists to enforce.
+     */
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      assert.equal(estimateBinWidth(bad, 45, 15), Number.POSITIVE_INFINITY, `binStep ${bad}`);
+    }
+    // A downside cover of 100% puts the lower bound at zero — no finite bin count.
+    assert.equal(estimateBinWidth(100, 100, 15), Number.POSITIVE_INFINITY);
+    assert.equal(estimateBinWidth(100, 140, 15), Number.POSITIVE_INFINITY);
+    assert.equal(estimateBinWidth(100, Number.NaN, 15), Number.POSITIVE_INFINITY);
+  });
+
+  it("never over-estimates the width a real range needs", () => {
+    /*
+     * The direction that matters. If this ever returned MORE bins than the range truly
+     * spans, the screening filter would drop pools the engine could have opened.
+     * Checked against the definition directly: bin n covers (1 + binStep/10000)^n, so
+     * the estimate must be the largest n with ratio^-1 still inside the range, plus one.
+     */
+    for (const binStep of [1, 4, 10, 25, 50, 80, 100, 200]) {
+      for (const [down, up] of [
+        [45, 15],
+        [10, 10],
+        [30, 5],
+      ] as const) {
+        const bins = estimateBinWidth(binStep, down, up);
+        if (!Number.isFinite(bins)) continue;
+        const ratio = (1 + up / 100) / (1 - down / 100);
+        const step = 1 + binStep / 10_000;
+        assert.ok(
+          Math.pow(step, bins - 1) <= ratio + 1e-9,
+          `binStep ${binStep} -${down}/+${up}: ${bins} bins overshoots the range`,
+        );
+      }
+    }
   });
 });

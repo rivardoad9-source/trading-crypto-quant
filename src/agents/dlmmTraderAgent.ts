@@ -11,6 +11,8 @@ import {
   LiveEntryRefusedError,
   closeLivePosition,
   isLiveExecutionActive,
+  isLivePositionBinCapActive,
+  maxLivePositionBins,
   openLivePosition,
   type LiveOpenOutcome,
 } from "../services/liveExecution.js";
@@ -24,6 +26,7 @@ import {
   assessBreakeven,
   defaultCooldownThresholds,
   defaultThresholds,
+  estimateBinWidth,
   estimateFeeYieldUsd,
   fetchLivePools,
   fetchPoolByAddress,
@@ -1324,6 +1327,37 @@ async function seekNewEntry(): Promise<EntrySummary> {
           reason: verdict.reason ?? "benched by the execution breaker",
         });
         continue;
+      }
+
+      /*
+       * The operator width cap, filtered here for the same reason the breaker is: a
+       * pool the cap will refuse costs the whole cycle otherwise, because
+       * `seekNewEntry` acts on the one pool the model picks and returns as soon as it
+       * is refused. Under a narrow-only cap that is most of the universe, so leaving
+       * it to execution time would idle the engine rather than merely slow it.
+       *
+       * Measured at the NARROWEST range this pool could ever be given — the
+       * `computeBinRange` floors, which it clamps every LLM answer up to. A pool that
+       * does not fit at its floors cannot fit at any wider cover either, so nothing
+       * openable is filtered out here. Anything that does fit still faces the real
+       * gate in `openLivePosition`, which measures the range actually chosen.
+       */
+      if (isLivePositionBinCapActive()) {
+        const narrowest = estimateBinWidth(
+          pool.binStep,
+          env.MIN_DOWNSIDE_COVER_PCT,
+          env.MIN_UPSIDE_COVER_PCT,
+        );
+        if (narrowest > maxLivePositionBins()) {
+          summary.executionRejected.push({
+            pairName: pool.pairName,
+            poolAddress: pool.address,
+            reason:
+              `needs at least ${narrowest} bins at bin step ${pool.binStep}, over the ` +
+              `operator cap LIVE_MAX_POSITION_BINS=${maxLivePositionBins()}`,
+          });
+          continue;
+        }
       }
 
       executable.push(pool);
