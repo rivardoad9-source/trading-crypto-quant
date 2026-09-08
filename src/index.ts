@@ -1,6 +1,6 @@
 import cron from "node-cron";
 import { CRON } from "./config/constants.js";
-import { env, hasDeepSeek, hasTelegram } from "./config/env.js";
+import { env, hasDeepSeek, hasTelegram, isLiveTradingEnabled } from "./config/env.js";
 import { closeDatabase, initDatabase } from "./database/db.js";
 import { runMacroResearcher } from "./agents/researcherAgent.js";
 import { runDlmmTradingCycle, runFastPositionMonitor } from "./agents/dlmmTraderAgent.js";
@@ -10,6 +10,7 @@ import { startTelegramCommands, stopTelegramCommands } from "./services/telegram
 import { liveMicroCapital } from "./config/liveConfig.js";
 import { InsufficientGasReserveError, runLivePreflight } from "./services/livePreflight.js";
 import { describeExecutionGuard } from "./services/executionGuard.js";
+import { describeReconciliation, reconcilePositions } from "./services/reconciliation.js";
 import {
   describeLiveExecutionBlockers,
   isLiveExecutionActive,
@@ -58,7 +59,11 @@ function banner(): void {
     console.log(
       `  live profile: ARMED — ${liveMicroCapital.maxPositionSol} SOL x ` +
         `${liveMicroCapital.maxConcurrentPositions}, ${liveMicroCapital.minReserveSol} SOL reserved ` +
-        `(sizing + friction only; this build still signs nothing)`,
+        // Follows the ENGINE, not the build. This said "this build still signs
+        // nothing", which was true when written and false from the day live execution
+        // landed - the most reassuring line in the banner, printed while real SOL was
+        // at risk. Same class of stale label as the Telegram alerts.
+        `(${isLiveTradingEnabled ? "SIGNS REAL TRANSACTIONS" : "sizing + friction only; signs nothing"})`,
     );
   }
   console.log("");
@@ -129,6 +134,30 @@ async function main(): Promise<void> {
 
   await startApiServer();
   startTelegramCommands();
+
+  /*
+   * Reconcile the book against the wallet at boot, and say so out loud.
+   *
+   * A live position's PnL in the database is the paper valuation model's opinion of a
+   * real position — `closeLivePosition` returns signatures and never amounts — and the
+   * model cannot see swap slippage, priority fees or unrecoverable bin-array rent. Every
+   * one of those makes the wallet poorer than the row claims, so the drift is systematic
+   * and one-directional. It went unmeasured for the entire live run.
+   *
+   * Printed here rather than only served on a route, because the failure this guards
+   * against is nobody looking. Swallowed on error: reporting is not a reason to refuse
+   * a start, and the route remains the authority.
+   */
+  if (isLiveExecutionActive()) {
+    try {
+      console.log(`[main]     ${describeReconciliation(reconcilePositions())}`);
+    } catch (err) {
+      console.warn(
+        `[main] wallet reconciliation unavailable: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
 
   const tasks = [
     cron.schedule(CRON.DAILY_MACRO, withLock("macro", runMacroResearcher), { timezone: env.TZ }),

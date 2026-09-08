@@ -37,8 +37,14 @@ export default function KpiCards({ overview }: Props) {
 
   return (
     <div className={GRID}>
+      {/*
+        The label follows the engine, not the build. "Simulated Equity" over a figure
+        backed by real positions understates what the number is; "Live Equity" over a
+        paper figure overstates it. Both are the fabricated-balance failure the wallet
+        hero already guards against, so the label is derived rather than written.
+      */}
       <Card
-        label="Simulated Equity"
+        label={overview.isDryRun ? "Simulated Equity" : "Live Equity"}
         icon={<Wallet className="h-4 w-4" />}
         value={formatUsd(overview.currentEquityUSD)}
         footer={

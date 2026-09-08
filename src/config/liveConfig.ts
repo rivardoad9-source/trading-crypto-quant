@@ -129,6 +129,54 @@ const LiveConfigSchema = z
      */
     LIVE_ROUND_TRIP_GAS_SOL: numeric(0.008),
     /**
+     * A PESSIMISTIC unrecoverable-rent charge added to both screening friction gates,
+     * in SOL. Default 0 — inert — and that default is a judgement, not an oversight.
+     *
+     * THE COST IS REAL. An open pays rent, and rent splits into two halves that behave
+     * nothing alike: the POSITION account's comes back when the position closes, so it
+     * is a funding question and correctly absent from the economics; a BIN ARRAY's does
+     * not, ever. Bin arrays are pool-level accounts shared by every LP, `close_bin_array`
+     * exists in the IDL, the SDK exposes no wrapper, and nothing in this repository can
+     * reclaim it. At 0.0714 SOL each against a 0.008 SOL round-trip gas floor, one new
+     * array is about nine times the entire modelled cost of the trade.
+     *
+     * SO WHY IS IT ZERO HERE. Because at screening time nobody knows whether the pool
+     * needs a new array, and charging it to every candidate is not conservative, it is
+     * wrong in the expensive direction. Measured at the shipped 0.80 SOL profile with
+     * SOL at $100: charging one array moves the binding bar from 7.50% to 29.82%
+     * fee/TVL over 24h, which admits approximately nothing — and it would do that on
+     * liquid pools whose arrays all exist and whose real unrecoverable cost is exactly
+     * zero. A screener that refuses the universe to avoid a cost most candidates never
+     * incur is the "broken screener" failure this file warns about twice, arrived at
+     * from the cautious side.
+     *
+     * WHERE IT IS ACTUALLY ENFORCED. `openLivePosition` asks the CHAIN
+     * (`quoteCreatePosition`) how many arrays this specific range must create, and
+     * refuses the entry — before the balancing swap — when that rent exceeds what the
+     * trade is projected to make. That gate uses the real number instead of a guess,
+     * costs nothing on a pool that needs no arrays, and is bounded by
+     * `LIVE_MAX_RENT_TO_PNL` below.
+     *
+     * Set this non-zero only to make the SCREEN pessimistic as well, and read the
+     * 29.82% above before doing so.
+     */
+    LIVE_ENTRY_RENT_SOL: numeric(0),
+    /**
+     * How much UNRECOVERABLE bin-array rent one entry may spend, as a multiple of the
+     * net PnL that entry was admitted on. Default 1.0: never burn more, permanently,
+     * than the trade is projected to earn.
+     *
+     * This is the "is it worth it" question, and nothing asked it before. The
+     * affordability gate next to it asks "can I afford it" and passes a trade that
+     * spends $10 of unrecoverable rent to chase a $1.50 projected net, because $10 fits
+     * in the rent budget. Both questions are legitimate; only one of them was being
+     * asked.
+     *
+     * Checked BEFORE the balancing swap, so a refusal costs nothing and is a routine
+     * `seekNewEntry` skip rather than a stranded balance. Set to Infinity to disable.
+     */
+    LIVE_MAX_RENT_TO_PNL: numeric(1),
+    /**
      * Minimum projected NET PnL, in USD, for an entry to be taken.
      *
      * Projected = (expected fees over LIVE_PNL_HORIZON_HOURS) - (round-trip gas +
@@ -243,6 +291,10 @@ export interface LiveMicroCapitalConfig {
   /** maxPositionSol x maxConcurrentPositions. Always <= deployableSol. */
   readonly maxExposureSol: number;
   readonly roundTripGasSol: number;
+  /** Pessimistic unrecoverable rent added to the SCREENING gates. 0 by default. */
+  readonly entryRentSol: number;
+  /** Cap on an entry's unrecoverable rent, as a multiple of its projected net PnL. */
+  readonly maxRentToPnl: number;
   readonly minNetPnlUsd: number;
   readonly pnlHorizonHours: number;
   readonly minWalletSol: number;
@@ -279,6 +331,8 @@ export function parseLiveConfig(source: NodeJS.ProcessEnv = process.env): LiveCo
       deployableSol: cfg.LIVE_CAPITAL_SOL - cfg.LIVE_MIN_RESERVE_SOL,
       maxExposureSol: cfg.LIVE_MAX_POSITION_SOL * cfg.LIVE_MAX_CONCURRENT_POSITIONS,
       roundTripGasSol: cfg.LIVE_ROUND_TRIP_GAS_SOL,
+      entryRentSol: cfg.LIVE_ENTRY_RENT_SOL,
+      maxRentToPnl: cfg.LIVE_MAX_RENT_TO_PNL,
       minNetPnlUsd: cfg.LIVE_MIN_NET_PNL_USD,
       pnlHorizonHours: cfg.LIVE_PNL_HORIZON_HOURS,
       minWalletSol: cfg.LIVE_MIN_WALLET_SOL,
@@ -437,13 +491,53 @@ export function chargeRoundTripGasUsd(
   return { gasRoundTripUsd: live, floorApplied: false };
 }
 
+export interface EntryFrictionCharge extends RoundTripGasCharge {
+  /** Unrecoverable bin-array rent, in USD. */
+  unrecoverableRentUsd: number;
+  /** gas + rent. The cost basis BOTH live friction gates are handed. */
+  fixedCostUsd: number;
+}
+
+/**
+ * The FIXED cost of one entry that both live friction gates charge: round-trip gas
+ * plus the rent this engine can never get back.
+ *
+ * One function, for the reason `chargeRoundTripGasUsd` is one function. The 67h dry
+ * run's finding was that two gates given two cost bases advertise one bar and enforce
+ * another; adding a second cost term to only one of them would reproduce exactly that,
+ * so the rent is added HERE and both call sites take the total.
+ *
+ * Slippage is deliberately NOT included: it scales with notional, so it belongs to the
+ * per-candidate assessment, while everything here is fixed per trip.
+ *
+ * INERT when the live profile is off. `entryRentSol` is only ever read through a config
+ * whose `enabled` is false in paper mode, and the agent keeps its pre-profile
+ * expression byte-for-byte on that branch — a live-capital cost basis leaking into
+ * paper mode would rewrite every dry run and every cached sweep.
+ */
+export function chargeEntryFrictionUsd(
+  liveRoundTripGasUsd: number | null | undefined,
+  solPriceUsd: number,
+  config: LiveMicroCapitalConfig = liveMicroCapital,
+): EntryFrictionCharge {
+  const gas = chargeRoundTripGasUsd(liveRoundTripGasUsd, solPriceUsd, config);
+  const unrecoverableRentUsd = config.entryRentSol * solPriceUsd;
+  return {
+    ...gas,
+    unrecoverableRentUsd,
+    fixedCostUsd: gas.gasRoundTripUsd + unrecoverableRentUsd,
+  };
+}
+
 export interface MicroCapitalFrictionAssessment {
   /** Gas actually charged to the projection: max(live estimate, configured floor). */
   gasRoundTripUsd: number;
   /** True when the configured floor was used (estimate missing, or lower than it). */
   gasFloorApplied: boolean;
+  /** Unrecoverable bin-array rent charged to the entry. See LIVE_ENTRY_RENT_SOL. */
+  unrecoverableRentUsd: number;
   slippageUsd: number;
-  /** gas + slippage. */
+  /** gas + unrecoverable rent + slippage. */
   roundTripCostUsd: number;
   /** Fees projected over the horizon, from the conservative pool-level model. */
   projectedFeeUsd: number;
@@ -479,16 +573,23 @@ export function assessMicroCapitalFriction(
   const config = input.config ?? liveMicroCapital;
   const slippagePct = input.slippagePct ?? env.FORCED_EXIT_SLIPPAGE_PCT;
 
-  // Shared with the 2.5x coverage gate's runtime call site, so the two cannot drift
-  // onto different cost bases again. See chargeRoundTripGasUsd.
-  const { gasRoundTripUsd, floorApplied: gasFloorApplied } = chargeRoundTripGasUsd(
-    input.gasRoundTripUsd,
-    input.solPriceUsd,
-    config,
-  );
+  /*
+   * Shared with the 2.5x coverage gate's runtime call site, so the two cannot drift
+   * onto different cost bases again. See chargeEntryFrictionUsd.
+   *
+   * `fixedCostUsd` is gas PLUS the unrecoverable bin-array rent. Rent used to be
+   * absent from both gates, which made a trade look like it cost `gas + slippage` when
+   * the open could burn nine times the gas figure in rent that never comes back.
+   */
+  const {
+    gasRoundTripUsd,
+    floorApplied: gasFloorApplied,
+    unrecoverableRentUsd,
+    fixedCostUsd,
+  } = chargeEntryFrictionUsd(input.gasRoundTripUsd, input.solPriceUsd, config);
 
   const slippageUsd = input.notionalUsd * (slippagePct / 100);
-  const roundTripCostUsd = gasRoundTripUsd + slippageUsd;
+  const roundTripCostUsd = fixedCostUsd + slippageUsd;
 
   // The fee model is pool-level and 24h-based; scale it to the configured horizon.
   const projectedFeeUsd = input.notionalUsd * input.feeTvlRatio24h * (config.pnlHorizonHours / 24);
@@ -499,6 +600,7 @@ export function assessMicroCapitalFriction(
   return {
     gasRoundTripUsd,
     gasFloorApplied,
+    unrecoverableRentUsd,
     slippageUsd,
     roundTripCostUsd,
     projectedFeeUsd,
@@ -508,7 +610,9 @@ export function assessMicroCapitalFriction(
       ? undefined
       : `projected net PnL $${projectedNetPnlUsd.toFixed(4)} over ${config.pnlHorizonHours}h ` +
         `is below the $${config.minNetPnlUsd.toFixed(2)} floor ` +
-        `(fees $${projectedFeeUsd.toFixed(4)} - friction $${roundTripCostUsd.toFixed(4)})`,
+        `(fees $${projectedFeeUsd.toFixed(4)} - friction $${roundTripCostUsd.toFixed(4)}: ` +
+        `gas $${gasRoundTripUsd.toFixed(4)} + unrecoverable rent ` +
+        `$${unrecoverableRentUsd.toFixed(4)} + slippage $${slippageUsd.toFixed(4)})`,
   };
 }
 
@@ -529,8 +633,11 @@ export function requiredFeeTvlRatio24h(
   slippagePct: number = env.FORCED_EXIT_SLIPPAGE_PCT,
 ): number {
   if (!(notionalUsd > 0)) return Infinity;
-  const gasUsd = config.roundTripGasSol * solPriceUsd;
-  const frictionUsd = gasUsd + notionalUsd * (slippagePct / 100);
+  // The SAME fixed basis the gate enforces: gas floor PLUS unrecoverable rent. Pricing
+  // one term here and two at the call site is precisely how boot came to advertise
+  // 9.00% while the gate enforced 5.1%.
+  const fixedUsd = (config.roundTripGasSol + config.entryRentSol) * solPriceUsd;
+  const frictionUsd = fixedUsd + notionalUsd * (slippagePct / 100);
   const requiredFeeUsd = config.minNetPnlUsd + frictionUsd;
   return requiredFeeUsd / (notionalUsd * (config.pnlHorizonHours / 24));
 }
@@ -546,8 +653,8 @@ export function requiredFeeTvlRatioForCoverage(
   slippagePct: number = env.FORCED_EXIT_SLIPPAGE_PCT,
 ): number {
   if (!(notionalUsd > 0)) return Infinity;
-  const gasUsd = config.roundTripGasSol * solPriceUsd;
-  const frictionUsd = gasUsd + notionalUsd * (slippagePct / 100);
+  const fixedUsd = (config.roundTripGasSol + config.entryRentSol) * solPriceUsd;
+  const frictionUsd = fixedUsd + notionalUsd * (slippagePct / 100);
   return (env.MIN_FEE_COST_COVERAGE * frictionUsd) / notionalUsd;
 }
 

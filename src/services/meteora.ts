@@ -672,9 +672,13 @@ export function isOutOfRange(price: number, lower: number, upper: number): boole
  * `toPricePerLamport` and accounts for the mints' decimals. Do not use this to place a
  * position; a one-bin disagreement here is a rounding difference, there it is money.
  *
- * Returns null rather than a number when the inputs cannot describe a range — a bin
- * step of zero, or a non-positive ratio. Absent is not the same fact as zero, and a
- * zero here would read as "fits any cap".
+ * Returns POSITIVE INFINITY when the inputs cannot describe a range - a bin step of
+ * zero, or a non-positive ratio. Infinity is the fail-CLOSED answer: it exceeds every
+ * cap, so an undescribable range is refused rather than admitted. A zero would read as
+ * "fits any cap", which is the same input reaching the opposite conclusion.
+ *
+ * (This paragraph said "returns null" and the function never could - the return type is
+ * `number`. The behaviour was always right; the note described a different contract.)
  */
 export function estimateBinWidth(binStep: number, downsidePct: number, upsidePct: number): number {
   if (!Number.isFinite(binStep) || binStep <= 0) return Number.POSITIVE_INFINITY;

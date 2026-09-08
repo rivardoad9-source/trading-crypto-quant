@@ -107,6 +107,15 @@ export function initDatabase(): void {
   addColumnIfMissing("simulated_positions", "swap_signature", "TEXT");
   addColumnIfMissing("simulated_positions", "deposited_sol_lamports", "INTEGER");
   addColumnIfMissing("simulated_positions", "deposited_paired_amount", "TEXT");
+  /*
+   * Wallet reconciliation: the chain-measured lamport balance either side of a LIVE
+   * position. Everything else attached to a live row is the paper valuation model,
+   * which cannot see swap slippage, priority fees or unrecoverable bin-array rent;
+   * these two are the only measurement of what the trade did to the wallet.
+   * NULL means "not measured" and must never be read as zero.
+   */
+  addColumnIfMissing("simulated_positions", "wallet_lamports_before", "INTEGER");
+  addColumnIfMissing("simulated_positions", "wallet_lamports_after", "INTEGER");
   addColumnIfMissing("simulated_positions", "rent_paid_lamports", "INTEGER");
 
   /*
@@ -116,6 +125,11 @@ export function initDatabase(): void {
    * stdout. Zero in paper mode, where the guard does not run.
    */
   addColumnIfMissing("scan_funnel_cycles", "execution_rejected", "INTEGER DEFAULT 0");
+  addColumnIfMissing("scan_funnel_cycles", "screener_candidates", "INTEGER");
+  addColumnIfMissing("scan_funnel_cycles", "held_excluded", "INTEGER DEFAULT 0");
+  addColumnIfMissing("scan_funnel_cycles", "exec_denylist_rejected", "INTEGER DEFAULT 0");
+  addColumnIfMissing("scan_funnel_cycles", "exec_breaker_rejected", "INTEGER DEFAULT 0");
+  addColumnIfMissing("scan_funnel_cycles", "exec_bincap_rejected", "INTEGER DEFAULT 0");
 
   initialised = true;
   console.log(`[db] ready at ${dbPath}`);

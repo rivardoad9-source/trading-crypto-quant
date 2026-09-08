@@ -19,6 +19,7 @@ import { Keypair, PublicKey, TransactionInstruction } from "@solana/web3.js";
 import bs58 from "bs58";
 import { isLiveTradingEnabled } from "../config/env.js";
 import {
+  DLMM_BIN_ARRAY_RENT_SOL,
   DLMM_BINS_PER_INIT,
   DLMM_MAX_BINS_PER_POSITION,
   DLMM_POSITION_BIN_DATA_SIZE,
@@ -642,6 +643,32 @@ describe("onchain executor — DLMM position limits track the SDK, not a hand-wr
     const sdk = await sdkConstants();
     assert.equal(Number(sdk.POSITION_MIN_SIZE), DLMM_POSITION_MIN_SIZE);
     assert.equal(Number(sdk.POSITION_BIN_DATA_SIZE), DLMM_POSITION_BIN_DATA_SIZE);
+  });
+
+  it("mirrors the SDK's bin-array rent, and the live profile agrees with it", async () => {
+    /*
+     * The one UNRECOVERABLE cost the engine pays. A bin array is a pool-level account
+     * shared by every LP: `close_bin_array` is in the IDL, the SDK exposes no wrapper,
+     * and nothing here can reclaim the rent. The position account's rent comes back on
+     * close; this never does.
+     *
+     * Bound to the SDK for the same reason the four constants above are, and bound to
+     * `liveConfig.ts` as well because the import allowlist forbids that file from
+     * reading the executor. So the number is written down in two places by necessity,
+     * and this is what stops them drifting apart in silence.
+     */
+    const sdk = await sdkConstants();
+    assert.equal(
+      Number(sdk.BIN_ARRAY_FEE),
+      DLMM_BIN_ARRAY_RENT_SOL,
+      "the SDK's bin-array rent moved; the friction gates are pricing the old figure",
+    );
+
+    const liveConfigSource = readFileSync(join(srcDir, "config", "liveConfig.ts"), "utf8");
+    const documented = /one bin array is (0\.\d+) SOL/.exec(liveConfigSource);
+    if (documented) {
+      assert.equal(Number(documented[1]), DLMM_BIN_ARRAY_RENT_SOL);
+    }
   });
 
   it("computes the same account size the SDK does, at and either side of the 70-bin step", async () => {
