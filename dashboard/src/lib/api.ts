@@ -340,3 +340,41 @@ export interface FunnelCycle {
 
 export const fetchFunnel = (limit = 48, signal?: AbortSignal) =>
   get<{ cycles: FunnelCycle[] }>(`/funnel?limit=${limit}`, signal).then((r) => r.cycles);
+
+/**
+ * Wallet reconciliation, from `GET /api/reconciliation`.
+ *
+ * The engine's book against the chain. Every figure a live position carries comes from
+ * the same valuation model that values simulated ones — the close returns signatures,
+ * not amounts — and that model cannot see the balancing swap's slippage, the priority
+ * fees, or bin-array rent that is never recovered. All three make the wallet poorer than
+ * the book, so the drift is systematic rather than noisy.
+ */
+export interface ReconciliationReport {
+  positions: Array<{
+    positionId: string;
+    pairName: string;
+    closedAt: string | null;
+    modelPnlUsd: number;
+    chainDeltaSol: number | null;
+    chainDeltaUsd: number | null;
+    driftUsd: number | null;
+    overlapping: boolean;
+  }>;
+  /** Closed live positions carrying BOTH balance reads. Only these are in the totals. */
+  measured: number;
+  /** Closed live positions that could not be measured, and are excluded from the totals. */
+  unmeasured: number;
+  modelPnlUsd: number;
+  chainPnlUsd: number;
+  /** chainPnlUsd - modelPnlUsd. Negative = the book is optimistic, the expected sign. */
+  driftUsd: number;
+  /** True when a measured window overlapped another, so only the total is meaningful. */
+  anyOverlap: boolean;
+  /** Null — never 0 — when nothing is measured. "No basis" is not "they agree". */
+  driftPctOfModel: number | null;
+  generatedAt: string;
+}
+
+export const fetchReconciliation = (signal?: AbortSignal) =>
+  get<ReconciliationReport>(`/reconciliation`, signal);

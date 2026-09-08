@@ -407,7 +407,10 @@ async function main(): Promise<void> {
     out.push("", "═".repeat(78), title, "═".repeat(78), "");
   };
 
-  h("MICRO-CAPITAL BACKTEST — LIVE V1.1 FORMULA, $100 ACCOUNT");
+  // The account size follows the flag. A hard-coded $100 in the header of a report run
+  // with --capital=300 is the same defect class as a paper label over a live trade: the
+  // number below it is right and the sentence above it is not.
+  h(`MICRO-CAPITAL BACKTEST — LIVE V1.1 FORMULA, ${usd(options.capitalUsd, 0)} ACCOUNT`);
   out.push(
     `Window          : ${unbiased.windowStart.slice(0, 16)} → ${unbiased.windowEnd.slice(0, 16)} ` +
       `(${unbiased.barsSimulated} hourly bars)`,
@@ -557,7 +560,9 @@ async function main(): Promise<void> {
     }
   }
 
-  h("8. FRICTION FEASIBILITY — the fee/TVL window a $100 account must hit");
+  h(
+    `8. FRICTION FEASIBILITY — the fee/TVL window a ${usd(options.capitalUsd, 0)} account must hit`,
+  );
   out.push(
     `Position notional ${usd(notionalUsd)} · median SOL/USD over the window ${usd(medianSolUsd)} · ` +
       `coverage ${config.minFeeCostCoverage}x · slippage ${config.forcedExitSlippagePct}%`,
