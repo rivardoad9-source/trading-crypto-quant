@@ -2,6 +2,51 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## ⛔ LIVE TRADING HALTED — 8 Sep 2026. Read this before anything else.
+
+The engine is STOPPED (`pm2 stop flowmetrix-engine`). Wallet ~3.00 SOL, net **−0.10 SOL
+(−3.3%) on the 3.10 SOL live capital, with ZERO successful live opens ever**.
+
+**The problem, stated plainly:** the WIDE path (position > 70 bins, i.e. the two-phase
+create-then-fund flow) has **never completed a single live open**. Three real-money
+incidents in ~36 hours, all the same shape — STONK-SOL (371 bins), SOLCAT-SOL (77 bins),
+ZCAT-SOL (95 bins):
+
+1. The balancing swap (0.9 SOL) CONFIRMS first (design: swap happens in
+   `liveExecution` before `dlmmExecutor.openPosition` is called).
+2. The SDK's funding builder then packs `InitializeBinArray` instructions for bin
+   arrays the range still needs into funding tx 1/N — **arrays that both the
+   rehearsal AND the pre-swap `ensureBinArrays` probe reported as existing**.
+3. Two inits (~192k CU each) exceed the transaction's budget (~399,700 CU) by a
+   rounding hair → funding dies AFTER the swap spent. Auto-unwind rescues the
+   tokens every time (2/2 and 3/3), but each incident costs 0.02–0.06 SOL in fees
+   and created orphan position accounts (now auto-closed in code).
+
+**Root-cause hypothesis (unproven):** the SDK's `addLiquidityByStrategyChunkable`
+expands the bin range beyond the strategy's `[minBinId, maxBinId]` (active-bin
+slippage allowance), touching bin arrays OUTSIDE the coverage that
+`preCreateMissingBinArrays` probes (`getBinArrayIndexesCoverage(min,max)` +
+`getMultipleAccountsInfo`). Every probe says "0 missing"; funding still inits 2.
+Investigate the SDK's range expansion before trusting any probe.
+
+**What is PROVEN:** the NARROW path (≤70 bins, single atomic tx) has **never
+failed** — all paper-era profits (41 paper opens, +$44.32 V1.1 harness) went
+through it. Every live execution attempt since 6 Sep was a WIDE open and every one
+failed. The live-wide gate was only opened on 7 Sep 2026 (commit `382a08c`,
+1400-bin fix) — that is when the losses began.
+
+**Options under discussion (user + Claude Code):**
+1. Cap live at ≤70 bins (narrow-only, proven path) until wide is validated at small
+   size (0.1 SOL controlled open).
+2. Keep halted; validate the wide path end-to-end with one small funded open before
+   re-enabling.
+3. Fix the probe to match the SDK's actual (expanded) array coverage.
+
+Current fixes in place (before halt): auto-unwind after failed opens (works),
+auto-close of created-but-unfunded positions (works, verified on-chain),
+execution breaker benching pools after 2 failures (works), `POOL_DENYLIST`
+(denies STONK-SOL).
+
 ## Official baseline: FlowMetrix DLMM AI Agent V1.1
 
 **V1.1 is the only configuration the live engine runs.** There is no v1.0 code path, no legacy
