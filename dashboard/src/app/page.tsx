@@ -8,6 +8,8 @@ import KpiCards from "@/components/KpiCards";
 import TradeHistory from "@/components/TradeHistory";
 import PnlCalendar from "@/components/PnlCalendar";
 import CohortFilter from "@/components/CohortFilter";
+import ScanFunnel from "@/components/ScanFunnel";
+import Reconciliation from "@/components/Reconciliation";
 import {
   fetchActivePositions,
   fetchLatestResearch,
@@ -211,8 +213,28 @@ export default function CommandCenter() {
 
         <KpiCards overview={overview} />
 
-        <div className="grid grid-cols-1 gap-5 xl:grid-cols-[1fr_400px]">
-          <TradeHistory active={active} history={history} loading={loading} />
+        {/*
+          `items-start` matters: grid children stretch to the tallest row by default, so
+          the execution log was being pulled down to the calendar + macro brief's height
+          and rendering a few hundred pixels of empty table under two open positions.
+          Each column now sizes to its own content.
+        */}
+        <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-[1fr_400px]">
+          <div className="space-y-5">
+            <TradeHistory
+              active={active}
+              history={history}
+              loading={loading}
+              isDryRun={overview?.isDryRun}
+            />
+            {/*
+              Above the funnel: the funnel explains why nothing traded, this explains
+              whether what DID trade actually made the money the rest of the page says
+              it made. On a paper engine it renders nothing at all.
+            */}
+            <Reconciliation />
+            <ScanFunnel />
+          </div>
 
           <div className="space-y-5">
             <PnlCalendar data={calendar} month={month} onMonthChange={setMonth} />
@@ -220,8 +242,21 @@ export default function CommandCenter() {
           </div>
         </div>
 
+        {/*
+          The footer states what this engine IS, and that changed the day live execution
+          was armed. "zero capital deployed" printed under real positions is not a
+          harmless leftover — it is the most reassuring sentence on the page, and it
+          would be false exactly when being wrong costs money.
+        */}
         <footer className="pt-2 text-center text-[10px] text-zinc-700">
-          FlowMetrix paper-trading simulation · zero capital deployed · not financial advice
+          {overview && !overview.isDryRun ? (
+            <span className="text-rose-400/70">
+              FlowMetrix LIVE · real capital at risk · positions below are real on-chain
+              positions · not financial advice
+            </span>
+          ) : (
+            <>FlowMetrix paper-trading simulation · zero capital deployed · not financial advice</>
+          )}
         </footer>
       </main>
     </div>

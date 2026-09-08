@@ -198,13 +198,13 @@ describe("V1.1 baseline — the live micro-capital profile does not touch it", (
      */
     assert.match(
       agentSource,
-      /chargeRoundTripGasUsd\(liveRoundTripGasUsd, solPriceUsd\)/,
-      "the coverage gate no longer charges the shared live gas floor; the bar printed " +
+      /chargeEntryFrictionUsd\(liveRoundTripGasUsd, solPriceUsd\)/,
+      "the coverage gate no longer charges the shared live cost basis; the bar printed " +
         "at boot and the bar enforced at runtime can now disagree again",
     );
 
     const gateAt = agentSource.indexOf("assessBreakeven({");
-    const chargeAt = agentSource.indexOf("chargeRoundTripGasUsd(liveRoundTripGasUsd");
+    const chargeAt = agentSource.indexOf("chargeEntryFrictionUsd(liveRoundTripGasUsd");
     assert.ok(chargeAt > 0 && chargeAt < gateAt, "the gas basis is resolved after the gate reads it");
 
     // Both gates must be handed the identical figure, or they drift apart again.
@@ -224,8 +224,8 @@ describe("V1.1 baseline — the live micro-capital profile does not touch it", (
      */
     assert.match(
       agentSource,
-      /liveMicroCapital\.enabled\s*\?\s*chargeRoundTripGasUsd/,
-      "the coverage gate's gas basis is no longer gated on the live profile being armed",
+      /liveMicroCapital\.enabled\s*\?\s*chargeEntryFrictionUsd/,
+      "the coverage gate's cost basis is no longer gated on the live profile being armed",
     );
     assert.match(
       agentSource,

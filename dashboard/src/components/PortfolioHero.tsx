@@ -72,8 +72,21 @@ export default function PortfolioHero({ wallet, overview, onRefresh, refreshing 
   const todayPnl = overview?.todayRealizedPnLUSD ?? null;
 
   return (
+    /*
+      The hero shrinks when there is no wallet to show.
+
+      With SOLANA_WALLET_ADDRESS unset — every dev machine — the full-height layout
+      renders a 6xl em dash and a warning across ~230px of the fold, pushing the
+      figures that DO exist below it. The band still appears, because the reason no
+      balance is shown is itself worth stating; it just stops being the largest
+      element on the page.
+    */
     <section className="border-b border-zinc-800 bg-gradient-to-b from-zinc-900/60 to-zinc-950">
-      <div className="mx-auto flex max-w-[1600px] flex-col items-center gap-3 px-6 py-8">
+      <div
+        className={`mx-auto flex max-w-[1600px] flex-col items-center gap-3 px-6 ${
+          wallet?.status === "unconfigured" ? "py-4" : "py-8"
+        }`}
+      >
         {/* ---- wallet identity ---- */}
         <div className="flex w-full items-start justify-between gap-4">
           <WalletBadge wallet={wallet} copied={copied} onCopy={copyAddress} />
@@ -92,22 +105,37 @@ export default function PortfolioHero({ wallet, overview, onRefresh, refreshing 
         </div>
 
         {/* ---- total balance ---- */}
-        <div className="flex flex-col items-center gap-1 py-1 text-center">
-          <span className="text-[11px] uppercase tracking-widest text-zinc-500">
-            Wallet Balance · on-chain
-          </span>
+        {wallet?.status === "unconfigured" ? (
+          /*
+            No wallet configured — every dev machine. The full treatment renders a 6xl
+            em dash and "— SOL" across the fold, so the largest thing on the page is
+            the absence of a number. The reason is still stated (below), it just does
+            not outrank the figures that exist.
+          */
+          <div className="flex flex-col items-center text-center">
+            <span className="text-[11px] uppercase tracking-widest text-zinc-600">
+              Wallet Balance · on-chain
+            </span>
+            <span className="font-mono text-lg text-zinc-600">not configured</span>
+          </div>
+        ) : (
+          <div className="flex flex-col items-center gap-1 py-1 text-center">
+            <span className="text-[11px] uppercase tracking-widest text-zinc-500">
+              Wallet Balance · on-chain
+            </span>
 
-          <span className="font-mono text-5xl font-semibold tracking-tight text-zinc-50 tabular-nums sm:text-6xl">
-            {hidden ? HIDDEN : formatUsd(wallet?.usd ?? null)}
-          </span>
+            <span className="font-mono text-5xl font-semibold tracking-tight text-zinc-50 tabular-nums sm:text-6xl">
+              {hidden ? HIDDEN : formatUsd(wallet?.usd ?? null)}
+            </span>
 
-          <span className="font-mono text-sm text-zinc-400 tabular-nums">
-            {hidden ? HIDDEN : formatSol(wallet?.sol ?? null)}
-            {!hidden && wallet?.solPriceUsd != null && (
-              <span className="ml-2 text-zinc-600">@ ${wallet.solPriceUsd.toFixed(2)}/SOL</span>
-            )}
-          </span>
-        </div>
+            <span className="font-mono text-sm text-zinc-400 tabular-nums">
+              {hidden ? HIDDEN : formatSol(wallet?.sol ?? null)}
+              {!hidden && wallet?.solPriceUsd != null && (
+                <span className="ml-2 text-zinc-600">@ ${wallet.solPriceUsd.toFixed(2)}/SOL</span>
+              )}
+            </span>
+          </div>
+        )}
 
         {/* ---- today's PnL ---- */}
         <TodayPnl value={hidden ? null : todayPnl} hidden={hidden} isDryRun={overview?.isDryRun} />
@@ -203,9 +231,33 @@ function TodayPnl({
       <span className={`font-mono text-sm font-medium tabular-nums ${tone}`}>
         Today&apos;s PnL: {sign}${Math.abs(value).toFixed(2)}
       </span>
-      {isDryRun && (
-        <span className="rounded border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-zinc-500">
+      {/*
+        Tagged in BOTH modes, because the figure is the engine's in both.
+
+        It was tagged only while `isDryRun`, on the reasoning that a paper number needs
+        the warning and a real one does not. But this is `todayRealizedPnLUSD` — the same
+        valuation model that values simulated positions, which cannot see the balancing
+        swap's slippage, the priority fees or bin-array rent. Untagged and sitting
+        directly under a balance read from the chain, it reads as the amount that
+        balance moved today. That is the custody claim the KPI card one row down was
+        relabelled "Book Equity" to avoid, left standing in the more prominent place.
+
+        `undefined` means the overview has not loaded, so nothing is asserted yet.
+      */}
+      {isDryRun === true && (
+        <span
+          title="Paper PnL — this engine is in dry run and holds no on-chain positions."
+          className="rounded border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-zinc-500"
+        >
           paper
+        </span>
+      )}
+      {isDryRun === false && (
+        <span
+          title="Engine accounting, not the wallet: the valuation model does not see swap slippage, priority fees or bin-array rent. The Wallet Reconciliation panel measures the gap."
+          className="rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-amber-500/80"
+        >
+          book
         </span>
       )}
     </div>

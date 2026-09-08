@@ -65,7 +65,16 @@ CREATE TABLE IF NOT EXISTS scan_funnel_cycles (
     cycle_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     scanned INTEGER,
     screen_rejections TEXT,               -- JSON: {"lowTvl": 412, "highTvl": 9, ...}
-    candidates INTEGER DEFAULT 0,         -- survivors after the quantitative screen
+    -- Survivors of the quantitative screen ALONE. Reconciles against the two columns
+    -- above, whose buckets are exhaustive: scanned - sum(screen_rejections).
+    screener_candidates INTEGER,
+    held_excluded INTEGER DEFAULT 0,      -- dropped for already holding that pool
+    -- Pools that survived EVERY local filter and reached the anti-rug screen. This is
+    -- the LAST step of the narrowing, not the first: it is screener_candidates minus
+    -- held_excluded, cooldown_rejected and execution_rejected. It was documented here
+    -- as "survivors after the quantitative screen" and is not that, which is what made
+    -- a row reading candidates=4 alongside execution_rejected=26 look like corruption.
+    candidates INTEGER DEFAULT 0,
     cooldown_rejected INTEGER DEFAULT 0,
     antirug_passed INTEGER DEFAULT 0,
     antirug_rejected INTEGER DEFAULT 0,

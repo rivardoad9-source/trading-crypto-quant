@@ -91,8 +91,31 @@ export interface TradeAlertPayload {
   upperBinPrice: number;
   confidence: number;
   thesis: string;
-  virtualSol: number;
+  /** SOL deployed on this entry. REAL on a live row, virtual on a paper one. */
+  sizeSol: number;
+  /**
+   * Whether this describes a real on-chain position.
+   *
+   * Required, not optional-with-a-default. These alerts are the channel an operator
+   * reads on a phone while money is moving, and every one of them announced
+   * "PAPER POSITION OPENED (DRY-RUN)" -- hard-coded -- for the whole time the engine
+   * was armed with real capital. A default would let the next caller reintroduce that
+   * silently; the compiler now asks.
+   */
+  live: boolean;
+  /** The on-chain position account. Null on a paper row. */
+  positionAddress?: string | null;
 }
+
+/**
+ * The banner every trade alert opens with.
+ *
+ * The label follows the ENGINE, never the build. A live position announced as paper is
+ * the fabricated-balance failure the dashboard rules already forbid, appearing in the
+ * one place it is most likely to be acted on.
+ */
+const banner = (live: boolean, verb: string): string =>
+  live ? `LIVE POSITION ${verb} - REAL CAPITAL` : `PAPER POSITION ${verb} (DRY-RUN)`;
 
 const fmt = (n: number, digits = 6): string =>
   Number.isFinite(n) ? n.toFixed(digits).replace(/\.?0+$/, "") : "n/a";
@@ -102,11 +125,11 @@ const usd = (n: number): string =>
 
 export async function sendPositionOpened(p: TradeAlertPayload): Promise<void> {
   const body = [
-    `🟢 PAPER POSITION OPENED (DRY-RUN)`,
+    `${p.live ? "🔴" : "🟢"} ${banner(p.live, "OPENED")}`,
     ``,
     `Pair: ${p.pairName}`,
     `Strategy: ${p.strategy}`,
-    `Size: ${p.virtualSol} SOL (virtual)`,
+    `Size: ${p.sizeSol} SOL${p.live ? "" : " (virtual)"}`,
     `Entry: ${fmt(p.entryPrice)}`,
     `Range: ${fmt(p.lowerBinPrice)} — ${fmt(p.upperBinPrice)}`,
     `Confidence: ${p.confidence}/100`,
@@ -114,6 +137,7 @@ export async function sendPositionOpened(p: TradeAlertPayload): Promise<void> {
     `Thesis: ${p.thesis}`,
     ``,
     `Pool: ${p.poolAddress}`,
+    ...(p.live && p.positionAddress ? [`Position: ${p.positionAddress}`] : []),
   ].join("\n");
 
   await sendMessage(sanitize(body));
@@ -126,16 +150,29 @@ export interface CloseAlertPayload {
   entryPrice: number;
   exitPrice: number;
   feeUsd: number;
-  ilUsd: number;
+  /**
+   * What happened to the CAPITAL: `lpValueReturnFraction` in dollars, i.e.
+   * `netPnlUsd - feeUsd`.
+   *
+   * Named for what it is. This field was `ilUsd` and rendered as "Impermanent loss",
+   * which is a different quantity: divergence vs holding reads -5.7% on a halving
+   * where the value change reads -29.3%. The number sent has always been the value
+   * change, so only the label was wrong -- wrong by roughly 5x, in the direction that
+   * makes a working engine look broken. `impermanent_loss_usd` in the database is the
+   * divergence figure and is deliberately NOT what this carries.
+   */
+  positionValueChangeUsd: number;
   netPnlUsd: number;
   netPnlPct: number;
   heldHours: number;
+  /** Whether this describes a real on-chain position. See TradeAlertPayload.live. */
+  live: boolean;
 }
 
 export async function sendPositionClosed(p: CloseAlertPayload): Promise<void> {
   const icon = p.netPnlUsd >= 0 ? "✅" : "🔻";
   const body = [
-    `${icon} PAPER POSITION CLOSED — ${p.status}`,
+    `${icon} ${banner(p.live, "CLOSED")} — ${p.status}`,
     ``,
     `Pair: ${p.pairName}`,
     `Reason: ${p.reason}`,
@@ -143,7 +180,7 @@ export async function sendPositionClosed(p: CloseAlertPayload): Promise<void> {
     `Entry → Exit: ${fmt(p.entryPrice)} → ${fmt(p.exitPrice)}`,
     ``,
     `Fees earned: ${usd(p.feeUsd)}`,
-    `Impermanent loss: ${usd(p.ilUsd)}`,
+    `Position value change: ${usd(p.positionValueChangeUsd)}`,
     `Net PnL: ${usd(p.netPnlUsd)} (${p.netPnlPct.toFixed(2)}%)`,
   ].join("\n");
 

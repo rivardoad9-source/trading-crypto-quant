@@ -49,6 +49,8 @@ function profile(overrides: Partial<LiveMicroCapitalConfig> = {}): LiveMicroCapi
     deployableSol: 1.0,
     maxExposureSol: 0.8,
     roundTripGasSol: 0.008,
+    entryRentSol: 0,
+    maxRentToPnl: 1,
     minNetPnlUsd: 1.5,
     pnlHorizonHours: 24,
     minWalletSol: 0.2,

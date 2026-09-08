@@ -12,6 +12,7 @@ import {
   poolDenylist,
 } from "./executionGuard.js";
 import {
+  DLMM_BIN_ARRAY_RENT_SOL,
   DLMM_BINS_PER_INIT,
   DLMM_MAX_BINS_PER_POSITION,
   WSOL_MINT,
@@ -25,6 +26,7 @@ import {
   rehearseOpenPosition,
   type ExecutionAuthorization,
 } from "./onchainExecutor.js";
+import { getWalletBalanceSol } from "./solana.js";
 import { sendError } from "./telegram.js";
 
 /**
@@ -63,6 +65,24 @@ export interface LiveOpenOutcome {
   depositedSolLamports: number;
   /** Paired token actually deposited, in base units. String: it can exceed 2^53. */
   depositedPairedAmount: string;
+  /**
+   * Wallet lamports read from the chain immediately BEFORE anything was spent, or null
+   * when the read failed.
+   *
+   * The anchor for reconciliation. Everything the database knows about a live
+   * position's PnL is produced by the same paper model that values simulated ones —
+   * `closeLivePosition` returns signatures and nothing else, so the chain is asked to
+   * close and never asked what came back. That model omits, in one direction, every
+   * cost that is real: the balancing swap's slippage, priority fees, and bin-array rent
+   * that never returns. Nothing compared the two, so the drift was unbounded and
+   * invisible.
+   *
+   * Pairing this with the balance read after the close gives the trade's TRUE effect on
+   * the wallet, measured rather than modelled. Null, never 0, when it could not be
+   * read: an unknown balance is not an empty one, and a fabricated anchor would produce
+   * a fabricated reconciliation.
+   */
+  walletLamportsBefore: number | null;
 }
 
 /**
@@ -176,6 +196,49 @@ export class BinWidthExceededError extends LiveEntryRefusedError {
  * decision indistinguishable from a program limit in the funnel. A skip reason is
  * evidence; it has to say what actually happened.
  */
+/**
+ * The entry would burn more UNRECOVERABLE rent than it is projected to earn.
+ *
+ * The gate next to this one asks "can I afford this open" and is answered from the
+ * rent budget. That is a different question from "is this open worth making", and
+ * nothing was asking the second one: a candidate admitted on a $1.50 projected net
+ * could create a bin array costing several times that, permanently, and still pass —
+ * because the rent fitted in the budget.
+ *
+ * Bin-array rent is the one cost this engine cannot recover. The position account's
+ * rent returns on close; a bin array is a pool-level account shared by every LP, and
+ * nothing here can reclaim it. So it is not friction to be amortised over the trade,
+ * it is capital spent to make the trade possible, and a trade that spends more than it
+ * makes is a loss decided at entry.
+ *
+ * A refusal here is FREE and routine: it fires before the balancing swap, so nothing
+ * has been spent, and `seekNewEntry` treats it as a skip rather than a fault. It is
+ * NOT counted against the execution breaker either — the arrays exist or they do not,
+ * which is a fact about the pool's state and the operator's economics, not evidence
+ * that the chain would reject this open.
+ */
+export class UnrecoverableRentError extends LiveEntryRefusedError {
+  constructor(
+    pairName: string,
+    poolAddress: string,
+    rentUsd: number,
+    projectedNetPnlUsd: number,
+    arrays: number,
+    limitMultiple: number,
+  ) {
+    super(
+      `[live] ${pairName} would create ${arrays} bin array(s) costing ` +
+        `$${rentUsd.toFixed(2)} of UNRECOVERABLE rent against a projected net PnL of ` +
+        `$${projectedNetPnlUsd.toFixed(2)} (limit ${limitMultiple}x). Bin-array rent is ` +
+        `never reclaimed, so this entry loses money at the moment it opens. Skipped ` +
+        `before any swap (pool ${poolAddress})`,
+      pairName,
+      poolAddress,
+    );
+    this.name = "UnrecoverableRentError";
+  }
+}
+
 export class PoolDeniedError extends LiveEntryRefusedError {
   constructor(pairName: string, poolAddress: string) {
     super(
@@ -294,6 +357,31 @@ async function readTokenBalance(
 }
 
 /**
+ * The wallet's lamports, for reconciliation bookkeeping only.
+ *
+ * NEVER throws and never returns 0 as a stand-in: a balance that could not be read is
+ * null, exactly as `walletBalance.ts` and the three-state rules elsewhere require. The
+ * callers are recording evidence, not gating a spend, so a provider hiccup must cost a
+ * measurement and never a trade.
+ *
+ * Reads the PUBLIC address from the live profile rather than deriving a pubkey from the
+ * signing key, so this path never touches secret material.
+ */
+async function readWalletLamports(): Promise<number | null> {
+  const address = liveMicroCapital.walletAddress;
+  if (!address) return null;
+  try {
+    return (await getWalletBalanceSol(address)).lamports;
+  } catch (err) {
+    console.warn(
+      `[live] could not read the wallet balance for reconciliation: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    );
+    return null;
+  }
+}
+
+/**
  * Opens a real DLMM position, swapping half the SOL into the pool's other token first.
  *
  * WHY THE SWAP. `dlmmExecutor.openPosition` deposits whatever it is given, and the
@@ -315,6 +403,17 @@ export async function openLivePosition(params: {
   lowerBinPrice: number;
   upperBinPrice: number;
   strategy: "SPOT" | "BID_ASK" | "CURVE";
+  /**
+   * The net PnL this entry was admitted on, in USD, from the friction gate that let it
+   * through. Used to decide whether the entry's UNRECOVERABLE rent is worth paying.
+   *
+   * Optional so a caller with no projection (a manual script) is not forced to invent
+   * one — and when it is absent the rent check is SKIPPED rather than defaulted, since
+   * a made-up projection would either refuse everything or nothing.
+   */
+  projectedNetPnlUsd?: number | null;
+  /** SOL/USD, to price the rent above. Ignored when no projection is supplied. */
+  solPriceUsd?: number | null;
 }): Promise<LiveOpenOutcome> {
   const auth = authorizeExecution();
   const totalLamports = Math.floor(params.sizeSol * LAMPORTS_PER_SOL);
@@ -422,6 +521,42 @@ export async function openLivePosition(params: {
     }
 
     /*
+     * IS IT WORTH IT — as distinct from "can I afford it", which is the gate above.
+     *
+     * `cost.binArraySol` is the CHAIN's answer for this exact range, not an estimate:
+     * zero on a pool whose arrays already exist, 0.0714 SOL for each one that does not.
+     * That rent is never recovered, so an entry creating arrays starts the trade down
+     * by that amount, and the screening gates that admitted it priced only gas and
+     * slippage. On a $1.50 projected net a single new array is roughly a $7 hole.
+     *
+     * Checked here, before the swap, so the refusal is free. Skipped when the caller
+     * supplied no projection — inventing one would make this gate either vacuous or
+     * absolute — and disabled entirely by `LIVE_MAX_RENT_TO_PNL=Infinity`.
+     */
+    const projected = params.projectedNetPnlUsd;
+    const solPriceUsd = params.solPriceUsd;
+    if (
+      cost.binArraySol > 0 &&
+      Number.isFinite(liveMicroCapital.maxRentToPnl) &&
+      typeof projected === "number" &&
+      Number.isFinite(projected) &&
+      typeof solPriceUsd === "number" &&
+      solPriceUsd > 0
+    ) {
+      const rentUsd = cost.binArraySol * solPriceUsd;
+      if (rentUsd > projected * liveMicroCapital.maxRentToPnl) {
+        throw new UnrecoverableRentError(
+          params.pairName,
+          params.poolAddress,
+          rentUsd,
+          projected,
+          cost.binArraysToCreate,
+          liveMicroCapital.maxRentToPnl,
+        );
+      }
+    }
+
+    /*
      * THE PER-TRANSACTION SPEND CEILING, CHECKED HERE RATHER THAN AFTER THE SWAP.
      *
      * `dlmmExecutor.openPosition` charges deposit + rent to `assertWithinSpendLimit`,
@@ -449,7 +584,17 @@ export async function openLivePosition(params: {
       positionRentLamports,
       depositLamports + binArrayRentLamports,
     );
-    const worstLamports = binWidth <= 70 ? narrowPathLamports : widePathLamports;
+    /*
+     * `DLMM_BINS_PER_INIT`, not a literal 70. The same boundary is decided three times
+     * in this file and the other two already read the constant, which
+     * `onchainExecutor.test.ts` binds to the installed SDK. A hand-written copy is
+     * invisible to that test, so an SDK bump would move the real narrow/wide boundary
+     * while this line kept charging the wrong transaction shape against the spend
+     * ceiling — the failure mode is a refusal after the swap, which is what every gate
+     * in this function exists to move in front of the spend. CLAUDE.md says not to
+     * hand-write these constants; this was one.
+     */
+    const worstLamports = binWidth <= DLMM_BINS_PER_INIT ? narrowPathLamports : widePathLamports;
 
     if (worstLamports > onchainConfig.maxLamportsPerTx) {
       throw new BinWidthExceededError(
@@ -555,18 +700,56 @@ export async function openLivePosition(params: {
   }
 
   /*
-   * Say plainly when there was nothing to rehearse. A narrow range on a pool whose bin
-   * arrays all exist has no account-creation transaction at all, so "rehearsal clean"
-   * on its own would read as "the open was verified" when nothing was simulated.
+   * Say plainly what was and was not checked, and never assert more than that.
+   *
+   * This line used to print "no account creation needed (all bin arrays exist)"
+   * whenever no step ran — which on the NARROW path is always, because the narrow
+   * path's inits are fused into the open and are deliberately not rehearsed. So on a
+   * narrow range that was about to create bin arrays, the log stated the opposite of
+   * the truth about the one cost this engine can never recover (0.0714 SOL each,
+   * pool-level accounts, no wrapper in the SDK to close them).
+   *
+   * Under a narrow-only cap this is EVERY entry, which is the part worth stating out
+   * loud: `LIVE_MAX_POSITION_BINS` at 70 means the rehearsal never simulates anything
+   * and `preCreateMissingBinArrays` never runs, so the whole pre-swap apparatus built
+   * after 7-8 Sep 2026 is inert and the narrow path's only protection is the SDK
+   * simulating its own fused transaction. True and adequate — but it must not read as
+   * "verified".
    */
+  const arrays =
+    rehearsal.binArraysToCreate > 0
+      ? `${rehearsal.binArraysToCreate} bin array(s) still to create ` +
+        `(~${(rehearsal.binArraysToCreate * DLMM_BIN_ARRAY_RENT_SOL).toFixed(4)} SOL of ` +
+        `UNRECOVERABLE rent)`
+      : `all bin arrays already exist`;
+
   console.log(
     rehearsal.steps.length === 0
-      ? `[live] ${params.pairName}: nothing to rehearse - no account creation needed ` +
-        `(all bin arrays exist${rehearsal.binWidth <= 70 ? ", narrow range" : ""}); ` +
-        `the deposit itself cannot be simulated before the swap that funds it`
+      ? `[live] ${params.pairName}: NOTHING WAS REHEARSED - ` +
+        (rehearsal.fusedIntoOpen
+          ? `narrow range (${rehearsal.binWidth} bins), so the inits are fused into the ` +
+            `open and the SDK budgets that transaction by simulating it itself`
+          : `no account creation needed`) +
+        `; ${arrays}; the deposit itself cannot be simulated before the swap that funds it`
       : `[live] ${params.pairName}: rehearsal clean (${rehearsal.steps.length} transaction(s), ` +
-        `${rehearsal.binArraysToCreate} bin array(s) to create)`,
+        `${arrays})`,
   );
+
+  /*
+   * THE RECONCILIATION ANCHOR — the last read before anything is spent.
+   *
+   * Everything downstream that says what this trade "made" is the paper valuation
+   * model, the same one that values simulated positions. It cannot see the swap's
+   * slippage, the priority fees, or the bin-array rent that never returns, and
+   * `closeLivePosition` returns signatures only, so nothing ever asked the chain what
+   * came back. Recording the balance here and again after the close makes the trade's
+   * real effect on the wallet a MEASUREMENT rather than an inference.
+   *
+   * Best effort by design: a failed read is null and the open proceeds. Refusing to
+   * trade because a bookkeeping read failed would fail closed on the wrong thing —
+   * this is diagnostics, and every gate that protects capital has already passed.
+   */
+  const walletLamportsBefore = await readWalletLamports();
 
   console.log(
     `[live] ${params.pairName}: swapping ${(swapLamports / LAMPORTS_PER_SOL).toFixed(4)} SOL ` +
@@ -696,6 +879,7 @@ export async function openLivePosition(params: {
       swapSignature: swap.signature,
       depositedSolLamports: depositSolLamports,
       depositedPairedAmount: pairedAmount.toString(),
+      walletLamportsBefore,
     };
   } catch (err) {
     /*
@@ -767,7 +951,18 @@ export async function closeLivePosition(params: {
   poolAddress: string;
   positionAddress: string;
   pairName: string;
-}): Promise<{ closeSignature: string; signatures: string[] }> {
+}): Promise<{
+  closeSignature: string;
+  signatures: string[];
+  /**
+   * Wallet lamports read AFTER the close confirmed, or null when the read failed.
+   *
+   * With the balance recorded at open, this is the only measurement the engine has of
+   * what a live trade actually did to the wallet. Every other number attached to a live
+   * position is the paper model's opinion.
+   */
+  walletLamportsAfter: number | null;
+}> {
   const auth = authorizeExecution();
 
   const closed = await dlmmExecutor.closePosition(auth, {
@@ -782,7 +977,11 @@ export async function closeLivePosition(params: {
   console.log(`[live] ${params.pairName}: position ${params.positionAddress} closed ` +
     `(${signatures.length} tx, final ${closeSignature})`);
 
-  return { closeSignature, signatures };
+  // After the close CONFIRMED, so the withdrawal and the reclaimed position rent are
+  // both already in the balance. Best effort; see readWalletLamports.
+  const walletLamportsAfter = await readWalletLamports();
+
+  return { closeSignature, signatures, walletLamportsAfter };
 }
 
 /**
