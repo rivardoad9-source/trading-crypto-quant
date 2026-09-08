@@ -9,6 +9,7 @@ import TradeHistory from "@/components/TradeHistory";
 import PnlCalendar from "@/components/PnlCalendar";
 import CohortFilter from "@/components/CohortFilter";
 import ScanFunnel from "@/components/ScanFunnel";
+import Reconciliation from "@/components/Reconciliation";
 import {
   fetchActivePositions,
   fetchLatestResearch,
@@ -221,6 +222,12 @@ export default function CommandCenter() {
         <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-[1fr_400px]">
           <div className="space-y-5">
             <TradeHistory active={active} history={history} loading={loading} />
+            {/*
+              Above the funnel: the funnel explains why nothing traded, this explains
+              whether what DID trade actually made the money the rest of the page says
+              it made. On a paper engine it renders nothing at all.
+            */}
+            <Reconciliation />
             <ScanFunnel />
           </div>
 

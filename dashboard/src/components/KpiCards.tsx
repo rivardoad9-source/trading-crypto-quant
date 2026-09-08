@@ -38,13 +38,23 @@ export default function KpiCards({ overview }: Props) {
   return (
     <div className={GRID}>
       {/*
-        The label follows the engine, not the build. "Simulated Equity" over a figure
-        backed by real positions understates what the number is; "Live Equity" over a
-        paper figure overstates it. Both are the fabricated-balance failure the wallet
-        hero already guards against, so the label is derived rather than written.
+        NOT "Live Equity", and the reason matters more than the wording.
+
+        This figure is `startingBalanceUSD + realised PnL + floating PnL`. The BASE is a
+        configured baseline — an env value, or $1,000, or the wallet as it stood at one
+        past boot — and the PnL is the VALUATION MODEL's, which cannot see the balancing
+        swap's slippage, the priority fees, or bin-array rent that never comes back. So
+        even with the engine live and every trade real, this is the engine's own book,
+        not custody. Writing "Live Equity" over it puts a custody claim on a number with
+        nothing custodial behind it: the fabricated-balance failure the portfolio hero
+        already forbids, wearing a nicer font. The real balance is in the hero, read from
+        the chain, and the gap between the two is what the reconciliation panel measures.
+
+        "Simulated Equity" was also wrong once the trades became real, which is what
+        prompted this — so the label names the third thing the number actually is.
       */}
       <Card
-        label={overview.isDryRun ? "Simulated Equity" : "Live Equity"}
+        label={overview.isDryRun ? "Simulated Equity" : "Book Equity"}
         icon={<Wallet className="h-4 w-4" />}
         value={formatUsd(overview.currentEquityUSD)}
         footer={
@@ -56,6 +66,11 @@ export default function KpiCards({ overview }: Props) {
             <span className="font-mono text-zinc-400">
               {formatUsd(overview.startingBalanceUSD, 0)}
             </span>
+            {!overview.isDryRun && (
+              <span className="mt-0.5 block text-[10px] text-amber-500/70">
+                engine accounting — not the wallet
+              </span>
+            )}
           </>
         }
       />
