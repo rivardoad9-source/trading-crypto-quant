@@ -55,6 +55,9 @@ import {
 } from "../services/deepseek.js";
 import { positionMutex } from "../services/mutex.js";
 import {
+  assessGmgnPool,
+} from "../services/gmgnScreener.js";
+import {
   getPriorityFeeEstimateSafe,
   screenTokenSafety,
   type PriorityFeeEstimate,
@@ -1346,6 +1349,14 @@ export interface EntrySummary {
     reason: string;
   }>;
   rugRejected: Array<{ pairName: string; verdict: string; reasons: string[] }>;
+  /**
+   * Candidates flagged by the GMGN holder-structure gate (bundler concentration,
+   * free-insider top holder). Populated in BOTH modes: "report" logs them and
+   * lets the pool through; "enforce" moves them into `gmgnRejected`.
+   */
+  gmgnFlagged: Array<{ pairName: string; reasons: string[]; unavailable: boolean }>;
+  /** Candidates dropped by the GMGN gate (only when GMGN_GATE_MODE=enforce). */
+  gmgnRejected: Array<{ pairName: string; reasons: string[] }>;
   /** Candidates dropped for having already pumped, or for an unknown 24h change. */
   volatilityRejected: Array<{
     pairName: string;
@@ -1431,6 +1442,8 @@ async function seekNewEntry(): Promise<EntrySummary> {
     cooldownRejected: [],
     executionRejected: [],
     rugRejected: [],
+    gmgnFlagged: [],
+    gmgnRejected: [],
     volatilityRejected: [],
     breakevenRejected: [],
     microFrictionRejected: [],
@@ -1637,7 +1650,62 @@ async function seekNewEntry(): Promise<EntrySummary> {
     return summary;
   }
 
-  const top = safetyScreen.passed.slice(0, MAX_CANDIDATE_POOLS);
+  /*
+   * GMGN holder-structure gate — OPTIONAL, FAIL-OPEN, report-only by default.
+   *
+   * The anti-rug screen proves the MINT is clean (authorities revoked, holders
+   * spread). GMGN adds WHO holds it: bundler/sniper/rat wallets concentrating
+   * supply, or a top holder sitting on near-free tokens at a huge unrealized
+   * multiple (an insider who can dump at any moment). That is the failure
+   * profile behind the 9 Sep OTC-SOL wide-open loss — clean mint, bot-driven
+   * price. Calibration is in gmgnScreener.ts; default mode is "report" so this
+   * cannot block a trade until the operator has watched a few cycles of flags.
+   *
+   * Fail-open by construction: a null verdict (no key, network error, rate
+   * limit) passes the pool. This gate must never take the engine down.
+   */
+  const gmgnPassed: typeof safetyScreen.passed = [];
+  for (const entry of safetyScreen.passed) {
+    const mint = riskMintOf(entry.pool);
+    if (mint === null) {
+      gmgnPassed.push(entry);
+      continue;
+    }
+    const verdict = await assessGmgnPool(mint);
+    if (verdict.unavailable) {
+      gmgnPassed.push(entry);
+      continue;
+    }
+    if (verdict.reject) {
+      summary.gmgnRejected.push({ pairName: entry.pool.pairName, reasons: verdict.reasons });
+      summary.gmgnFlagged.push({
+        pairName: entry.pool.pairName,
+        reasons: verdict.reasons,
+        unavailable: false,
+      });
+      console.warn(`[gmgn] REJECTED ${entry.pool.pairName}: ${verdict.reasons.join("; ")}`);
+    } else if (verdict.reasons.length > 0) {
+      summary.gmgnFlagged.push({
+        pairName: entry.pool.pairName,
+        reasons: verdict.reasons,
+        unavailable: false,
+      });
+      console.warn(`[gmgn] flagged ${entry.pool.pairName} (report mode): ${verdict.reasons.join("; ")}`);
+      gmgnPassed.push(entry);
+    } else {
+      gmgnPassed.push(entry);
+    }
+  }
+
+  const top = gmgnPassed.slice(0, MAX_CANDIDATE_POOLS);
+
+  if (top.length === 0) {
+    summary.skipReason =
+      summary.gmgnRejected.length > 0
+        ? `all ${summary.gmgnRejected.length} candidates were rejected by the GMGN holder gate`
+        : "no pool passed the GMGN holder gate";
+    return summary;
+  }
 
   if (!isDeepSeekAvailable()) {
     summary.skipReason = "DEEPSEEK_API_KEY not configured; entry decisions are disabled";
@@ -2297,6 +2365,8 @@ export async function runDlmmTradingCycle(
           cooldownRejected: [],
           executionRejected: [],
           rugRejected: [],
+          gmgnFlagged: [],
+          gmgnRejected: [],
           volatilityRejected: [],
           breakevenRejected: [],
           microFrictionRejected: [],
@@ -2316,6 +2386,9 @@ export async function runDlmmTradingCycle(
         `cooldown-rejected ${entry.cooldownRejected.length}, ` +
         `exec-guard-rejected ${entry.executionRejected.length}, ` +
         `safe ${entry.safeCandidates}, rug-rejected ${entry.rugRejected.length}, ` +
+        (entry.gmgnRejected.length > 0 || entry.gmgnFlagged.length > 0
+          ? `gmgn-rejected ${entry.gmgnRejected.length}/flagged ${entry.gmgnFlagged.length}, `
+          : "") +
         `vol-rejected ${entry.volatilityRejected.length}, ` +
         `cost-rejected ${entry.breakevenRejected.length}, ` +
         (entry.microFrictionRejected.length > 0
