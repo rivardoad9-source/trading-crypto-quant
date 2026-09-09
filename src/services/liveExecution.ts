@@ -15,6 +15,7 @@ import {
   DLMM_BIN_ARRAY_RENT_SOL,
   DLMM_BINS_PER_INIT,
   DLMM_MAX_BINS_PER_POSITION,
+  DlmmPartialExecutionError,
   WSOL_MINT,
   authorizeExecution,
   binRangeFromPrices,
@@ -26,6 +27,7 @@ import {
   quoteOpenCost,
   rehearseOpenPosition,
   type ExecutionAuthorization,
+  type OrphanPositionOutcome,
 } from "./onchainExecutor.js";
 import { fetchRealizedVolatilityPctPerHour } from "./marketData.js";
 import { getWalletBalanceSol } from "./solana.js";
@@ -102,6 +104,8 @@ export class StrandedSwapError extends Error {
   readonly swapSignature: string;
   readonly rescueSignature: string | null;
   readonly rescueError: string | null;
+  /** What became of a position the failed open had already funded. */
+  readonly orphan: OrphanRecovery | null;
   constructor(
     mint: string,
     amount: string,
@@ -109,6 +113,7 @@ export class StrandedSwapError extends Error {
     cause: unknown,
     rescueSignature: string | null = null,
     rescueError: string | null = null,
+    orphan: OrphanRecovery | null = null,
   ) {
     const rescue =
       rescueSignature !== null
@@ -119,7 +124,8 @@ export class StrandedSwapError extends Error {
     super(
       `[live] the balancing swap CONFIRMED but the position open failed. The wallet now ` +
         `holds ${amount} base units of ${mint} that nothing monitors (swap ${swapSignature}). ` +
-        `${rescue} Cause: ${cause instanceof Error ? cause.message : String(cause)}`,
+        `${rescue}${describeOrphan(cause, orphan)} ` +
+        `Cause: ${cause instanceof Error ? cause.message : String(cause)}`,
     );
     this.name = "StrandedSwapError";
     this.mint = mint;
@@ -127,6 +133,135 @@ export class StrandedSwapError extends Error {
     this.swapSignature = swapSignature;
     this.rescueSignature = rescueSignature;
     this.rescueError = rescueError;
+    this.orphan = orphan;
+  }
+}
+
+/**
+ * The one sentence in the alert that says whether real capital is still on-chain.
+ *
+ * FAIL-LOUD ON A MISSING REPORT. `orphan` defaults to null because most failed opens
+ * never created a position, but a `DlmmPartialExecutionError` says one exists and was
+ * part-funded — so null there means the recovery did not run, not that there is nothing
+ * to recover, and the alert says exactly that with the address to check. A default that
+ * quietly renders as "all clear" on the one failure that leaves money on the table is
+ * how the 10 Sep 2026 KNOTS-SOL position sat unmonitored for four hours.
+ */
+function describeOrphan(cause: unknown, orphan: OrphanRecovery | null): string {
+  if (orphan === null) {
+    if (cause instanceof DlmmPartialExecutionError) {
+      return (
+        ` A POSITION MAY STILL BE FUNDED ON-CHAIN and no recovery was attempted: ` +
+        `CHECK ${cause.position} BY HAND.`
+      );
+    }
+    return "";
+  }
+
+  switch (orphan.state) {
+    case "closed":
+      return (
+        ` The open had already funded position ${orphan.position}; it was withdrawn, ` +
+        `claimed and CLOSED (${orphan.signatures.join(", ") || "no signature"}), so the ` +
+        `capital is back in the wallet.`
+      );
+    case "empty":
+      return ` Position ${orphan.position} exists but holds nothing; only its rent is at stake.`;
+    case "absent":
+      return ` No position account exists at ${orphan.position}; nothing was left on-chain.`;
+    case "failed":
+      return (
+        ` POSITION ${orphan.position} IS FUNDED AND COULD NOT BE CLOSED ` +
+        `(${orphan.error ?? "unknown error"}). THE ON-CHAIN POSITION IS STILL OPEN and ` +
+        `nothing monitors it — close it by hand.`
+      );
+  }
+}
+
+/** What the recovery of a partially funded position found, and what it did. */
+export interface OrphanRecovery {
+  position: string;
+  /** The executor's three states, plus "failed" for a recovery that itself threw. */
+  state: OrphanPositionOutcome["state"] | "failed";
+  signatures: string[];
+  error: string | null;
+}
+
+/**
+ * ADOPT-OR-CLOSE: what to do when an open lands SOME of its transactions and then fails.
+ *
+ * The wide path funds a position with several transactions sent one at a time. When the
+ * third is refused and the first two landed, the position account exists AND HOLDS
+ * LIQUIDITY — it earns fees, it moves with the price, and it is at risk — while the
+ * engine, correctly, writes no row for it (a row describing a position the open did not
+ * complete would be a fabricated holding). The result on 10 Sep 2026 was a real,
+ * profitable, entirely unmonitored KNOTS-SOL position that only a human noticed: the
+ * engine reported zero active positions for four hours, and its only remediation was to
+ * sell the leftover tokens in the WALLET, which is the half of the problem that was
+ * never the risk.
+ *
+ * So: ask the chain what the position holds, and if it holds anything, close it — the
+ * one action that is right whether or not anything else worked, because an unmonitored
+ * position is exactly what the engine cannot be allowed to own. Nothing is written to
+ * the database either way: this recovers capital, it does not create a holding.
+ *
+ * NEVER THROWS. It runs on a failure path whose remaining job — unwinding the wallet
+ * back to SOL — must happen regardless, so a recovery that threw would trade a funded
+ * position for a stranded token balance. A failure is reported as `state: "failed"` and
+ * the alert says the position is still open, in those words.
+ *
+ * The closer is injected rather than reached for directly so this decision is testable
+ * without a cluster. It still cannot spend on its own: the only implementation is
+ * `dlmmExecutor.closeOrphanPosition`, which demands an `ExecutionAuthorization` like
+ * every other fund-moving method.
+ */
+export async function recoverPartiallyFundedPosition(
+  context: { pairName: string; poolAddress: string; positionAddress: string },
+  close: (params: {
+    poolAddress: string;
+    positionAddress: string;
+  }) => Promise<OrphanPositionOutcome>,
+): Promise<OrphanRecovery> {
+  try {
+    const outcome = await close({
+      poolAddress: context.poolAddress,
+      positionAddress: context.positionAddress,
+    });
+
+    if (outcome.state === "closed") {
+      console.warn(
+        `[live] ${context.pairName}: the failed open had FUNDED position ` +
+          `${context.positionAddress} (${outcome.liquidityX} X / ${outcome.liquidityY} Y, ` +
+          `${outcome.unclaimedFeeX}/${outcome.unclaimedFeeY} unclaimed fees). Closed on-chain: ` +
+          `${outcome.signatures.join(", ")}`,
+      );
+    } else {
+      console.log(
+        `[live] ${context.pairName}: position ${context.positionAddress} is ` +
+          `${outcome.state === "absent" ? "not on-chain" : "on-chain but empty"}; ` +
+          `nothing to recover beyond its rent`,
+      );
+    }
+
+    return {
+      position: context.positionAddress,
+      state: outcome.state,
+      signatures: outcome.signatures,
+      error: null,
+    };
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    console.error(
+      `[live] ${context.pairName}: COULD NOT RECOVER position ${context.positionAddress} ` +
+        `after a partial open — THE ON-CHAIN POSITION MAY STILL BE OPEN AND UNMONITORED: ` +
+        `${reason}`,
+    );
+    return {
+      position: context.positionAddress,
+      state: "failed",
+      signatures: [],
+      error: reason,
+    };
   }
 }
 
@@ -1002,16 +1137,53 @@ export async function openLivePosition(params: {
       openSignature,
       swapSignature: swap.signature,
       depositedSolLamports: depositSolLamports,
-      depositedPairedAmount: pairedAmount.toString(),
+      /*
+       * The EXECUTOR's figure, not this function's earlier read. The narrow path may
+       * re-quote the deposit down when the pre-send simulation finds the account short,
+       * and reporting what we intended rather than what the chain was asked for is how a
+       * database figure starts disagreeing with the position it describes.
+       */
+      depositedPairedAmount: opened.depositedPairedAmount,
       walletLamportsBefore,
     };
   } catch (err) {
     /*
+     * FIRST, THE POSITION; THEN THE WALLET. The order is the fix.
+     *
+     * `DlmmPartialExecutionError` is the executor saying some of the open's transactions
+     * LANDED. On the wide path that means the position account exists and may already
+     * hold liquidity — a live, fee-earning, price-exposed position that no database row
+     * describes and therefore no monitor watches and no stop-loss protects. Until 10 Sep
+     * 2026 the only remediation here was the wallet auto-unwind below, which addresses
+     * the leftover TOKENS and is blind to the POSITION; a partially funded KNOTS-SOL
+     * position ran unwatched for four hours while the engine reported an empty book.
+     *
+     * Closing it first is also what makes the unwind complete: the withdrawal returns
+     * the paired token to the wallet, so the re-read below picks it up and sells it in
+     * the same pass. Reversed, the unwind would run against a balance the position was
+     * still holding.
+     *
+     * Only for a partial execution, because only that error names a position address.
+     * Every other failure means the open never created one.
+     */
+    const orphan =
+      err instanceof DlmmPartialExecutionError
+        ? await recoverPartiallyFundedPosition(
+            {
+              pairName: params.pairName,
+              poolAddress: params.poolAddress,
+              positionAddress: err.position,
+            },
+            (p) => dlmmExecutor.closeOrphanPosition(auth, p),
+          )
+        : null;
+
+    /*
      * Auto-unwind, best effort: the balancing swap has already moved SOL into the
      * paired token, so a failed open must put the wallet back to SOL — not leave an
      * unmonitored memecoin balance behind. Sell the CURRENT on-chain balance (re-read:
-     * a partial open may have consumed some), then report both the failure and the
-     * rescue outcome in the alert.
+     * a partial open may have consumed some, and the recovery above may have returned
+     * some), then report the failure, the recovery and the rescue outcome in the alert.
      */
     let rescueSignature: string | null = null;
     let rescueError: string | null = null;
@@ -1055,6 +1227,7 @@ export async function openLivePosition(params: {
       err,
       rescueSignature,
       rescueError,
+      orphan,
     );
     console.error(stranded.message);
     // Best effort: a failed page must not swallow the original failure.
