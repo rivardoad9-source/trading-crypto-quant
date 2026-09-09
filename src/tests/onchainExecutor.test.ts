@@ -24,6 +24,7 @@ import {
   DLMM_MAX_BINS_PER_POSITION,
   DLMM_POSITION_BIN_DATA_SIZE,
   DLMM_POSITION_MIN_SIZE,
+  HARD_MAX_ACTIVE_BIN_SLIPPAGE_BPS,
   HARD_MAX_SLIPPAGE_BPS,
   DlmmExecutionError,
   DlmmPartialExecutionError,
@@ -37,7 +38,10 @@ import {
   computeBudgetInstructions,
   positionAccountBytes,
   binRangeFromPrices,
+  depositSlippage,
+  isStaleActiveBinRejection,
   dlmmExecutor,
+  maxDepositLamports,
   isExecutionArmable,
   DLMM_FUNDING_CU_PER_CHUNK,
   DLMM_FUNDING_CU_PER_BIN_ARRAY_INIT,
@@ -56,12 +60,19 @@ import {
 const srcDir = fileURLToPath(new URL("..", import.meta.url));
 const repoRoot = resolve(srcDir, "..");
 
+/**
+ * The executor's own source, for the rules that are only visible at source level —
+ * a bound handed to the wrong parameter compiles and runs, it just never lands.
+ */
+const executorSourceText = readFileSync(join(srcDir, "services/onchainExecutor.ts"), "utf8");
+
 /** A stand-in authorization. Never carries a key — only the public half. */
 function auth(overrides: Partial<ExecutionAuthorization> = {}): ExecutionAuthorization {
   return {
     wallet: Keypair.generate().publicKey,
     maxLamportsPerTx: 20_000_000,
     maxSlippageBps: 50,
+    maxActiveBinSlippageBps: 300,
     armedAt: new Date().toISOString(),
     ...overrides,
   } as ExecutionAuthorization;
@@ -1260,5 +1271,288 @@ describe("onchain executor — redundant InitializeBinArray instructions are dro
     );
     assert.deepEqual(dropped, []);
     assert.equal(kept.length, 2);
+  });
+});
+
+/*
+ * THE ACTIVE-BIN RACE (9 Sep 2026, real money).
+ *
+ * The compute-budget defects were fixed on 8 Sep and the next funded wide open still
+ * did not land. The funding transactions were rejected by the PROGRAM, not the meter:
+ * `ExceededBinSlippageTolerance` (custom 6004).
+ *
+ * One line of the SDK explains it. `addLiquidityByStrategyChunkable` derives the
+ * program's active-bin tolerance from the same `slippage` field that bounds a price:
+ *
+ *     maxActiveBinSlippage = ceil(slippagePercent / (binStep / 100))
+ *
+ * and we were handing it Jupiter's 0.5% SWAP bound. On any pool of bin_step 50 or more
+ * that ceils to ONE BIN — and the instructions carry the active bin as read at BUILD
+ * time, across a window that includes a blockhash lifetime and, on expiry, a rebuild
+ * that re-sent the same stale bin with a fresh blockhash and a higher fee.
+ *
+ * These tests live in this file rather than beside the volatility gate they shipped
+ * with because they import the executor, and that import list is a security boundary
+ * with four entries. The third fix is in `activeBinSlippage.test.ts`.
+ */
+
+async function sdkBundleText(): Promise<string> {
+  const { createRequire } = await import("node:module");
+  const req = createRequire(join(repoRoot, "package.json"));
+  return readFileSync(req.resolve("@meteora-ag/dlmm"), "utf8");
+}
+
+describe("active-bin slippage — a bin count, not a loss bound", () => {
+  it("mirrors the SDK's tolerance formula, ceil included", async () => {
+    const source = await sdkBundleText();
+
+    /*
+     * The whole fix rests on this expression. Note it is `getAndCapMaxActiveBinSlippage`
+     * but the cap only applies to the DEFAULT branch — a supplied percentage is not
+     * capped by the SDK at all, which is why our own hard ceiling has to exist.
+     */
+    assert.match(
+      source,
+      /return slippagePercentage \? Math\.ceil\(slippagePercentage \/ \(binStep \/ 100\)\)/,
+      "the SDK no longer derives maxActiveBinSlippage as ceil(pct / (binStep/100)) — " +
+        "depositSlippage().bins must be re-derived",
+    );
+  });
+
+  it("buys bins in the units the program rejects on", () => {
+    // 3% at bin_step 100 (1% per bin) is 3 bins.
+    assert.equal(depositSlippage(auth(), 100).bins, 3);
+    // bin_step 20 is 0.2% per bin, so the same 3% is 15 bins.
+    assert.equal(depositSlippage(auth(), 20).bins, 15);
+    // A sub-bin tolerance still buys one whole bin — that is the ceil, not a rounding
+    // convenience, and it is what made the old 0.5% survive at all.
+    assert.equal(depositSlippage(auth({ maxActiveBinSlippageBps: 50 }), 250).bins, 1);
+  });
+
+  it("is the number the OLD code could not send: 0.5% was one bin on most pools", () => {
+    /*
+     * The regression this file exists for. At Jupiter's bound, every pool from
+     * bin_step 50 up got a single bin of tolerance — including the whole band the
+     * 70-bin cap used to admit (bin_step 106 and above).
+     */
+    for (const binStep of [50, 100, 106, 250]) {
+      assert.equal(
+        depositSlippage(auth({ maxActiveBinSlippageBps: HARD_MAX_SLIPPAGE_BPS }), binStep).bins,
+        1,
+        `bin_step ${binStep} at the swap bound`,
+      );
+    }
+    // And what the new default buys on the same pools.
+    assert.equal(depositSlippage(auth(), 106).bins, 3);
+  });
+
+  it("keeps the two bounds separate, and neither can be widened by configuration", () => {
+    assert.notEqual(HARD_MAX_ACTIVE_BIN_SLIPPAGE_BPS, HARD_MAX_SLIPPAGE_BPS);
+
+    // Clamped DOWN only, exactly like the swap bound.
+    assert.equal(
+      resolveOnchainConfig({ ONCHAIN_MAX_ACTIVE_BIN_SLIPPAGE_BPS: "5000" })
+        .maxActiveBinSlippageBps,
+      HARD_MAX_ACTIVE_BIN_SLIPPAGE_BPS,
+    );
+    assert.equal(
+      resolveOnchainConfig({ ONCHAIN_MAX_ACTIVE_BIN_SLIPPAGE_BPS: "120" })
+        .maxActiveBinSlippageBps,
+      120,
+    );
+    // Widening the bin tolerance must not touch the swap bound.
+    assert.equal(
+      resolveOnchainConfig({ ONCHAIN_MAX_ACTIVE_BIN_SLIPPAGE_BPS: "1000" }).maxSlippageBps,
+      HARD_MAX_SLIPPAGE_BPS,
+    );
+
+    // A hand-built config cannot get past authorizeExecution either.
+    const overWide = {
+      armed: true,
+      maxLamportsPerTx: 1_000,
+      maxSlippageBps: HARD_MAX_SLIPPAGE_BPS,
+      maxActiveBinSlippageBps: HARD_MAX_ACTIVE_BIN_SLIPPAGE_BPS + 1,
+      computeUnitLimit: 400_000,
+      minPriorityMicroLamports: 1,
+      maxPriorityMicroLamports: 2,
+      priorityEscalation: 2,
+      maxBuildAttempts: 3,
+      jupiterSwapApiUrl: "https://example.invalid",
+    } as OnchainConfig;
+    assert.throws(() => authorizeExecution(overWide), /active-bin slippage/);
+  });
+
+  it("refuses a nonsense tolerance or bin step rather than sending one", () => {
+    for (const bad of [0, -1, Number.NaN]) {
+      assert.throws(() => depositSlippage(auth(), 100, bad), ExecutionLimitError, `bps ${bad}`);
+    }
+    for (const bad of [0, -100, Number.NaN]) {
+      assert.throws(() => depositSlippage(auth(), bad), ExecutionLimitError, `binStep ${bad}`);
+    }
+  });
+
+  it("no longer hands the swap bound to the deposit", () => {
+    /*
+     * Source-level, because the defect was invisible at runtime: both numbers are
+     * "slippage", both are valid, and the wrong one produced a position that simply
+     * never funded. A reintroduction would look like a cleanup.
+     */
+    assert.doesNotMatch(
+      executorSourceText,
+      /slippage:\s*slippageBps\s*\/\s*100/,
+      "the DLMM deposit is taking Jupiter's price-slippage bound again",
+    );
+    assert.match(executorSourceText, /slippage:\s*slip\.percent/);
+  });
+});
+
+describe("active-bin slippage — widening it widens what the program may pull", () => {
+  it("mirrors the SDK's max-deposit formula", async () => {
+    const source = await sdkBundleText();
+    assert.match(
+      source,
+      /mul\(new \(0, _decimaljs2\.default\)\(100 \+ slippage\)\)\.div\(new \(0, _decimaljs2\.default\)\(100\)\)\.floor\(\)/,
+      "the SDK no longer sizes maxDepositAmount as floor(amount x (100 + pct) / 100)",
+    );
+  });
+
+  it("charges the widened figure, not the nominal one", () => {
+    const { depositCeilingFactor } = depositSlippage(auth(), 100);
+    // 3% over 1 SOL.
+    assert.equal(maxDepositLamports(1_000_000_000, depositCeilingFactor), 1_030_000_000);
+    // Floor, like the SDK's.
+    assert.equal(maxDepositLamports(101, depositCeilingFactor), 104);
+
+    /*
+     * The reason this matters at all: the spend ceiling has to face the number the
+     * transaction can actually move. Charging the nominal deposit while authorising a
+     * 3% larger pull is the same defect class this file already fixed for bin-array
+     * rent — an advertised bound that is not the enforced one.
+     */
+    assert.match(
+      executorSourceText,
+      /maxDepositLamports\(params\.amountLamports, slip\.depositCeilingFactor\) \+\s*\n\s*positionRentLamports/,
+      "the narrow path is charging the nominal deposit to the spend ceiling again",
+    );
+    assert.match(
+      executorSourceText,
+      /maxDepositLamports\(params\.amountLamports, slip\.depositCeilingFactor\) \+\s*\n\s*binArrayRentLamports/,
+      "the wide path is charging the nominal deposit to the spend ceiling again",
+    );
+  });
+});
+
+describe("wide funding — a rebuild carries a fresh active bin", () => {
+  it("refetches pool state before rebuilding, or the rebuild is a no-op", () => {
+    /*
+     * The SDK builds from `this.lbPair`, which it CACHES. Without the refetch,
+     * `addLiquidityByStrategyChunkable` hands back byte-identical instructions and the
+     * only thing the rebuild changes is the fee — escalating the price of a
+     * transaction that is going to be rejected for the same reason.
+     */
+    const rebuild = executorSourceText.slice(
+      executorSourceText.indexOf("rebuild: async (index, attempt)"),
+      executorSourceText.indexOf("prepare: (legacy)"),
+    );
+    assert.ok(rebuild.length > 0, "the wide funding path no longer passes a rebuild");
+    assert.match(rebuild, /await pool\.refetchStates\(\)/);
+    assert.ok(
+      rebuild.indexOf("refetchStates") < rebuild.indexOf("addLiquidityByStrategyChunkable"),
+      "the pool is rebuilt from state it read BEFORE refetching",
+    );
+  });
+
+  it("treats the OTC-SOL rejection as rebuildable, by name and by raw code", () => {
+    /*
+     * The exact text from the 9 Sep 2026 incident. It is matched two ways because the
+     * two layers report it differently: the cluster's simulation LOGS carry the Anchor
+     * name, while the error MESSAGE that reaches us usually carries only the hex.
+     * Matching one and not the other passes a unit test and fails on the wallet.
+     */
+    const message =
+      "Transaction simulation failed: Error processing Instruction 6: " +
+      "custom program error: 0x1774";
+    const logs = [
+      "Program log: Instruction: RebalanceLiquidity",
+      "Program log: AnchorError: ExceededBinSlippageTolerance. Error Number: 6004.",
+    ];
+
+    assert.equal(isStaleActiveBinRejection(logs, message), true);
+    assert.equal(isStaleActiveBinRejection(null, message), true, "raw hex alone");
+    assert.equal(isStaleActiveBinRejection(logs, ""), true, "logs alone");
+
+    // Everything else stays terminal. A compute overflow rebuilt identically is the
+    // 7 Sep failure repeated at a higher fee.
+    assert.equal(
+      isStaleActiveBinRejection(
+        ["Program failed to complete: exceeded CUs meter at BPF instruction"],
+        "Transaction simulation failed: exceeded compute budget",
+      ),
+      false,
+    );
+    assert.equal(isStaleActiveBinRejection(null, "custom program error: 0x1775"), false);
+  });
+
+  it("rebuilds a PREFLIGHT rejection, which is where the incident actually died", () => {
+    /*
+     * Without this the rebuild is dead code on the incident it was written for.
+     * `sendAndConfirm` rebuilds only after a blockhash EXPIRES, and the OTC-SOL funding
+     * transaction never got that far — it was refused in simulation, so the terminal
+     * branch threw on the first and only attempt.
+     *
+     * Rebuilding here is SAFER than the expiry path, not looser: preflight means
+     * nothing was broadcast, where expiry only means the old bytes can no longer land.
+     */
+    const guard = executorSourceText.slice(
+      executorSourceText.indexOf("const preflight = preflightRejection(err);"),
+      executorSourceText.indexOf("const status = await conn.getSignatureStatus(signature)"),
+    );
+    assert.match(guard, /options\.rebuildableRejection\?\.\(preflight\.logs, message\) === true/);
+    assert.match(guard, /attempt \+ 1 < config\.maxBuildAttempts/);
+    // It must CONTINUE the loop, not fall through to the terminal throw.
+    // Anchored on the TERMINAL message, not on "rejected at preflight" — the new
+    // warn line contains that phrase too, and matching it would pass either way.
+    assert.ok(guard.indexOf("continue;") < guard.indexOf("so it never reached the network"));
+
+    // And the wide funding path is what supplies it.
+    assert.match(executorSourceText, /rebuildableRejection: isStaleActiveBinRejection/);
+  });
+
+  it("only rebuilds on a later attempt, which is what keeps the retry rule intact", () => {
+    /*
+     * `sendAndConfirm` invokes its builder on the first attempt and then only after the
+     * previous blockhash EXPIRED, which makes the previous signature permanently
+     * unlandable. Rebuilding there is as safe as re-blockhashing, which that loop
+     * already does — but only there. A rebuild on any other path would be building a
+     * second transaction on top of one that may still be in flight.
+     */
+    assert.match(executorSourceText, /if \(attempt > 0 && context\.rebuild\)/);
+  });
+
+  it("refuses a rebuild that partitions the deposit differently", () => {
+    /*
+     * The chunk index is a position in a sequence, and part of that sequence may
+     * already have landed. If a rebuild returns a different number of chunks, index i
+     * no longer means the same bin range, and funding it would deposit into the wrong
+     * one. Fail-closed: the partial-execution error names what landed.
+     */
+    assert.match(
+      executorSourceText,
+      /if \(fresh\.length !== transactions\.length\) \{[\s\S]{0,400}?refusing to map/,
+    );
+  });
+
+  it("re-prepares the rebuilt transaction, so the CU budget and init-drop still apply", () => {
+    /*
+     * `prepare` supplies the compute budget the SDK declines to attach and drops the
+     * redundant `initializeBinArray` instructions. Running it only on the first build
+     * would send a rebuilt transaction with neither — reintroducing the 8 Sep failure
+     * on the retry path only, where it would look like a different bug.
+     */
+    const loop = executorSourceText.slice(
+      executorSourceText.indexOf("for (const [index, original] of transactions.entries())"),
+      executorSourceText.indexOf("return landed;"),
+    );
+    assert.ok(loop.indexOf("source = replacement") < loop.indexOf("context.prepare?.(source)"));
   });
 });

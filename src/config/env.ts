@@ -231,6 +231,32 @@ const EnvSchema = z
     /** "reject" (fail closed) or "allow" when the 24h change is unavailable. */
     VOLATILITY_ON_UNKNOWN: z.enum(["reject", "allow"]).default("reject"),
 
+    /*
+     * EXECUTION-TIME volatility, which is a different question from the three gates
+     * above and is measured in a different unit.
+     *
+     * Those gates ask whether a pool is a good place to provide liquidity — a pump
+     * already run, a token that moves 20%/h. This one asks whether the pool will hold
+     * still long enough for a deposit to LAND. The DLMM program bakes the active bin
+     * into the funding instructions and rejects them if the pool has drifted more than
+     * `maxActiveBinSlippage` bins by the time they execute
+     * (`ExceededBinSlippageTolerance`), so the quantity that matters is bins of drift
+     * per unit of execution time, not percent per hour.
+     *
+     * A pool can pass all three screening gates and still lose this race: 20%/h on a
+     * bin_step-100 pool is 20 bins an hour, and a funding sequence that takes a minute
+     * and change against a 3-bin tolerance is a coin flip. Live-only, pre-swap, and a
+     * free refusal.
+     */
+    /** Seconds a funding sequence is assumed to take from build to land. */
+    LIVE_EXECUTION_WINDOW_SECONDS: numeric(90),
+    /**
+     * Refuse when projected bin drift over that window exceeds this multiple of the
+     * active-bin tolerance the deposit will carry. 1 means "refuse when the pool is
+     * expected to outrun the tolerance"; Infinity disables the gate.
+     */
+    LIVE_MAX_BIN_DRIFT_RATIO: numeric(1),
+
     /**
      * How many recent losing closes are quoted back to the model when it picks a pool.
      *

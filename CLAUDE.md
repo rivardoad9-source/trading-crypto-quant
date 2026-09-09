@@ -459,6 +459,125 @@ Two details that are load-bearing:
   narrow open, `removeLiquidity` and `claimSwapFee`; if a bump removes it, the build
   fails instead of the wallet.
 
+### The active-bin race: one knob held two quantities (9 Sep 2026)
+
+The compute-budget defects above were fixed on 8 Sep, and the next wide open still did
+not land. This time the funding transactions were refused by the **program**, not the
+meter: `ExceededBinSlippageTolerance` (custom **6004** in the IDL).
+
+**One line of the SDK explains it.** `addLiquidityByStrategyChunkable` derives the
+program's active-bin tolerance from the same `slippage` field that bounds a price:
+
+```
+maxActiveBinSlippage = getAndCapMaxActiveBinSlippage(slippage, binStep, 3)
+                     = ceil(slippagePercent / (binStep / 100))     // in BINS
+```
+
+and `openPosition` was handing it `resolveSlippageBps(...) / 100` — **Jupiter's 0.5%
+swap bound**. On any pool of `bin_step` 50 or more that ceils to **one bin**, including
+the entire band the 70-bin cap admits (`bin_step` 106 and up). The instructions carry
+the active bin as read at BUILD time, so one bin of tolerance had to survive a window
+that includes a blockhash lifetime — and, on expiry, a rebuild that re-sent the same
+stale active bin with a fresh blockhash and a higher fee.
+
+**Note the name lies slightly, and it matters.** `getAndCapMaxActiveBinSlippage` caps
+nothing when a percentage is supplied; the `MAX_ACTIVE_BIN_SLIPPAGE = 3` default applies
+only to the branch that receives none. So the SDK will send whatever tolerance it is
+given, which is why our own hard ceiling has to exist.
+
+**Two quantities, one knob, and the tight one won.** They are not the same kind of
+number and must not share a bound:
+
+| | what it bounds | what a bp buys |
+|---|---|---|
+| `HARD_MAX_SLIPPAGE_BPS` (50) | a Jupiter SWAP | money the fill can lose |
+| `HARD_MAX_ACTIVE_BIN_SLIPPAGE_BPS` (1000) | a DLMM DEPOSIT | bins of drift the funding survives |
+
+`ONCHAIN_MAX_ACTIVE_BIN_SLIPPAGE_BPS` defaults to **300** (3 bins at `bin_step` 100, 15
+at 20). It is still clamped down only, for the same reason the swap bound is: a bound
+configuration can widen is not a bound.
+
+**Widening it is not free, and the cost is charged rather than assumed away.** The SDK
+applies the SAME percentage to `maxDeposit{X,Y}Amount`
+(`floor(amount x (100 + pct) / 100)`), so a wider tolerance also raises what the program
+may pull from the wallet. `maxDepositLamports` mirrors that formula and both paths now
+charge the WIDENED figure to `assertWithinSpendLimit` — the same defect class this file
+already fixed for bin-array rent, where an advertised bound was not the enforced one.
+
+Three fixes, and they are separate on purpose:
+
+1. **`depositSlippage()`** resolves the tolerance against the pool's own bin step and
+   returns bins, percent and the deposit ceiling factor together, so a call site cannot
+   convert one and forget the other. Both formulas MIRROR the installed SDK and
+   `onchainExecutor.test.ts` binds them to its bundle text.
+2. **A funding rebuild carries a FRESH active bin, and a PREFLIGHT rejection now earns
+   one.** The second half is what makes the first half reachable: the OTC-SOL funding
+   transaction was refused in SIMULATION, and `sendAndConfirm` treats a preflight
+   rejection as terminal — correctly, for every other cause, because identical
+   instructions would be refused identically. `ExceededBinSlippageTolerance` is the
+   exception, because the rebuilt instructions are NOT identical: the rejection is a
+   statement about elapsed time, not about the work. Without that branch the rebuild
+   would have been dead code on the exact incident it was written for, since the
+   transaction never reached a blockhash expiry. Rebuilding there is SAFER than the
+   expiry path, not looser: preflight means nothing was broadcast, where expiry only
+   means the old bytes can no longer land. `isStaleActiveBinRejection` matches the
+   Anchor name AND the raw `0x1774`, because the logs carry one and the message the
+   other. Every other preflight rejection stays terminal. `sendSequentially` takes a
+   `rebuild` callback, and the wide path's calls `pool.refetchStates()` before
+   re-deriving the instructions. The refetch is the load-bearing half: the SDK builds
+   from `this.lbPair`, which it caches, so without it a "rebuild" hands back
+   byte-identical instructions and escalates the fee on a transaction that will be
+   rejected for the same reason. **This does not weaken the rebroadcast rule** —
+   `sendAndConfirm` invokes its builder on the first attempt and then only after the
+   previous blockhash has EXPIRED, which makes the previous signature permanently
+   unlandable; changing instructions there is exactly as safe as changing the
+   blockhash, which that loop already does. A rebuild that returns a different number
+   of chunks is REFUSED rather than mapped by index, because part of the sequence may
+   already have landed.
+3. **An execution-time volatility gate**, `ActiveBinRaceError`, before the swap.
+
+### The screener's volatility gates cannot see this, and the unit is why
+
+`MAX_PRICE_SURGE_1H_PCT`, `MAX_PRICE_CHANGE_24H_PCT` and `MAX_REALIZED_VOL_PCT_PER_HOUR`
+ask whether a pool is a good place to HOLD liquidity, in percent per hour. The question
+this failure poses is whether the pool will hold still long enough for a deposit to
+LAND, and the program answers it in BINS. A pool at 20%/h passes the screener and, at
+`bin_step` 10, drifts **5 bins in 90 seconds** against a 3-bin tolerance.
+
+So `openLivePosition` converts the measurement into the unit that decides:
+
+```
+binsPerHour   = rvolPctPerHour / (binStep / 100)
+projectedBins = binsPerHour x (LIVE_EXECUTION_WINDOW_SECONDS / 3600)
+refuse when projectedBins > toleranceBins x LIVE_MAX_BIN_DRIFT_RATIO
+```
+
+Four properties are load-bearing:
+
+- **It is a FREE refusal and earns no breaker strike.** It runs before the balancing
+  swap, and volatility is a fact about the pool right now — not evidence the chain will
+  always reject this open. Benching a pool for 24 hours over a busy half-hour is the
+  gate punishing the wrong thing. Same reasoning as `UnrecoverableRentError`.
+- **It reuses `VOLATILITY_ON_UNKNOWN`** rather than introducing a second policy for the
+  same question. Two knobs answering "what if volatility cannot be measured" means one
+  concept holds two answers depending on which gate you ask.
+- **The arithmetic is crude on purpose.** It is an order-of-magnitude check, not a
+  forecast, which is why the default ratio is 1 rather than something finer.
+- **When it cannot run it SAYS SO.** The bin step comes from `quoteOpenCost`, which only
+  runs under the live micro-capital profile, so with `LIVE_MICRO_CAPITAL=false` the log
+  reads `NO BIN-DRIFT CHECK ... skipped, not passed`. A gate that silently does nothing
+  is the "all bin arrays exist" line again.
+
+The incident that produced all three is `docs/incidents/2026-09-09-exceeded-bin-slippage-wide-fund.md`
+(OTC-SOL, 77 bins, ~0.033 SOL). Its own three candidate fixes are these three; the
+safety nets from 6d685d8 worked — auto-unwind finalized, unfunded position auto-closed,
+no orphan, and the breaker benched the pool.
+
+**Still unproven by a funded open.** Every one of these three is verified by unit tests,
+by the SDK's own shipped source, and by the IDL — not by a wide position that landed.
+`src/tests/activeBinSlippage.test.ts` and the active-bin block in
+`onchainExecutor.test.ts`.
+
 ### The pre-swap rehearsal is the gate that did not exist
 
 Every other gate names a condition and checks it — the width, the rent, the denylist.

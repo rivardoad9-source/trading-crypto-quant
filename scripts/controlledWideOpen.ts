@@ -16,8 +16,9 @@
  *     --pool FmMXv9kLxz... --pair "Buttcoin-SOL"            # dry run
  *   ... --execute                                           # spends 0.1 SOL
  */
-import { createRequire } from "node:module";
-const require = createRequire(import.meta.url);
+// Marks this file a module so the top-level awaits below are legal. The dynamic
+// imports are deliberate (env parses on import); a static one would defeat them.
+export {};
 
 const { env } = await import("../src/config/env.js");
 const { openLivePosition } = await import("../src/services/liveExecution.js");
@@ -84,7 +85,7 @@ try {
     solPriceUsd: null,
   });
   console.log("\n=== OPEN RESULT ===");
-  console.log(JSON.stringify(outcome, (k, v) => (typeof v === "bigint" ? v.toString() : v), 2));
+  console.log(JSON.stringify(outcome, (_key, v) => (typeof v === "bigint" ? v.toString() : v), 2));
   console.log("\n✅ Wide position opened — funding transactions landed.");
   console.log("Next: verify on-chain, then CLOSE the test position to return SOL.");
 } catch (err) {
