@@ -407,8 +407,16 @@ Structural fix (commit after `9b96d7e`):
 2. Executor wide-path catch now AUTO-CLOSES a created-but-unfunded position
    (best effort, `closePosition2` on the account it just created) — no more
    orphan accounts waiting for a human-run script.
-Residual risk: funding can still fail for reasons other than missing arrays; those
-now cost only the swap round-trip (auto-unwind) with no orphan left behind.
+
+**"No orphan left behind" was true only of an UNFUNDED account, and this used to say it
+without the qualifier.** `closePosition` does not withdraw, so on a position whose
+funding PARTLY landed that auto-close is refused by the program — and the catch logged
+"could not auto-close unfunded position" about an account that was funded and earning.
+It now reads the position first and says so instead of sending a doomed transaction; the
+recovery that does work lives in `openLivePosition` and is described under "The
+half-landed open" below. Residual risk after that: funding can still fail for reasons
+other than missing arrays, and those now cost the swap round-trip (auto-unwind) plus
+whatever the recovery could not put back.
 
 ### The compute budget: `ONCHAIN_COMPUTE_UNIT_LIMIT` is a FLOOR, not a cap
 
@@ -577,6 +585,100 @@ no orphan, and the breaker benched the pool.
 by the SDK's own shipped source, and by the IDL — not by a wide position that landed.
 `src/tests/activeBinSlippage.test.ts` and the active-bin block in
 `onchainExecutor.test.ts`.
+
+### The half-landed open: a funded position the engine believed did not exist (10 Sep 2026)
+
+**Nothing lost, and it is still the worst failure so far**, because it is the only one
+where the engine was WRONG ABOUT WHAT IT OWNED. KNOTS-SOL, on a pool that was pumping:
+the balancing swap confirmed, the wide path's funding transactions went out one at a
+time, **two landed**, and the next was refused at preflight for insufficient funds
+(`TransferChecked`, the SPL token program's `0x1`). The engine reported "open failed",
+sold the wallet's leftover KNOTS back to SOL, benched the pool for 24 hours, and moved
+on. Position `ENNpRNx6aotJH4hFtT7NMB6TdeAUm9QWBGX9pYUBkDLZ` was **partially funded and
+stayed on-chain**, earning $18.47 (+11.6%) over four hours with nothing valuing it,
+nothing enforcing its stop-loss, and `/status` reporting **zero active positions**. A
+human found it and closed it.
+
+**Three rules meet in the hole, and every one of them is right.** No row is written
+until the open CONFIRMS, so a half-landed open writes nothing. The failure path unwinds
+the WALLET, because a stranded token balance is what a failed open used to leave behind.
+And `requirePosition` fails closed when the owner scan does not list a position — the
+correct answer when the caller knows only the owner, and the exact wrong one here, where
+the caller already holds the address the failure named. The gap between them is a
+position that exists, holds capital, and has no owner in the system.
+
+**`DlmmPartialExecutionError` was already the whole diagnosis and nothing acted on it.**
+It is raised only when some of an operation's transactions landed, and it NAMES the
+position. `openLivePosition`'s catch now reads that account before it touches the wallet:
+
+1. **The position first, the wallet second, and the order is the fix.** The withdrawal
+   returns the paired token to the wallet, so closing first means the existing auto-unwind
+   sweeps it up in the same pass. Reversed, the unwind sells against a balance the
+   position is still holding and leaves the withdrawn tokens behind.
+2. **It reads the ACCOUNT, not the owner index.** `readPositionDirect` is a
+   `getAccountInfo` on the address the error named — no `getProgramAccounts` scan to lag
+   behind an account created seconds ago. What that loses is the scan's implicit proof of
+   ownership, so it is re-established explicitly and **from the SDK's own memcmp
+   descriptors** (`positionLbPairFilter`, `positionOwnerFilter`) rather than from offsets
+   written out here: hand-writing `8` and `40` would keep compiling after a layout change
+   and silently compare the wrong bytes, and a check that always passes is worse than none.
+   An account that is there but is not ours THROWS.
+3. **Recovery is a withdraw-claim-close, never a close.** `closePosition` does not
+   withdraw, which is why the wide path's own auto-close was refused by the program on
+   this account while logging *"could not auto-close unfunded position"* about a position
+   that was funded and earning. `closeOrphanPosition` uses `removeLiquidity` at 10 000 bps
+   with `shouldClaimAndClose`, sharing ONE implementation with the tracked close so the
+   recovery path cannot drift into closing without claiming. Unclaimed fees count as worth
+   recovering: closing without claiming throws them away with the account.
+4. **It never throws, and it never writes a row.** It runs on a failure path that still
+   has to unwind the wallet, so a recovery that threw would trade a funded position for a
+   stranded token balance. A failure is reported as `state: "failed"` and the alert says
+   **"THE ON-CHAIN POSITION IS STILL OPEN"**, the same words `/close_all` uses for the
+   same situation. And a recovered position is not a holding — recording one would be the
+   fabricated row the "no row until the open confirms" rule exists to prevent, reached
+   from the other direction.
+5. **A missing report is reported.** `StrandedSwapError`'s `orphan` defaults to null
+   because most failed opens create nothing, but on a `DlmmPartialExecutionError` that
+   default would be a lie by omission — so null there renders as *"A POSITION MAY STILL BE
+   FUNDED ON-CHAIN … CHECK <address> BY HAND"*.
+
+**The narrow path was next, and it had never been suspected because it is atomic.**
+Atomic is not the same as safe: its single fused transaction was sent **BLIND**. The
+rehearsal skips it on purpose (the deposit cannot be simulated before the swap that funds
+it), so nothing between the swap and the cluster ever looked at it — and the SDK's own
+simulation is not a check, it is a compute-budget estimate:
+`getEstimatedComputeUnitIxWithBuffer` swallows a failed simulation, falls back to 1.4M CU
+and sends anyway. `openPosition` now simulates it first, with the SAME budget the send
+will carry (`simulateAgainstCluster` is the one resolver both it and the rehearsal use;
+two copies is how they drift). On a refusal it **re-quotes against the chain** —
+`NARROW_OPEN_REQUOTE_ATTEMPTS` = 2 — and only for the two causes a rebuild can change:
+
+| rejection | remedy |
+|---|---|
+| shortfall (`isInsufficientFundsRejection` — token `0x1`, and the `{"Custom":1}` form a simulation actually returns) | re-read the ATA and deposit what is really there |
+| stale active bin (`isStaleActiveBinRejection`, `0x1774`) | `refetchStates()` and rebuild |
+
+Four properties there are load-bearing:
+
+- **A simulation that could not RUN sends anyway.** An RPC that did not answer is not
+  evidence the open would fail; failing closed on a provider hiccup would strand the swap
+  over something that has nothing to do with the pool. Same rule as the rehearsal.
+- **Anything else is refused, not retried.** Rebuilding cannot change it, and sending
+  would buy a guaranteed failure at the price of a priority fee.
+- **The re-quote only moves DOWN** (`BN.min`). A balance that reads larger must never
+  raise the deposit — that would spend on an instruction nobody authorised. An unreadable
+  balance is `null`, never `0`, or the re-quote would deposit nothing and report that as
+  the position's funding.
+- **The executor reports what it actually deposited.** `DlmmOpenResult` adds
+  `depositedPairedAmount` and the bridge writes THAT, not its own pre-open balance read,
+  which a re-quote makes stale. Same defect class as the four reporting fixes above.
+
+`src/tests/orphanRecovery.test.ts` is the bridge's half; the executor's half is in
+`onchainExecutor.test.ts`, which is the file allowed to import the signer — **the
+allowlist still has four entries**, and keeping it there is why the tests are split.
+
+**Still unproven by a funded open.** Verified by unit tests and by the SDK's shipped
+source, not by a partial open that was recovered on-chain.
 
 ### The pre-swap rehearsal is the gate that did not exist
 

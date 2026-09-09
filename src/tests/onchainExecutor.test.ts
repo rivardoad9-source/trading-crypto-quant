@@ -39,7 +39,9 @@ import {
   positionAccountBytes,
   binRangeFromPrices,
   depositSlippage,
+  isInsufficientFundsRejection,
   isStaleActiveBinRejection,
+  positionHoldsValue,
   dlmmExecutor,
   maxDepositLamports,
   isExecutionArmable,
@@ -1554,5 +1556,275 @@ describe("wide funding — a rebuild carries a fresh active bin", () => {
       executorSourceText.indexOf("return landed;"),
     );
     assert.ok(loop.indexOf("source = replacement") < loop.indexOf("context.prepare?.(source)"));
+  });
+});
+
+/**
+ * The executor's half of the 10 Sep 2026 KNOTS-SOL failure — a wide open whose funding
+ * transactions HALF-LANDED, leaving a real, funded, unmonitored position on-chain.
+ *
+ * The bridge's half (what to do about it, and in what order) is
+ * `src/tests/orphanRecovery.test.ts`. These are the executor's: reading a position by
+ * ADDRESS rather than by owner scan, recovering it with a withdraw-claim-close rather
+ * than a close that cannot withdraw, and — on the narrow path, which is atomic and was
+ * therefore never suspected — not sending the fused open blind in the first place.
+ */
+describe("onchain executor — recovering a position the owner index cannot see", () => {
+  const executorSource = readFileSync(join(srcDir, "services", "onchainExecutor.ts"), "utf8");
+
+  /** The body of one method of the `dlmmExecutor` object literal. */
+  function adapterMethod(name: string): string {
+    const adapter = executorSource.slice(executorSource.indexOf("export const dlmmExecutor"));
+    const start = adapter.indexOf(`  async ${name}(`);
+    assert.ok(start > 0, `the adapter no longer defines ${name}`);
+    const rest = adapter.slice(start);
+    const end = rest.indexOf("\n  async ", 1);
+    return end > 0 ? rest.slice(0, end) : rest;
+  }
+
+  it("does not route the orphan close through the owner scan", () => {
+    /*
+     * `getPositionsByUserAndLbPair` is a getProgramAccounts scan, and an index can lag an
+     * account created seconds ago. `requirePosition`'s fail-closed refusal is right when
+     * the caller knows only the owner, and wrong here, where the caller already holds the
+     * address the failure named — that refusal IS the bug being fixed: the engine cannot
+     * close what it cannot see.
+     */
+    const body = adapterMethod("closeOrphanPosition");
+    assert.ok(!body.includes("requirePosition"), "the orphan close uses the owner-scan lookup");
+    assert.ok(
+      !body.includes("getPositionsByUserAndLbPair"),
+      "the orphan close scans by owner instead of reading the account",
+    );
+    assert.match(body, /readPositionDirect\(/);
+  });
+
+  it("verifies identity with the SDK's own memcmp offsets, never hand-written ones", () => {
+    /*
+     * A direct read loses the scan's implicit proof of ownership, so it is re-established
+     * explicitly — and from `positionLbPairFilter` / `positionOwnerFilter`, which are
+     * exactly what the scan filters on, so an SDK that moves the layout moves both
+     * together. Hand-writing 8 and 40 would keep compiling after such a change and
+     * silently compare the wrong bytes, and a check that always passes is worse than no
+     * check at all.
+     */
+    const direct = executorSource.slice(
+      executorSource.indexOf("async function readPositionDirect"),
+      executorSource.indexOf("export function positionHoldsValue"),
+    );
+    assert.ok(direct.length > 0, "readPositionDirect is gone");
+    assert.match(direct, /positionLbPairFilter\(pool\.pubkey\)/);
+    assert.match(direct, /positionOwnerFilter\(owner\)/);
+    assert.match(direct, /memcmp\.offset/);
+    assert.ok(
+      !/subarray\(\s*(8|40)\s*,/.test(direct),
+      "the position layout offsets are hand-written again",
+    );
+    // An account that is there but is not ours must throw, not be acted on.
+    assert.match(direct, /Refusing to act on it/);
+  });
+
+  it("still demands an authorization to close anything", () => {
+    assert.match(
+      executorSource,
+      /closeOrphanPosition\(\s*\n?\s*auth: ExecutionAuthorization/,
+      "closeOrphanPosition no longer requires an ExecutionAuthorization",
+    );
+  });
+
+  it("withdraws and claims rather than closing, through the same helper as a real close", () => {
+    /*
+     * `closePosition` does not withdraw — which is why the wide path's own auto-close was
+     * refused by the program on the KNOTS-SOL account while logging "could not auto-close
+     * unfunded position" about a position that was funded and earning. Recovery needs
+     * removeLiquidity(10 000 bps) + shouldClaimAndClose, and it shares ONE implementation
+     * with the tracked close so the recovery path cannot drift into closing without
+     * claiming the fees the close would otherwise discard with the account.
+     */
+    assert.match(adapterMethod("closeOrphanPosition"), /withdrawClaimAndClose\(/);
+    assert.match(adapterMethod("closePosition"), /withdrawClaimAndClose\(/);
+    const helper = executorSource.slice(
+      executorSource.indexOf("async function withdrawClaimAndClose"),
+      executorSource.indexOf("export const dlmmExecutor"),
+    );
+    assert.match(helper, /bps: new BN\(10_000\)/);
+    assert.match(helper, /shouldClaimAndClose: true/);
+  });
+
+  it("does not send a doomed close at a position it can see is funded", () => {
+    // The wide path's own auto-close now ASKS whether the position is empty instead of
+    // assuming it. A read that fails still falls through to attempting the close.
+    const wide = executorSource.slice(executorSource.indexOf("BEST-EFFORT AUTO-CLOSE"), -1);
+    assert.match(wide.slice(0, 3_000), /positionHoldsValue\(existing\.positionData\)/);
+    assert.match(wide.slice(0, 3_000), /NOT auto-closing/);
+  });
+
+  it("counts UNCLAIMED FEES as worth recovering, not only liquidity", () => {
+    /*
+     * An empty-binned position can still carry unclaimed swap fees, and closing it
+     * without claiming throws them away with the account. `shouldClaimAndClose` takes
+     * both in one operation, which is why one predicate answers both questions.
+     */
+    const zero = { isZero: () => true };
+    const some = { isZero: () => false };
+    assert.equal(
+      positionHoldsValue({ totalXAmount: "0", totalYAmount: "0", feeX: some, feeY: zero }),
+      true,
+    );
+    assert.equal(
+      positionHoldsValue({ totalXAmount: "0", totalYAmount: "0", feeX: zero, feeY: some }),
+      true,
+    );
+    assert.equal(
+      positionHoldsValue({ totalXAmount: "0", totalYAmount: "0", feeX: zero, feeY: zero }),
+      false,
+    );
+  });
+
+  it("reads held amounts exactly, past the precision Number would lose", () => {
+    // Base units routinely exceed 2^53. A comparison routed through Number could read a
+    // held balance as zero and abandon the position this whole path exists to recover.
+    const zero = { isZero: () => true };
+    assert.equal(
+      positionHoldsValue({
+        totalXAmount: "9007199254740993",
+        totalYAmount: "0",
+        feeX: zero,
+        feeY: zero,
+      }),
+      true,
+    );
+    assert.equal(
+      positionHoldsValue({ totalXAmount: "000", totalYAmount: "0", feeX: zero, feeY: zero }),
+      false,
+    );
+  });
+});
+
+describe("onchain executor — the narrow fused open is no longer sent blind", () => {
+  const executorSource = readFileSync(join(srcDir, "services", "onchainExecutor.ts"), "utf8");
+  const narrow = executorSource.slice(
+    executorSource.indexOf("SIMULATE BEFORE SENDING"),
+    executorSource.indexOf("Wide range: create the account first"),
+  );
+
+  it("tells a shortfall apart from a stale active bin", () => {
+    /*
+     * Two rejections, two remedies, and the codes look alike in a log. The SPL token
+     * program's InsufficientFunds is custom 0x1; the active-bin one is 0x1774. Matching
+     * 0x1 loosely would send the active-bin failure down the re-quote path, shrinking a
+     * deposit that was never short while leaving the real cause unaddressed.
+     */
+    assert.equal(
+      isInsufficientFundsRejection(
+        null,
+        "Transaction simulation failed: Error processing Instruction 4: custom program error: 0x1",
+      ),
+      true,
+    );
+    assert.equal(
+      isInsufficientFundsRejection(["Program log: Error: insufficient funds"], "failed"),
+      true,
+    );
+    // The form a SIMULATION actually returns — structured JSON, not a log line, and this
+    // is read from a simulation. Missing it would send the fixable failure down the
+    // terminal branch whenever the RPC returned no logs.
+    assert.equal(
+      isInsufficientFundsRejection(null, JSON.stringify({ InstructionError: [4, { Custom: 1 }] })),
+      true,
+    );
+
+    assert.equal(isInsufficientFundsRejection(null, "custom program error: 0x1774"), false);
+    assert.equal(
+      isInsufficientFundsRejection(
+        null,
+        JSON.stringify({ InstructionError: [4, { Custom: 6004 }] }),
+      ),
+      false,
+    );
+    assert.equal(isStaleActiveBinRejection(null, "custom program error: 0x1774"), true);
+    assert.equal(
+      isInsufficientFundsRejection(
+        ["Error Number: 6004. Error Message: ExceededBinSlippageTolerance."],
+        "x",
+      ),
+      false,
+    );
+  });
+
+  it("simulates the fused transaction before sending it", () => {
+    /*
+     * The rehearsal deliberately skips this transaction — the deposit cannot be simulated
+     * before the swap that funds it — so nothing between the swap and the cluster ever
+     * looked at it. The SDK does simulate it, but only to SIZE a compute budget:
+     * `getEstimatedComputeUnitIxWithBuffer` swallows a failed simulation and falls back to
+     * 1.4M CU, so a transaction the cluster has already refused is packaged with a bigger
+     * budget and sent anyway.
+     */
+    assert.ok(narrow.length > 0, "the narrow path no longer simulates before sending");
+    assert.match(narrow, /await simulateAgainstCluster\(/);
+    assert.ok(
+      narrow.indexOf("simulateAgainstCluster") < narrow.indexOf("await sendAndConfirm"),
+      "the simulation no longer runs before the send",
+    );
+    assert.match(narrow, /REFUSED IN SIMULATION and NOT ` \+\s*\n\s*`SENT/);
+  });
+
+  it("sends anyway when the simulation could not RUN", () => {
+    // An RPC that did not answer is not evidence the open would fail. Failing closed on a
+    // provider hiccup would strand the swap for a reason that has nothing to do with the
+    // pool — the same rule the rehearsal follows.
+    assert.match(narrow, /if \(!sim\.ran\) \{[\s\S]{0,400}?break;/);
+  });
+
+  it("re-quotes DOWN only, and against the chain rather than the caller's read", () => {
+    // BN.min: a balance that reads LARGER must never raise the deposit — that would spend
+    // money on an instruction nobody authorised.
+    assert.match(narrow, /BN\.min\(pairedForDeposit, new BN\(onChain\.toString\(\)\)\)/);
+    assert.match(narrow, /readAtaBalance\(auth\.wallet, pairedMint, pairedTokenProgram\)/);
+    // An unreadable balance is null, never 0, or the re-quote would deposit nothing and
+    // report that as the position's funding.
+    const helper = executorSource.slice(
+      executorSource.indexOf("async function readAtaBalance"),
+      executorSource.indexOf("Submits a sequence of SDK transactions"),
+    );
+    assert.match(helper, /NULL, never 0/);
+  });
+
+  it("bounds the re-quote, because the swap has already spent", () => {
+    assert.match(executorSource, /const NARROW_OPEN_REQUOTE_ATTEMPTS = 2;/);
+    assert.match(
+      executorSource,
+      /attempt >= NARROW_OPEN_REQUOTE_ATTEMPTS \|\| \(!stale && !short\)/,
+      "the retry bound or the un-retryable branch is gone",
+    );
+  });
+
+  it("reports the amount the chain was asked for, not the one the caller read", () => {
+    /*
+     * A re-quote makes the caller's pre-open balance read stale, and `depositedPairedAmount`
+     * is written to the position row. The executor is the only party that knows what the
+     * deposit actually carried, so it returns it.
+     */
+    assert.match(executorSource, /export interface DlmmOpenResult extends DlmmSendResult/);
+    assert.match(executorSource, /depositedPairedAmount: pairedForDeposit\.toString\(\)/);
+  });
+
+  it("keeps the rehearsal and the pre-send check on ONE budget resolver", () => {
+    /*
+     * A simulation run against a different compute limit than production uses passes
+     * exactly the transactions production then fails. Two copies of that resolution is how
+     * the two drift apart, so there is one.
+     */
+    const helper = executorSource.slice(
+      executorSource.indexOf("async function simulateAgainstCluster"),
+      executorSource.indexOf("A DRESS REHEARSAL"),
+    );
+    assert.match(helper, /resolveComputeUnitLimit\(requested, config\.computeUnitLimit\)/);
+    assert.equal(
+      (executorSource.match(/await simulateAgainstCluster\(/g) ?? []).length,
+      2,
+      "a third simulation site appeared, or one stopped using the shared resolver",
+    );
   });
 });

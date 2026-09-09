@@ -606,6 +606,18 @@ export function resolveComputeUnitLimit(
  * wide path had never completed a live open. `scripts/reproWideFunding.cjs` prints
  * this against a real pool without spending anything.
  */
+/**
+ * How many times the narrow open may be RE-QUOTED after a simulation refuses it.
+ *
+ * Small on purpose. Each attempt costs one build plus one simulation — no fee, no
+ * signature — but the balancing swap has already spent by the time this runs, so the
+ * clock is the enemy: every attempt widens the window in which the active bin drifts
+ * out from under a deposit that was, a moment ago, acceptable. Two re-quotes is enough
+ * for the one condition that actually resolves (read the balance, deposit what is
+ * there); a pool that needs more is a pool this entry should not be chasing.
+ */
+const NARROW_OPEN_REQUOTE_ATTEMPTS = 2;
+
 export const DLMM_FUNDING_CU_PER_CHUNK = 1_000_000;
 export const DLMM_FUNDING_CU_PER_BIN_ARRAY_INIT = 350_000;
 
@@ -810,6 +822,41 @@ export function isStaleActiveBinRejection(
   const haystack = [message, ...(logs ?? [])].join(" | ");
   return /ExceededBinSlippageTolerance|custom program error: 0x1774|Error Number: 6004/i.test(
     haystack,
+  );
+}
+
+/**
+ * Whether a rejection says an ACCOUNT WAS SHORT rather than that the work was wrong.
+ *
+ * The 10 Sep 2026 KNOTS-SOL open died on `TransferChecked` with the SPL token program's
+ * `InsufficientFunds` (custom `0x1`): the deposit asked to move more of the paired token
+ * than the wallet's account actually held. Like a stale active bin, that is a statement
+ * about a QUANTITY the builder can change — re-read the balance, deposit what is really
+ * there — and unlike a stale active bin it does not go away on its own, so a rebuild
+ * that does not re-quote is pointless.
+ *
+ * Deliberately narrow around `0x1`: the token program's InsufficientFunds is code 1, but
+ * so is the first custom error of every other program, and `0x1774` (the active-bin one)
+ * starts with the same characters. The negative lookahead is what keeps the two apart —
+ * without it this function would claim the active-bin rejection as its own and re-quote a
+ * deposit that was never short.
+ *
+ * A false positive costs one extra rebuild attempt that then finds nothing to re-quote
+ * and refuses; a false negative sends a transaction already known to fail. Both are
+ * bounded, which is why matching on text is acceptable here at all.
+ */
+export function isInsufficientFundsRejection(
+  logs: readonly string[] | null,
+  message: string,
+): boolean {
+  const haystack = [message, ...(logs ?? [])].join(" | ").toLowerCase();
+  return (
+    /insufficient funds|insufficient lamports|attempt to debit an account/.test(haystack) ||
+    /custom program error: 0x1(?![0-9a-f])/.test(haystack) ||
+    // A SIMULATION reports the error as structured JSON rather than a log line, and a
+    // simulation is where this is read from. `{"InstructionError":[4,{"Custom":1}]}`
+    // lowercases to this; 6004 cannot collide with it.
+    /"custom":1[,}\]]/.test(haystack)
   );
 }
 
@@ -1276,6 +1323,38 @@ export interface EnsureBinArraysParams {
   upperBinPrice: number;
 }
 
+export interface CloseOrphanPositionParams {
+  poolAddress: string;
+  /**
+   * The position account to recover, as an ADDRESS the caller already holds — normally
+   * `DlmmPartialExecutionError.position` from an open that half-landed.
+   */
+  positionAddress: string;
+}
+
+/**
+ * What the recovery found, and what it did about it. Three states, because they call
+ * for three different sentences in an operator alert.
+ *
+ * `absent` — no account at that address. Nothing was created, or something already
+ *   closed it. Nothing to do and nothing at risk.
+ * `empty` — the account exists and holds neither liquidity nor unclaimed fees. Its RENT
+ *   is recoverable, but nothing that trades is at risk, and the wide open's own catch
+ *   already attempts that close; this path does not duplicate it.
+ * `closed` — it held value, and this call withdrew, claimed and closed it. The amounts
+ *   below are what it held when it was read, so the alert can say how much came back.
+ */
+export interface OrphanPositionOutcome {
+  state: "absent" | "empty" | "closed";
+  /** Base units held when the account was read. Strings: they can exceed 2^53. */
+  liquidityX: string;
+  liquidityY: string;
+  unclaimedFeeX: string;
+  unclaimedFeeY: string;
+  /** Signatures of the close, in submission order. Empty unless `state` is "closed". */
+  signatures: string[];
+}
+
 export interface EnsureBinArraysResult {
   /** Bin arrays this call created on-chain, one transaction each. */
   created: number;
@@ -1301,6 +1380,22 @@ export interface DlmmSendResult {
   sent: SendResult[];
   /** The position account this operation opened or acted on. */
   position: string;
+}
+
+/**
+ * What an OPEN did, which is a strict superset of the above.
+ *
+ * The extra field exists because the narrow path may deposit LESS paired token than it
+ * was asked for: the pre-send simulation can find the wallet short, and the remedy is to
+ * re-quote the deposit down to what the account really holds. The caller used to report
+ * its own pre-open balance read as "deposited", which was true only while nothing could
+ * change the figure in between. Reporting a number the chain did not act on is the
+ * defect class this repository has fixed four times already; the executor is the only
+ * party that knows what it actually asked for, so it says.
+ */
+export interface DlmmOpenResult extends DlmmSendResult {
+  /** Paired-token base units the deposit actually carried. */
+  depositedPairedAmount: string;
 }
 
 /**
@@ -1333,7 +1428,7 @@ export class DlmmPartialExecutionError extends Error {
  * code-review question.
  */
 export interface DlmmExecutor {
-  openPosition(auth: ExecutionAuthorization, params: OpenPositionParams): Promise<DlmmSendResult>;
+  openPosition(auth: ExecutionAuthorization, params: OpenPositionParams): Promise<DlmmOpenResult>;
   ensureBinArrays(
     auth: ExecutionAuthorization,
     params: EnsureBinArraysParams,
@@ -1343,6 +1438,20 @@ export interface DlmmExecutor {
     auth: ExecutionAuthorization,
     params: ClosePositionParams,
   ): Promise<DlmmSendResult>;
+  /**
+   * Recovers a position the engine created but does not own a row for.
+   *
+   * Separate from `closePosition` and deliberately not a flag on it, because the two
+   * answer different questions. `closePosition` closes a position the ENGINE IS
+   * TRACKING and fails closed when the owner scan does not list it — the right answer
+   * when a mistake would target the wrong account. This one is reached only when an
+   * open half-landed and the caller already holds the address the failure named, so
+   * "the scan did not list it" is precisely the condition it has to survive.
+   */
+  closeOrphanPosition(
+    auth: ExecutionAuthorization,
+    params: CloseOrphanPositionParams,
+  ): Promise<OrphanPositionOutcome>;
 }
 
 /*
@@ -1640,6 +1749,80 @@ export async function quoteOpenCost(params: {
 }
 
 /**
+ * Runs one instruction set against the cluster and reports what came back.
+ *
+ * THE BUDGET IS THE ONE PRODUCTION WILL CARRY, resolved through the same
+ * `resolveComputeUnitLimit` the send path uses. A simulation run against a different
+ * compute limit than production uses would pass exactly the transactions production then
+ * fails — which is the whole point of simulating, inverted. This function exists so the
+ * rehearsal and the narrow path's pre-send check cannot drift apart on that detail;
+ * they used to be one copy and a plan to write the second.
+ *
+ * `ran: false` is the load-bearing distinction. A simulation the RPC could not RUN is
+ * NOT evidence the transaction would fail, so every caller must be able to tell "the
+ * cluster refused this work" from "the cluster did not answer" and fail open on the
+ * second. Collapsing them would stop all trading whenever a provider hiccups.
+ *
+ * Read-only: it takes no `ExecutionAuthorization` because it cannot spend, and a
+ * function that cannot spend should not be able to ask for permission to.
+ */
+interface ClusterSimulation {
+  /** Whether the cluster actually simulated. False = no answer, NOT a refusal. */
+  ran: boolean;
+  computeUnitLimit: number;
+  unitsConsumed: number | null;
+  /** The program's error, JSON-stringified. Null means it simulated clean. */
+  error: string | null;
+  logs: string[] | null;
+}
+
+async function simulateAgainstCluster(
+  instructions: TransactionInstruction[],
+  payer: PublicKey,
+  recentBlockhash: string,
+  config: OnchainConfig,
+): Promise<ClusterSimulation> {
+  const requested = readRequestedComputeUnits(instructions);
+  const { units } = resolveComputeUnitLimit(requested, config.computeUnitLimit);
+  const withoutBudget = instructions.filter(
+    (ix) => !ix.programId.equals(ComputeBudgetProgram.programId),
+  );
+
+  const message = new TransactionMessage({
+    payerKey: payer,
+    recentBlockhash,
+    instructions: [
+      ComputeBudgetProgram.setComputeUnitLimit({ units }),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: config.minPriorityMicroLamports }),
+      ...withoutBudget,
+    ],
+  }).compileToV0Message();
+
+  try {
+    const sim = await getConnection().simulateTransaction(new VersionedTransaction(message), {
+      sigVerify: false,
+      replaceRecentBlockhash: true,
+      commitment: "confirmed",
+    });
+    return {
+      ran: true,
+      computeUnitLimit: units,
+      unitsConsumed: sim.value.unitsConsumed ?? null,
+      error: sim.value.err === null ? null : JSON.stringify(sim.value.err),
+      logs: sim.value.logs ?? null,
+    };
+  } catch (err) {
+    return {
+      ran: false,
+      computeUnitLimit: units,
+      unitsConsumed: null,
+      error: null,
+      logs: [`simulation could not run: ${err instanceof Error ? err.message : String(err)}`],
+    };
+  }
+}
+
+/**
  * A DRESS REHEARSAL of the account-creation phase of an open, run against the cluster
  * with `sigVerify: false` so nothing is signed, sent or spent.
  *
@@ -1806,60 +1989,31 @@ export async function rehearseOpenPosition(params: {
 
   for (const { stage, instructions } of planned) {
     /*
-     * The SAME budget the real send will carry, resolved the same way. A rehearsal
-     * that simulated against a different compute limit than production uses would
-     * pass exactly the transactions production then fails.
+     * The SAME budget the real send will carry, resolved the same way — see
+     * `simulateAgainstCluster`, which owns that guarantee for this path and for the
+     * narrow open's pre-send check.
      */
-    const requested = readRequestedComputeUnits(instructions);
-    const { units } = resolveComputeUnitLimit(requested, config.computeUnitLimit);
-    const withoutBudget = instructions.filter(
-      (ix) => !ix.programId.equals(ComputeBudgetProgram.programId),
-    );
+    const sim = await simulateAgainstCluster(instructions, params.wallet, blockhash, config);
 
-    const message = new TransactionMessage({
-      payerKey: params.wallet,
-      recentBlockhash: blockhash,
-      instructions: [
-        ComputeBudgetProgram.setComputeUnitLimit({ units }),
-        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: config.minPriorityMicroLamports }),
-        ...withoutBudget,
-      ],
-    }).compileToV0Message();
-
-    let step: OpenRehearsalStep;
-    try {
-      const sim = await connection.simulateTransaction(new VersionedTransaction(message), {
-        sigVerify: false,
-        replaceRecentBlockhash: true,
-        commitment: "confirmed",
-      });
-      step = {
-        stage,
-        computeUnitLimit: units,
-        unitsConsumed: sim.value.unitsConsumed ?? null,
-        error: sim.value.err === null ? null : JSON.stringify(sim.value.err),
-        logs: sim.value.logs ?? null,
-      };
-    } catch (err) {
+    if (!sim.ran) {
       /*
        * The RPC could not run the simulation. That is NOT evidence the open would
        * fail, so it must not be reported as a refusal — a rehearsal that fails closed
        * on its own outage would stop all trading whenever the provider hiccups, and
        * this gate protects against a specific on-chain failure, not against the RPC.
-       * Same reasoning as `assessPoolCooldown` failing open.
+       * Same reasoning as `assessPoolCooldown` failing open. `sim.error` is null in
+       * that case, which is what carries the fail-open through to `ok`.
        */
-      step = {
-        stage,
-        computeUnitLimit: units,
-        unitsConsumed: null,
-        error: null,
-        logs: [
-          `rehearsal could not run: ${err instanceof Error ? err.message : String(err)}`,
-        ],
-      };
       console.warn(`[onchain/rehearsal] ${stage}: simulation unavailable; not treated as a refusal`);
     }
-    steps.push(step);
+
+    steps.push({
+      stage,
+      computeUnitLimit: sim.computeUnitLimit,
+      unitsConsumed: sim.unitsConsumed,
+      error: sim.error,
+      logs: sim.logs,
+    });
   }
 
   const failure = steps.find((s) => s.error !== null) ?? null;
@@ -1937,6 +2091,120 @@ async function requirePosition(
     );
   }
   return found;
+}
+
+/**
+ * Reads a position account by ADDRESS, and verifies it is the one we mean.
+ *
+ * `requirePosition` above asks `getPositionsByUserAndLbPair`, which is a
+ * `getProgramAccounts` scan. That is the right lookup when the caller knows only the
+ * owner, and the wrong one when the caller already knows the address: the scan is an
+ * INDEX QUERY, it can lag a freshly created account (observed on the SOLCAT-SOL orphan,
+ * 7 Sep 2026), and its fail-closed refusal then reads as "you do not own this position"
+ * about a position the wallet demonstrably just created. On the recovery path that
+ * refusal is the failure — the engine cannot close what it cannot see, and what it
+ * cannot see is real capital.
+ *
+ * A direct `getAccountInfo` has no index to lag. What it loses is the scan's implicit
+ * proof of ownership, so that is re-established explicitly, and from the SDK's OWN
+ * memcmp descriptors rather than from offsets written out here: `positionLbPairFilter`
+ * and `positionOwnerFilter` are exactly what `getPositionsByUserAndLbPair` filters on,
+ * so this checks the same two fields at the same two offsets, and an SDK that moves the
+ * layout moves both together. Hand-writing `8` and `40` would silently start comparing
+ * the wrong bytes on a bump — and a comparison that always passes is worse than none.
+ *
+ * Returns null for an account that is not there (nothing to recover), and THROWS when
+ * the account is there but is not ours or not this pool's. Those are different facts and
+ * only the second is alarming.
+ */
+async function readPositionDirect(
+  pool: DlmmPool,
+  owner: PublicKey,
+  positionAddress: string,
+): Promise<LbPosition | null> {
+  const pubkey = new PublicKey(positionAddress);
+  const info = await getConnection().getAccountInfo(pubkey, "confirmed");
+  if (info === null) return null;
+
+  const { positionLbPairFilter, positionOwnerFilter } = await loadDlmmSdk();
+  const identity: [string, unknown, PublicKey][] = [
+    ["lbPair", positionLbPairFilter(pool.pubkey), pool.pubkey],
+    ["owner", positionOwnerFilter(owner), owner],
+  ];
+
+  for (const [field, filter, expected] of identity) {
+    const memcmp =
+      filter !== null && typeof filter === "object" && "memcmp" in filter
+        ? (filter as { memcmp: { offset: number } }).memcmp
+        : null;
+    if (memcmp === null) {
+      throw new DlmmExecutionError(
+        `the DLMM SDK's ${field} filter is no longer a memcmp filter, so a position ` +
+          `account's identity cannot be verified. Refusing to act on ${positionAddress}.`,
+      );
+    }
+    const actual = info.data.subarray(memcmp.offset, memcmp.offset + 32);
+    if (!actual.equals(expected.toBuffer())) {
+      throw new DlmmExecutionError(
+        `position ${positionAddress} carries a different ${field} than expected ` +
+          `(${expected.toBase58()}). Refusing to act on it.`,
+      );
+    }
+  }
+
+  return pool.getPosition(pubkey);
+}
+
+/**
+ * Whether a position still holds anything worth recovering.
+ *
+ * FEES COUNT, not just liquidity. A position whose bins are empty can still carry
+ * unclaimed swap fees, and closing it without claiming them throws them away — the
+ * account is gone and so is the claim. `removeLiquidity` with `shouldClaimAndClose`
+ * takes both in one operation, which is why the two questions have one answer here.
+ *
+ * The amounts arrive as decimal strings (`BN.toString()` in the SDK), and a string that
+ * can exceed 2^53 must not be routed through `Number` to be compared with zero. Testing
+ * for any non-zero DIGIT is exact for every non-negative decimal representation and
+ * loses no precision, which `parseFloat` would.
+ *
+ * Structurally typed so it is unit-testable without a cluster or the SDK.
+ */
+export function positionHoldsValue(data: {
+  totalXAmount: string;
+  totalYAmount: string;
+  feeX: { isZero(): boolean };
+  feeY: { isZero(): boolean };
+}): boolean {
+  const nonZero = (amount: string) => /[1-9]/.test(amount);
+  return (
+    nonZero(data.totalXAmount) ||
+    nonZero(data.totalYAmount) ||
+    !data.feeX.isZero() ||
+    !data.feeY.isZero()
+  );
+}
+
+/** The wallet's balance of one SPL token, or null when it could not be read. */
+async function readAtaBalance(
+  owner: PublicKey,
+  mint: PublicKey,
+  tokenProgramId: PublicKey,
+): Promise<bigint | null> {
+  const { getAssociatedTokenAddressSync } = await import("@solana/spl-token");
+  const ata = getAssociatedTokenAddressSync(mint, owner, true, tokenProgramId);
+  try {
+    const balance = await getConnection().getTokenAccountBalance(ata, "confirmed");
+    return BigInt(balance.value.amount);
+  } catch {
+    /*
+     * NULL, never 0. This figure is used to size a deposit DOWN, so a zero standing in
+     * for an unreadable balance would silently deposit nothing and report that as the
+     * position's funding. "Unknown" has to stay distinguishable from "empty" — the same
+     * three-state rule the database columns follow.
+     */
+    return null;
+  }
 }
 
 /**
@@ -2245,6 +2513,51 @@ async function preCreateMissingBinArrays(
   return { created, existed: candidates.length - created, existing };
 }
 
+/**
+ * Withdraws every bin, claims the fees, closes the account and reclaims its rent — one
+ * operation on-chain, per transaction.
+ *
+ * 100% (10 000 bps) with `shouldClaimAndClose`. Doing it as separate withdraw-then-close
+ * calls would leave a funded-but-open position if the second failed, and the engine
+ * would have booked the exit either way.
+ *
+ * Shared by the tracked close and the orphan recovery deliberately: those differ only in
+ * HOW the position was found, and a second copy of this is how the recovery path would
+ * drift into closing without claiming.
+ */
+async function withdrawClaimAndClose(
+  auth: ExecutionAuthorization,
+  pool: DlmmPool,
+  position: LbPosition,
+  operation: string,
+): Promise<SendResult[]> {
+  const address = position.publicKey.toBase58();
+  const bins = position.positionData.positionBinData;
+  const fromBinId = bins.at(0)?.binId;
+  const toBinId = bins.at(-1)?.binId;
+
+  if (fromBinId === undefined || toBinId === undefined) {
+    throw new DlmmExecutionError(
+      `position ${address} reports no bins; refusing to guess its range`,
+    );
+  }
+
+  const transactions = await pool.removeLiquidity({
+    user: auth.wallet,
+    position: position.publicKey,
+    fromBinId,
+    toBinId,
+    bps: new BN(10_000),
+    shouldClaimAndClose: true,
+  });
+
+  if (transactions.length === 0) {
+    throw new DlmmExecutionError(`position ${address} produced no close transaction`);
+  }
+
+  return sendSequentially(auth, transactions, { operation, position: address });
+}
+
 export const dlmmExecutor: DlmmExecutor = {
   async ensureBinArrays(
     auth: ExecutionAuthorization,
@@ -2262,7 +2575,7 @@ export const dlmmExecutor: DlmmExecutor = {
   async openPosition(
     auth: ExecutionAuthorization,
     params: OpenPositionParams,
-  ): Promise<DlmmSendResult> {
+  ): Promise<DlmmOpenResult> {
     // Before any network call: the SOL leg is a spend, so it faces the ceiling first.
     assertWithinSpendLimit(auth, params.amountLamports, "dlmm openPosition");
 
@@ -2286,6 +2599,11 @@ export const dlmmExecutor: DlmmExecutor = {
           `${pool.tokenY.publicKey.toBase58()}); amountLamports has no meaning here`,
       );
     }
+
+    // The side that is NOT wSOL, and the token program that owns it. Needed only to
+    // re-read the wallet's balance when a simulation says the deposit is short.
+    const pairedMint = side === "X" ? pool.tokenY.publicKey : pool.tokenX.publicKey;
+    const pairedTokenProgram = side === "X" ? pool.tokenY.owner : pool.tokenX.owner;
 
     /*
      * The deposit's slippage is the ACTIVE-BIN bound, not the swap bound.
@@ -2315,11 +2633,16 @@ export const dlmmExecutor: DlmmExecutor = {
       );
     }
 
-    const deposit = {
+    /*
+     * A FACTORY rather than a constant, because the narrow path may have to rebuild the
+     * deposit with a smaller paired amount after simulating it (see below). The wide
+     * path binds it once, to the nominal figure, and never re-quotes.
+     */
+    const depositFor = (pairedAmount: BN) => ({
       positionPubKey: positionKeypair.publicKey,
       user: auth.wallet,
-      totalXAmount: side === "X" ? sol : paired,
-      totalYAmount: side === "Y" ? sol : paired,
+      totalXAmount: side === "X" ? sol : pairedAmount,
+      totalYAmount: side === "Y" ? sol : pairedAmount,
       strategy: {
         minBinId,
         maxBinId,
@@ -2327,7 +2650,9 @@ export const dlmmExecutor: DlmmExecutor = {
       },
       // The SDK takes slippage as a PERCENTAGE; our bound is in bps.
       slippage: slip.percent,
-    };
+    });
+
+    const deposit = depositFor(paired);
 
     /*
      * What this open will actually cost in rent, asked of the SDK because bin-array
@@ -2360,6 +2685,10 @@ export const dlmmExecutor: DlmmExecutor = {
        * One transaction moves all three, so the ceiling faces their sum — and the
        * deposit term is the SLIPPAGE-WIDENED one, because that is what the program is
        * authorised to pull (`maxDepositXAmount`), not the nominal figure we asked for.
+       *
+       * The re-quote below only ever lowers the paired amount and never touches the SOL
+       * leg, so this bound stays valid for every attempt: a smaller deposit cannot
+       * breach a ceiling the larger one cleared.
        */
       assertWithinSpendLimit(
         auth,
@@ -2369,7 +2698,131 @@ export const dlmmExecutor: DlmmExecutor = {
         "dlmm openPosition (max deposit + rent)",
       );
 
-      const transaction = await pool.initializePositionAndAddLiquidityByStrategy(deposit);
+      /*
+       * SIMULATE BEFORE SENDING, AND RE-QUOTE IF THE WALLET IS SHORT.
+       *
+       * The narrow path is one fused transaction and therefore atomic, which is why it
+       * has never left an orphan — but atomic is not the same as safe, and until 10 Sep
+       * 2026 it was sent BLIND. The rehearsal deliberately skips it (the deposit cannot
+       * be simulated before the swap that funds it), so nothing between the swap and the
+       * cluster ever looked at this transaction. The SDK simulates it, but only to SIZE
+       * a compute budget: `getEstimatedComputeUnitIxWithBuffer` swallows a failed
+       * simulation and falls back to 1.4M CU, so a transaction the cluster has already
+       * refused is packaged with a bigger budget and sent anyway.
+       *
+       * By this point the balancing swap has spent, so a refusal here is not free — but
+       * it is far cheaper than the alternative, and one failure mode is genuinely
+       * FIXABLE from here: the deposit asking for more paired token than the wallet
+       * holds (the SPL token program's InsufficientFunds, which killed the 10 Sep
+       * KNOTS-SOL open on its wide sibling). The remedy is to ask the chain what is
+       * really there and deposit that, which is why the re-quote reads the ATA rather
+       * than trusting the caller's earlier read.
+       *
+       * Three boundaries are deliberate:
+       *
+       *  - A simulation that could not RUN sends anyway. An RPC that did not answer is
+       *    not evidence the open would fail, and failing closed on a provider hiccup
+       *    would strand the swap for a reason that has nothing to do with the pool.
+       *    Same rule as the rehearsal.
+       *  - A definitive rejection that is NEITHER a shortfall NOR a stale active bin is
+       *    refused immediately rather than retried. Rebuilding cannot change it, and
+       *    sending it would buy a guaranteed failure at the price of a priority fee.
+       *  - The re-quote only ever moves DOWN (`BN.min`). Depositing more than the caller
+       *    asked for because a balance read came back larger would spend money on an
+       *    instruction nobody authorised.
+       */
+      let pairedForDeposit = paired;
+      let transaction = await pool.initializePositionAndAddLiquidityByStrategy(
+        depositFor(pairedForDeposit),
+      );
+
+      // One fetch for the whole loop: `simulateAgainstCluster` passes
+      // `replaceRecentBlockhash`, so this value only has to be well-formed.
+      const { blockhash: simulationBlockhash } =
+        await getConnection().getLatestBlockhash("confirmed");
+
+      for (let attempt = 0; ; attempt++) {
+        const sim = await simulateAgainstCluster(
+          transaction.instructions,
+          auth.wallet,
+          simulationBlockhash,
+          onchainConfig,
+        );
+
+        if (!sim.ran) {
+          console.warn(
+            `[onchain/dlmm] ${positionAddress}: pre-send simulation unavailable; sending ` +
+              `anyway — an RPC that could not simulate is not evidence the open fails`,
+          );
+          break;
+        }
+
+        if (sim.error === null) {
+          if (attempt > 0) {
+            console.log(
+              `[onchain/dlmm] ${positionAddress}: fused open simulates clean on attempt ` +
+                `${attempt + 1} with ${pairedForDeposit.toString()} paired base units ` +
+                `(asked for ${paired.toString()})`,
+            );
+          }
+          break;
+        }
+
+        const stale = isStaleActiveBinRejection(sim.logs, sim.error);
+        const short = isInsufficientFundsRejection(sim.logs, sim.error);
+
+        if (attempt >= NARROW_OPEN_REQUOTE_ATTEMPTS || (!stale && !short)) {
+          throw new DlmmExecutionError(
+            `the fused open for ${params.poolAddress} was REFUSED IN SIMULATION and NOT ` +
+              `SENT (${sim.error}) after ${attempt + 1} attempt(s). The balancing swap has ` +
+              `already spent, so the caller must unwind. Logs: ` +
+              `${(sim.logs ?? []).slice(-5).join(" | ") || "none"}`,
+          );
+        }
+
+        if (short) {
+          const onChain = await readAtaBalance(auth.wallet, pairedMint, pairedTokenProgram);
+          const next =
+            onChain === null ? null : BN.min(pairedForDeposit, new BN(onChain.toString()));
+          if (next === null || next.gte(pairedForDeposit)) {
+            /*
+             * Either the balance could not be read, or the wallet holds at least what
+             * the deposit asks for — so the shortfall is somewhere this cannot reach
+             * (the SOL leg, most likely). Re-sending an identical transaction would only
+             * burn a fee.
+             */
+            throw new DlmmExecutionError(
+              `the fused open for ${params.poolAddress} was refused for insufficient ` +
+                `funds, but there is nothing to re-quote: the chain reports ` +
+                `${onChain === null ? "an unreadable" : onChain.toString()} paired base ` +
+                `units against a ${pairedForDeposit.toString()} deposit. Not sent ` +
+                `(${sim.error}).`,
+            );
+          }
+          console.warn(
+            `[onchain/dlmm] ${positionAddress}: re-quoting the deposit from ` +
+              `${pairedForDeposit.toString()} to ${next.toString()} paired base units — ` +
+              `the simulation says the account is short`,
+          );
+          pairedForDeposit = next;
+        }
+
+        if (stale) {
+          // The SDK builds from its cached `lbPair`, so without this the "rebuild" is
+          // byte-identical and gets refused for the same reason. Same rule as the wide
+          // funding rebuild.
+          await pool.refetchStates();
+          console.log(
+            `[onchain/dlmm] ${positionAddress}: rebuilding the fused open for attempt ` +
+              `${attempt + 2} — active bin is now ${pool.lbPair.activeId} ` +
+              `(tolerance ${slip.bins} bin(s))`,
+          );
+        }
+
+        transaction = await pool.initializePositionAndAddLiquidityByStrategy(
+          depositFor(pairedForDeposit),
+        );
+      }
 
       const sent = await sendAndConfirm(
         auth,
@@ -2378,7 +2831,11 @@ export const dlmmExecutor: DlmmExecutor = {
         { label: "dlmm openPosition" },
       );
 
-      return { sent: [sent], position: positionAddress };
+      return {
+        sent: [sent],
+        position: positionAddress,
+        depositedPairedAmount: pairedForDeposit.toString(),
+      };
     }
 
     /*
@@ -2572,38 +3029,68 @@ export const dlmmExecutor: DlmmExecutor = {
       const alreadyLanded = err instanceof DlmmPartialExecutionError ? err.landed : [];
 
       /*
-       * BEST-EFFORT AUTO-CLOSE of the created-but-unfunded position. The account
+       * BEST-EFFORT AUTO-CLOSE of the created-but-UNFUNDED position. The account
        * exists and holds rent; if it holds no liquidity (funding never landed), the
        * program's closePosition refunds that rent to the wallet. Without this, every
        * wide-open failure leaves an orphan account that only a human-run script can
        * close (STONK-SOL 0.2657 SOL, SOLCAT-SOL 0.0572 SOL, both on 7 Sep 2026).
-       * The close itself is safe to attempt: on an account that somehow DID receive
-       * liquidity, closePosition2 refuses and this catch swallows the refusal.
+       *
+       * UNFUNDED IS NOW ASKED, NOT ASSUMED. `closePosition` does not withdraw, so on a
+       * PARTIALLY funded position — funding chunk 1 landed, chunk 2 refused, the shape
+       * of the 10 Sep 2026 KNOTS-SOL failure — this send is refused by the program and
+       * the catch below logged "could not auto-close unfunded position" about an account
+       * that was funded and earning. The transaction was wasted and the log was wrong
+       * about the only thing that mattered. Recovering a funded position needs a
+       * withdraw-claim-close, which is `closeOrphanPosition`, and the bridge runs it
+       * from the `DlmmPartialExecutionError` this block is about to raise.
+       *
+       * A read that FAILS falls through to attempting the close anyway: not knowing is
+       * not a reason to leave rent on the table, and the program still refuses a close
+       * that would strand liquidity.
        */
+      let holdsLiquidity = false;
       try {
-        // Runtime only consumes `position.publicKey` (accountsPartial
-        // { rentReceiver, position, sender }); the full LbPosition shape is a TS
-        // requirement. Fetching via getPositionsByUserAndLbPair can miss a freshly
-        // created-but-empty account (observed with the SOLCAT-SOL orphan), so cast.
-        const closeTx = await pool.closePosition({
-          owner: auth.wallet,
-          position: { publicKey: positionKeypair.publicKey } as unknown as LbPosition,
-        });
-        const closed = await sendAndConfirm(
-          auth,
-          async ({ blockhash, plan }) =>
-            asVersionedTransaction(closeTx, blockhash, plan, auth.wallet, []),
-          { label: "dlmm openPosition (auto-close unfunded position)" },
-        );
-        console.log(
-          `[onchain/dlmm] ${positionAddress}: auto-closed unfunded position ` +
-            `(rent recovered, ${closed.signature})`,
-        );
-      } catch (closeErr) {
+        const existing = await readPositionDirect(pool, auth.wallet, positionAddress);
+        holdsLiquidity = existing !== null && positionHoldsValue(existing.positionData);
+      } catch (readErr) {
         console.warn(
-          `[onchain/dlmm] ${positionAddress}: could not auto-close unfunded position: ` +
-            `${closeErr instanceof Error ? closeErr.message : String(closeErr)}`,
+          `[onchain/dlmm] ${positionAddress}: could not read the position before ` +
+            `auto-closing it: ${readErr instanceof Error ? readErr.message : String(readErr)}`,
         );
+      }
+
+      if (holdsLiquidity) {
+        console.warn(
+          `[onchain/dlmm] ${positionAddress}: NOT auto-closing — the position IS FUNDED, ` +
+            `and closePosition does not withdraw. The partial-execution error names it so ` +
+            `the caller can withdraw, claim and close it.`,
+        );
+      } else {
+        try {
+          // Runtime only consumes `position.publicKey` (accountsPartial
+          // { rentReceiver, position, sender }); the full LbPosition shape is a TS
+          // requirement. Fetching via getPositionsByUserAndLbPair can miss a freshly
+          // created-but-empty account (observed with the SOLCAT-SOL orphan), so cast.
+          const closeTx = await pool.closePosition({
+            owner: auth.wallet,
+            position: { publicKey: positionKeypair.publicKey } as unknown as LbPosition,
+          });
+          const closed = await sendAndConfirm(
+            auth,
+            async ({ blockhash, plan }) =>
+              asVersionedTransaction(closeTx, blockhash, plan, auth.wallet, []),
+            { label: "dlmm openPosition (auto-close unfunded position)" },
+          );
+          console.log(
+            `[onchain/dlmm] ${positionAddress}: auto-closed unfunded position ` +
+              `(rent recovered, ${closed.signature})`,
+          );
+        } catch (closeErr) {
+          console.warn(
+            `[onchain/dlmm] ${positionAddress}: could not auto-close unfunded position: ` +
+              `${closeErr instanceof Error ? closeErr.message : String(closeErr)}`,
+          );
+        }
       }
 
       throw new DlmmPartialExecutionError(
@@ -2614,7 +3101,16 @@ export const dlmmExecutor: DlmmExecutor = {
       );
     }
 
-    return { sent: [created, ...funded], position: positionAddress };
+    /*
+     * The wide path never re-quotes — its funding chunks are built once from `deposit`
+     * and rebuilt only against a moving active bin — so what it asked for is what it
+     * deposited.
+     */
+    return {
+      sent: [created, ...funded],
+      position: positionAddress,
+      depositedPairedAmount: paired.toString(),
+    };
   },
 
   async claimFees(
@@ -2648,42 +3144,54 @@ export const dlmmExecutor: DlmmExecutor = {
   ): Promise<DlmmSendResult> {
     const pool = await openPool(params.poolAddress);
     const position = await requirePosition(pool, auth.wallet, params.positionAddress);
-
-    const bins = position.positionData.positionBinData;
-    const fromBinId = bins.at(0)?.binId;
-    const toBinId = bins.at(-1)?.binId;
-
-    if (fromBinId === undefined || toBinId === undefined) {
-      throw new DlmmExecutionError(
-        `position ${params.positionAddress} reports no bins; refusing to guess its range`,
-      );
-    }
-
-    /*
-     * 100% (10 000 bps) with `shouldClaimAndClose`, which is one operation on-chain:
-     * withdraw every bin, claim the fees, close the account and reclaim its rent. Doing
-     * it as separate withdraw-then-close calls would leave a funded-but-open position
-     * if the second failed, and the engine would have booked the exit either way.
-     */
-    const transactions = await pool.removeLiquidity({
-      user: auth.wallet,
-      position: position.publicKey,
-      fromBinId,
-      toBinId,
-      bps: new BN(10_000),
-      shouldClaimAndClose: true,
-    });
-
-    if (transactions.length === 0) {
-      throw new DlmmExecutionError(
-        `position ${params.positionAddress} produced no close transaction`,
-      );
-    }
-
-    const sent = await sendSequentially(auth, transactions, {
-      operation: "closePosition",
-      position: params.positionAddress,
-    });
+    const sent = await withdrawClaimAndClose(auth, pool, position, "closePosition");
     return { sent, position: params.positionAddress };
+  },
+
+  async closeOrphanPosition(
+    auth: ExecutionAuthorization,
+    params: CloseOrphanPositionParams,
+  ): Promise<OrphanPositionOutcome> {
+    const pool = await openPool(params.poolAddress);
+    const position = await readPositionDirect(pool, auth.wallet, params.positionAddress);
+
+    const nothing = {
+      liquidityX: "0",
+      liquidityY: "0",
+      unclaimedFeeX: "0",
+      unclaimedFeeY: "0",
+      signatures: [] as string[],
+    };
+
+    if (position === null) {
+      return { state: "absent", ...nothing };
+    }
+
+    const data = position.positionData;
+    const held = {
+      liquidityX: data.totalXAmount,
+      liquidityY: data.totalYAmount,
+      unclaimedFeeX: data.feeX.toString(),
+      unclaimedFeeY: data.feeY.toString(),
+    };
+
+    if (!positionHoldsValue(data)) {
+      /*
+       * Rent only. Recovering it is worth doing but it is not what this path is for,
+       * and the wide open's own catch already attempts exactly that close moments
+       * earlier — repeating it here would send a second transaction to be refused for
+       * the same reason, on the failure path, with the swap already spent.
+       */
+      return { state: "empty", ...held, signatures: [] };
+    }
+
+    console.warn(
+      `[onchain/dlmm] ${params.positionAddress}: the open failed but the position IS ` +
+        `FUNDED (${held.liquidityX} X, ${held.liquidityY} Y, ${held.unclaimedFeeX}/` +
+        `${held.unclaimedFeeY} unclaimed fees); withdrawing, claiming and closing it`,
+    );
+
+    const sent = await withdrawClaimAndClose(auth, pool, position, "closeOrphanPosition");
+    return { state: "closed", ...held, signatures: sent.map((s) => s.signature) };
   },
 };
