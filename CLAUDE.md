@@ -658,6 +658,7 @@ npm run sweep:exits      # grid-search TAKE_PROFIT_PCT / STOP_LOSS_PCT, split in
 npm run audit:report     # backtest JSON -> reports/backtest-audit.html (print to PDF)
 npm run backtest         # 30-day replay of the live formula; --days --pools --refresh --tp etc.
 npm run backtest:annual  # 365-day replay of the LIVE V1.1 guardrails + daily returns export
+npm run backtest:quote   # SOL-quoted vs USDC-quoted pools, same window/rules; --ingest-only=sol|usdc
 npm run report:quant     # Python: QuantStats-style tear sheet (HTML + PDF + PNG) from that export
 npm run dlmm:once        # one screen -> decide -> monitor cycle (monitor included)
 npm run research:once    # one macro research run

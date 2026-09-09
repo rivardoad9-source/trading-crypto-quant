@@ -325,6 +325,22 @@ export interface IngestOptions {
   /** Pages of today's volume leaders to scan when building the universe. */
   survivorPages?: number;
   /**
+   * Restricts BOTH cohorts to pools the caller is interested in, applied after the
+   * universe is built and before any history is fetched.
+   *
+   * Undefined means "no restriction", so every existing caller ingests exactly the
+   * pools it did before — the same inert-default discipline `defaultBacktestConfig()`
+   * uses. It exists for arm-versus-arm comparisons (e.g. SOL-quoted against
+   * USDC-quoted pools) where each arm must be filled to the SAME pool count; doing
+   * that by filtering a shared dataset afterwards would leave the arms with whatever
+   * counts happened to fall out of a volume sort.
+   *
+   * A filtered run MUST use its own `cachePath`: the cache carries no record of the
+   * filter, so a filtered dataset read back by an unfiltered caller would silently be
+   * a subset of the universe.
+   */
+  poolFilter?: (pool: UniversePool) => boolean;
+  /**
    * Minimum usable bars a pool must have to enter the dataset.
    *
    * Defaults to `max(30, 15% of the window)`, which is right for a short window but
@@ -392,12 +408,14 @@ export async function loadHistoricalData(options: IngestOptions = {}): Promise<H
     throw new Error("[backtest] SOL/USD reference series is empty; cannot size positions");
   }
 
+  const wanted = options.poolFilter ?? ((): boolean => true);
+
   const survivorList = universe.pools
-    .filter((p) => p.cohort === "survivor" && !p.isBlacklisted)
+    .filter((p) => p.cohort === "survivor" && !p.isBlacklisted && wanted(p))
     .sort((a, b) => b.volume24hTodayUsd - a.volume24hTodayUsd);
 
   const deadList = universe.pools
-    .filter((p) => p.cohort === "dead-or-dormant")
+    .filter((p) => p.cohort === "dead-or-dormant" && wanted(p))
     .sort((a, b) => b.lifetimeVolumeUsd - a.lifetimeVolumeUsd);
 
   // Dead pools are short-lived by nature, so the bar-count floor must be low or the

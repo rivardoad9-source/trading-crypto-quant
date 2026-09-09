@@ -4,6 +4,7 @@ import {
   lpValueReturnFraction,
 } from "../services/meteora.js";
 import { computeMaxDrawdown, computeProfitFactor } from "../services/metrics.js";
+import { WSOL_MINT } from "../config/constants.js";
 import { estimateTvlAt, type TvlModel } from "./tvlModel.js";
 import type { Bar, PoolHistory } from "./historicalData.js";
 
@@ -158,6 +159,30 @@ export interface BacktestConfig {
   /** Price concession taken on a forced exit, as a percentage. */
   forcedExitSlippagePct: number;
   /**
+   * Price concession on ONE balancing swap leg, as a percentage of the amount swapped.
+   *
+   * Every live entry swaps part of the deposit into the pool's other token, and the
+   * exit swaps it back — `liveExecution.ts` calls that the balancing swap, and until
+   * now NOTHING in this harness charged for it. Gas was charged for two transactions
+   * and slippage only on a forced exit, so the swap that runs on every single entry
+   * was modelled as free.
+   *
+   * Defaults to 0, which reproduces that omission exactly, so every existing backtest,
+   * sweep and cached result stays byte-identical — the same inert-default rule the
+   * V1.1 guardrails follow. A runner that wants the cost priced sets it explicitly and
+   * says what it assumed.
+   */
+  swapSlippagePct: number;
+  /**
+   * Gas for ONE balancing swap transaction, in SOL. Defaults to 0 for the same reason.
+   *
+   * Separate from `gasSolPerTransaction` because a Jupiter swap and a DLMM open are
+   * not the same transaction: they carry different compute budgets and land at
+   * different priority fees. Collapsing them into one number would make the swap's
+   * cost unnameable, which is how it went unpriced in the first place.
+   */
+  swapGasSolPerLeg: number;
+  /**
    * Bars examined after an exit to decide whether the position could actually have
    * been liquidated at the exit price.
    */
@@ -196,6 +221,10 @@ export const defaultBacktestConfig = (): BacktestConfig => ({
   lockoutHours: 0,
   gasSolPerTransaction: 0.0035,
   forcedExitSlippagePct: 1.0,
+  // Zero: the balancing swap has never been priced here, and a default that started
+  // charging for it would silently rewrite every cached sweep and historical result.
+  swapSlippagePct: 0,
+  swapGasSolPerLeg: 0,
   rugLookaheadBars: 24,
   rugVolumeCollapseRatio: 0.01,
 });
@@ -251,7 +280,13 @@ export interface BacktestTrade {
   divergenceVsHoldUsd: number;
   gasCostUsd: number;
   slippageCostUsd: number;
-  /** fees + positionValueChange - gas - slippage. */
+  /**
+   * Round-trip balancing-swap cost: the price concession on each leg plus the legs'
+   * own gas. Zero unless the runner priced it, and roughly double on a pool with no
+   * wSOL leg, which has to convert BOTH halves of the deposit instead of one.
+   */
+  swapCostUsd: number;
+  /** fees + positionValueChange - gas - slippage - swap. */
   netPnlUsd: number;
   netPnlPct: number;
   netPnlSol: number;
@@ -283,6 +318,8 @@ export interface BacktestSummary {
   totalPositionValueChangeUsd: number;
   totalGasCostUsd: number;
   totalSlippageCostUsd: number;
+  /** Balancing-swap cost across every trade. Zero unless the runner priced it. */
+  totalSwapCostUsd: number;
   ruggedTrades: number;
   catastrophicTrades: number;
   ruggedLossUsd: number;
@@ -364,6 +401,58 @@ export function pairRatio(
   if (quoteIsUsd) return closeUsd;
   if (solUsd === null || !(solUsd > 0)) return null;
   return closeUsd / solUsd;
+}
+
+/** Whether either leg of the pair is wrapped SOL — the test `describePair()` applies live. */
+export function hasWsolLeg(pool: Pick<PoolHistory, "baseMint" | "quoteMint">): boolean {
+  return pool.baseMint === WSOL_MINT || pool.quoteMint === WSOL_MINT;
+}
+
+export interface BalancingSwapCost {
+  /** Jupiter swap transactions over the whole round trip. */
+  legs: number;
+  /** Notional swapped over the whole round trip, as a multiple of the position. */
+  turnover: number;
+}
+
+/**
+ * The swap legs a round trip needs, given how the wallet is funded.
+ *
+ * The wallet holds SOL and the range brackets the active bin, so both sides of the
+ * pair have to be supplied:
+ *
+ *   wSOL leg present — half the deposit is swapped into the other token and half
+ *     stays SOL. Reversed on exit. TWO legs, 1.0x the position swapped in total.
+ *
+ *   no wSOL leg (a USDC-quoted pool) — NEITHER side is the asset held, so both
+ *     halves must be converted: half SOL->USDC and half SOL->token, reversed on exit.
+ *     FOUR legs, 2.0x the position swapped in total.
+ *
+ * So a USDC-quoted pool pays roughly DOUBLE the swap friction of a SOL-quoted one,
+ * plus two extra transactions of gas — and it pays it on every entry, not only on the
+ * exits that go wrong.
+ *
+ * The `SOL->token` leg is counted at the same per-leg rate as any other even though
+ * Jupiter would route it through USDC, because the routing does not remove the hop:
+ * the price impact of the thin token pool is paid either way. This is the assumption
+ * most worth disagreeing with, which is why the runner sweeps a band over it rather
+ * than publishing one number.
+ */
+export function balancingSwapCost(pool: Pick<PoolHistory, "baseMint" | "quoteMint">): BalancingSwapCost {
+  return hasWsolLeg(pool) ? { legs: 2, turnover: 1 } : { legs: 4, turnover: 2 };
+}
+
+/** Round-trip swap friction in USD: price concession plus the legs' own gas. */
+export function balancingSwapFrictionUsd(
+  pool: Pick<PoolHistory, "baseMint" | "quoteMint">,
+  notionalUsd: number,
+  config: Pick<BacktestConfig, "swapSlippagePct" | "swapGasSolPerLeg">,
+  solUsd: number,
+): number {
+  const { legs, turnover } = balancingSwapCost(pool);
+  const concession = notionalUsd * turnover * (config.swapSlippagePct / 100);
+  const gas = legs * config.swapGasSolPerLeg * solUsd;
+  return concession + gas;
 }
 
 /**
@@ -646,7 +735,15 @@ export function runSimulation(input: SimulationInput): BacktestResult {
     // Open + close are two transactions.
     const gasCostUsd = config.gasSolPerTransaction * 2 * solUsd;
 
-    const netPnlUsd = pos.feesUsd + positionValueChangeUsd - gasCostUsd - slippageCostUsd;
+    /*
+     * The balancing swap, charged on EVERY round trip rather than only on forced
+     * exits. A USDC-quoted pool pays it twice over, because neither side of the pair
+     * is the asset the wallet holds. Zero unless the runner priced it.
+     */
+    const swapCostUsd = balancingSwapFrictionUsd(pos.pool, pos.notionalUsd, config, solUsd);
+
+    const netPnlUsd =
+      pos.feesUsd + positionValueChangeUsd - gasCostUsd - slippageCostUsd - swapCostUsd;
     const durationHours = (t - pos.entryTime) / 3600;
 
     equityUsd += netPnlUsd;
@@ -678,6 +775,7 @@ export function runSimulation(input: SimulationInput): BacktestResult {
       divergenceVsHoldUsd,
       gasCostUsd,
       slippageCostUsd,
+      swapCostUsd,
       netPnlUsd,
       netPnlPct,
       netPnlSol: solUsd > 0 ? netPnlUsd / solUsd : 0,
@@ -904,10 +1002,21 @@ export function runSimulation(input: SimulationInput): BacktestResult {
       }
 
       // Breakeven gate: fees must clear the cost of getting in and out.
+      /*
+       * The entry gate is charged the SAME friction the close will book, which is why
+       * the swap cost is added here and not only in `closeAt`. A gate that admits a
+       * pool on a cost basis the exit then exceeds advertises a bar it does not
+       * enforce — the defect `chargeEntryFrictionUsd` exists to prevent live. It is
+       * per-pool because a pool with no wSOL leg pays roughly double.
+       */
+      const entryFrictionUsd =
+        gasRoundTripUsd +
+        balancingSwapFrictionUsd(pool, prospectiveNotional, config, solUsdForSizing ?? 0);
+
       const breakeven = assessBreakeven({
         notionalUsd: prospectiveNotional,
         feeTvlRatio24h: feeTvl,
-        gasCostRoundTripUsd: gasRoundTripUsd,
+        gasCostRoundTripUsd: entryFrictionUsd,
         slippagePct: config.forcedExitSlippagePct,
         minCoverageRatio: config.minFeeCostCoverage,
       });
@@ -1043,6 +1152,7 @@ export function summarise(trades: BacktestTrade[], startingEquityUsd: number): B
     totalPositionValueChangeUsd: sum((t) => t.positionValueChangeUsd),
     totalGasCostUsd: sum((t) => t.gasCostUsd),
     totalSlippageCostUsd: sum((t) => t.slippageCostUsd),
+    totalSwapCostUsd: sum((t) => t.swapCostUsd),
     ruggedTrades: trades.filter((t) => t.rugged).length,
     catastrophicTrades: trades.filter((t) => t.catastrophic).length,
     ruggedLossUsd: trades.filter((t) => t.rugged).reduce((s, t) => s + t.netPnlUsd, 0),
