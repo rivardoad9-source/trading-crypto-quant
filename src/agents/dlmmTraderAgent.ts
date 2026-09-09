@@ -21,7 +21,7 @@ import {
   isPoolDenied,
   poolDenylist,
 } from "../services/executionGuard.js";
-import { MAX_CANDIDATE_POOLS, POSITION_STATUS, type PositionStatus } from "../config/constants.js";
+import { WSOL_MINT, MAX_CANDIDATE_POOLS, POSITION_STATUS, type PositionStatus } from "../config/constants.js";
 import {
   assessBreakeven,
   defaultCooldownThresholds,
@@ -1268,17 +1268,17 @@ async function closeAllPositionsLocked(options: {
 /**
  * Which execution-level gate refused a pool.
  *
- * `denylist` and `breaker` are facts about the POOL. `binCap` is a fact about the
+ * `denylist`, `breaker` and `noWsol` are facts about the POOL. `binCap` is a fact about the
  * OPERATOR'S CONFIGURATION — the same pool is admitted the moment
- * `LIVE_MAX_POSITION_BINS` is raised — so the three must stay countable apart.
+ * `LIVE_MAX_POSITION_BINS` is raised — so the four must stay countable apart.
  */
-export type ExecutionBlockKind = "denylist" | "breaker" | "binCap";
+export type ExecutionBlockKind = "denylist" | "breaker" | "noWsol" | "binCap";
 
 /** Tallies execution refusals per gate. Every kind is present, zero included. */
 export function countExecutionBlocks(
   rejected: ReadonlyArray<{ kind: ExecutionBlockKind }>,
 ): Record<ExecutionBlockKind, number> {
-  const out: Record<ExecutionBlockKind, number> = { denylist: 0, breaker: 0, binCap: 0 };
+  const out: Record<ExecutionBlockKind, number> = { denylist: 0, breaker: 0, noWsol: 0, binCap: 0 };
   for (const r of rejected) out[r.kind] += 1;
   return out;
 }
@@ -1527,6 +1527,32 @@ async function seekNewEntry(): Promise<EntrySummary> {
       }
 
       /*
+       * The engine funds positions from a SOL wallet: the deposit is sized in SOL and
+       * the balancing swap converts half of it into the paired token. A pool with NO
+       * wSOL leg cannot be funded that way at all — `describePair` refuses it at
+       * execution time, which costs the whole cycle when the model picks it (9 Sep
+       * 2026: a memecoin/USDC pool cleared every gate, was elected, and died there,
+       * every 30 minutes). Filter it here, alongside the breaker and the bin cap, for
+       * the same reason they are filtered here: `seekNewEntry` acts on the one pool the
+       * model picks and returns as soon as that pool is refused, so an unfundable pool
+       * would otherwise consume every cycle it is elected in.
+       *
+       * The mint check is free: `baseMint`/`quoteMint` already ride on every screened
+       * pool (Meteora API data), so nothing extra is fetched.
+       */
+      const hasWsolLeg = pool.baseMint === WSOL_MINT || pool.quoteMint === WSOL_MINT;
+      if (!hasWsolLeg) {
+        summary.executionRejected.push({
+          pairName: pool.pairName,
+          poolAddress: pool.address,
+          kind: "noWsol",
+          reason: `pool has no wSOL side (${pool.baseSymbol} / ${pool.quoteSymbol}); ` +
+            "the engine funds in SOL and cannot open this pair",
+        });
+        continue;
+      }
+
+      /*
        * The operator width cap, filtered here for the same reason the breaker is: a
        * pool the cap will refuse costs the whole cycle otherwise, because
        * `seekNewEntry` acts on the one pool the model picks and returns as soon as it
@@ -1584,6 +1610,7 @@ async function seekNewEntry(): Promise<EntrySummary> {
         ? `every candidate is benched: ${summary.cooldownRejected.length} on cooldown or ` +
           `locked out, ${summary.executionRejected.length} unexecutable ` +
           `(${byKind.binCap} over LIVE_MAX_POSITION_BINS=${maxLivePositionBins()}, ` +
+          `${byKind.noWsol} with no wSOL side, ` +
           `${byKind.breaker} benched by the execution breaker, ` +
           `${byKind.denylist} on the operator denylist)`
         : summary.cooldownRejected.length > 0 && held.length === summary.cooldownRejected.length
@@ -2173,7 +2200,7 @@ function recordFunnel(entry: EntrySummary, monitor: MonitorSummary, durationMs: 
       `cooldown -${entry.cooldownRejected.length} -> ` +
       `exec-guard -${entry.executionRejected.length}` +
       (entry.executionRejected.length > 0
-        ? ` (bin-cap ${byKind.binCap}, breaker ${byKind.breaker}, denylist ${byKind.denylist})`
+        ? ` (bin-cap ${byKind.binCap}, no-wsol ${byKind.noWsol}, breaker ${byKind.breaker}, denylist ${byKind.denylist})`
         : "") +
       ` -> candidates ${entry.candidates} -> ` +
       `antirug ${entry.safeCandidates}/-${entry.rugRejected.length} -> ` +
@@ -2197,6 +2224,7 @@ function recordFunnel(entry: EntrySummary, monitor: MonitorSummary, durationMs: 
       execDenylistRejected: byKind.denylist,
       execBreakerRejected: byKind.breaker,
       execBinCapRejected: byKind.binCap,
+      execNoWsolRejected: byKind.noWsol,
       antirugPassed: entry.safeCandidates,
       antirugRejected: entry.rugRejected.length,
       volatilityRejected: entry.volatilityRejected.length,

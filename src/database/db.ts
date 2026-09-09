@@ -130,6 +130,7 @@ export function initDatabase(): void {
   addColumnIfMissing("scan_funnel_cycles", "exec_denylist_rejected", "INTEGER DEFAULT 0");
   addColumnIfMissing("scan_funnel_cycles", "exec_breaker_rejected", "INTEGER DEFAULT 0");
   addColumnIfMissing("scan_funnel_cycles", "exec_bincap_rejected", "INTEGER DEFAULT 0");
+  addColumnIfMissing("scan_funnel_cycles", "exec_no_wsol_rejected", "INTEGER DEFAULT 0");
 
   initialised = true;
   console.log(`[db] ready at ${dbPath}`);
