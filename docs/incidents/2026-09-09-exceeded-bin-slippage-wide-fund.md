@@ -74,6 +74,25 @@ in the create→fund window. OTC-SOL (a `...pump` memecoin) moves bins in second
 
 Not implemented as of this doc — logged for the operator/Claude Code to pick up.
 
+## Screening-layer idea (logged 9 Sep, operator request): GMGN data as a pre-filter
+
+Context: OTC-SOL (`Ekm4LYki...`) passed every engine screen (antirug, volatility,
+fee/TVL, age) yet was a `...pump` memecoin being driven hard enough to move bins in
+seconds. Engine screens are on-chain facts (revoked authorities, holders, 1h/24h
+price moves); they cannot see off-chain "who is driving this" signals.
+
+GMGN (gmgn.ai) analytics could add, per candidate token, before any spend:
+- holder count + distribution (top-10 % already known; add total holders)
+- **dev wallet remaining %** (a dev still holding 30-40% is a rug/exit vector)
+- **sniper/bundler activity** in the first minutes (bot-pumped tokens)
+- fresh-deploy / bundling detection
+
+Where it sits: an optional extra gate in the funnel (like antirug), NOT a fix for
+the slippage error above — that stays a code fix. Decision: not integrated; would
+need GMGN API access (paid) or fragile scraping. Revisit only after the code fixes
+are done and bad-pool losses still justify it. Owner: operator.
+
+
 ## Files touched (this doc only)
 
 No code changed. Working tree otherwise clean at 04f7c56.
