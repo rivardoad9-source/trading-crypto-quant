@@ -194,6 +194,24 @@ const EnvSchema = z
      */
     ANTIRUG_ON_ERROR: z.enum(["reject", "allow"]).default("reject"),
 
+    // ---- GMGN holder-structure gate (optional, fail-open, report-only default) ----
+    /**
+     * GMGN OpenAPI key (https://gmgn.ai/ai). Empty disables the gate entirely.
+     * Query-only credentials; the private key is NEVER needed here.
+     */
+    GMGN_API_KEY: z.string().default(""),
+    /**
+     * Sum of bundler/sniper/rat_trader holdings (percent of supply) at or above
+     * which the pool is flagged. Calibrated 9 Sep 2026: Muk (caused a live loss)
+     * sat at 9.4% across 7 wallets; healthy pools measured 0-8.2%.
+     */
+    GMGN_MAX_BAD_CONCENTRATION_PCT: numeric(15),
+    /**
+     * "report"  — log flags, never reject (calibration default).
+     * "enforce" — reject flagged pools before the LLM sees them.
+     */
+    GMGN_GATE_MODE: z.enum(["report", "enforce"]).default("report"),
+
     // ---- Priority fee estimation ----
     /** Percentile across recently sampled slots; most slots report a zero fee. */
     PRIORITY_FEE_PERCENTILE: numeric(75),
