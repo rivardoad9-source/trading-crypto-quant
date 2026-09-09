@@ -729,6 +729,7 @@ export interface ScanFunnelRecord {
   execDenylistRejected: number;
   execBreakerRejected: number;
   execBinCapRejected: number;
+  execNoWsolRejected: number;
   antirugPassed: number;
   antirugRejected: number;
   volatilityRejected: number;
@@ -761,6 +762,7 @@ export function recordScanFunnel(record: ScanFunnelRecord): void {
        scanned, screen_rejections, screener_candidates, held_excluded,
        candidates, cooldown_rejected, execution_rejected,
        exec_denylist_rejected, exec_breaker_rejected, exec_bincap_rejected,
+       exec_no_wsol_rejected,
        antirug_passed, antirug_rejected, volatility_rejected,
        coverage_rejected, micro_rejected, reached_decision, opened,
        skip_reason, positions_checked, positions_closed, duration_ms
@@ -768,6 +770,7 @@ export function recordScanFunnel(record: ScanFunnelRecord): void {
        @scanned, @screenRejections, @screenerCandidates, @heldExcluded,
        @candidates, @cooldownRejected, @executionRejected,
        @execDenylistRejected, @execBreakerRejected, @execBinCapRejected,
+       @execNoWsolRejected,
        @antirugPassed, @antirugRejected, @volatilityRejected,
        @coverageRejected, @microRejected, @reachedDecision, @opened,
        @skipReason, @positionsChecked, @positionsClosed, @durationMs
@@ -793,6 +796,7 @@ interface RawFunnelRow {
   exec_denylist_rejected: number | null;
   exec_breaker_rejected: number | null;
   exec_bincap_rejected: number | null;
+  exec_no_wsol_rejected: number | null;
   antirug_passed: number;
   antirug_rejected: number;
   volatility_rejected: number;
@@ -829,6 +833,7 @@ export function getScanFunnel(limit = 100): ScanFunnelRow[] {
     execDenylistRejected: r.exec_denylist_rejected ?? 0,
     execBreakerRejected: r.exec_breaker_rejected ?? 0,
     execBinCapRejected: r.exec_bincap_rejected ?? 0,
+    execNoWsolRejected: r.exec_no_wsol_rejected ?? 0,
     antirugPassed: r.antirug_passed,
     antirugRejected: r.antirug_rejected,
     volatilityRejected: r.volatility_rejected,

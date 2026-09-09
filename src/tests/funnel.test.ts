@@ -55,6 +55,7 @@ const hermesCycle = {
   execDenylistRejected: 0,
   execBreakerRejected: 0,
   execBinCapRejected: 26,
+  execNoWsolRejected: 0,
   antirugPassed: 0,
   antirugRejected: 4,
   volatilityRejected: 0,
@@ -97,7 +98,7 @@ describe("entry funnel — the stages have to add up", () => {
     const [row] = repos.getScanFunnel(1);
     assert.ok(row);
     assert.equal(
-      row.execDenylistRejected + row.execBreakerRejected + row.execBinCapRejected,
+      row.execDenylistRejected + row.execBreakerRejected + row.execBinCapRejected + row.execNoWsolRejected,
       row.executionRejected,
       "the per-gate counts disagree with the total",
     );
@@ -138,14 +139,16 @@ describe("entry funnel — the stages have to add up", () => {
       { kind: "binCap" as const },
       { kind: "binCap" as const },
       { kind: "breaker" as const },
+      { kind: "noWsol" as const },
     ]);
-    assert.deepEqual(counted, { denylist: 0, breaker: 1, binCap: 2 });
+    assert.deepEqual(counted, { denylist: 0, breaker: 1, noWsol: 1, binCap: 2 });
 
     // Empty input still names every gate: a missing key would render as "undefined" in
     // the log line rather than as the zero it is.
     assert.deepEqual(agent.countExecutionBlocks([]), {
       denylist: 0,
       breaker: 0,
+      noWsol: 0,
       binCap: 0,
     });
   });
