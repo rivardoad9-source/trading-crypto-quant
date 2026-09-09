@@ -18,6 +18,7 @@ import {
   WSOL_MINT,
   authorizeExecution,
   binRangeFromPrices,
+  depositSlippage,
   dlmmExecutor,
   executeJupiterSwap,
   getConnection,
@@ -26,6 +27,7 @@ import {
   rehearseOpenPosition,
   type ExecutionAuthorization,
 } from "./onchainExecutor.js";
+import { fetchRealizedVolatilityPctPerHour } from "./marketData.js";
 import { getWalletBalanceSol } from "./solana.js";
 import { sendError } from "./telegram.js";
 
@@ -265,6 +267,47 @@ export class ExecutionBenchedError extends LiveEntryRefusedError {
 }
 
 /**
+ * The pool is moving faster than the deposit's active-bin tolerance can absorb.
+ *
+ * A REFUSAL, and a free one: it is decided before the balancing swap, from a
+ * measurement, with nothing signed. It earns no execution-breaker strike, for the same
+ * reason `UnrecoverableRentError` does not — volatility is a fact about the pool right
+ * now, not evidence that this pool can never be entered, and benching it for 24 hours
+ * over a busy half-hour would be the gate punishing the wrong thing.
+ *
+ * WHY IT IS NOT THE SCREENER'S VOLATILITY GATE. That one asks whether the pool is a
+ * good place to hold liquidity and answers in percent per hour. This one asks whether
+ * the pool will hold still long enough for the funding to LAND, and answers in BINS —
+ * the unit the DLMM program actually rejects on. A pool at 15%/h clears the screener's
+ * 20%/h limit and, at bin_step 100, still drifts about 15 bins an hour against a
+ * 3-bin tolerance.
+ */
+export class ActiveBinRaceError extends LiveEntryRefusedError {
+  constructor(
+    pairName: string,
+    poolAddress: string,
+    readonly projectedBins: number,
+    readonly toleranceBins: number,
+    rvolPctPerHour: number | null,
+    windowSeconds: number,
+  ) {
+    super(
+      `[live] ${pairName} (pool ${poolAddress}) is moving too fast to fund: ` +
+        (rvolPctPerHour === null
+          ? "its realized volatility could not be measured"
+          : `${rvolPctPerHour.toFixed(1)}%/h of realized volatility projects ` +
+            `${projectedBins.toFixed(1)} bin(s) of active-bin drift over the ` +
+            `${windowSeconds}s execution window, against a ${toleranceBins}-bin ` +
+            `tolerance`) +
+        `. Refused before the swap; nothing was signed or spent.`,
+      pairName,
+      poolAddress,
+    );
+    this.name = "ActiveBinRaceError";
+  }
+}
+
+/**
  * The cluster refused the open in simulation, before anything was signed or spent.
  *
  * This is the gate that did not exist on 7 Sep 2026. It is a REFUSAL rather than a
@@ -499,6 +542,14 @@ export async function openLivePosition(params: {
    * Skipped entirely when the live micro-capital profile is off, so an unarmed engine
    * behaves exactly as it did before this gate existed.
    */
+  /*
+   * Carried out of the block below so the execution-time volatility gate can convert a
+   * rate of price movement into bins. Null means the quote never ran, which the gate
+   * REPORTS rather than treats as clear — the same lesson as the log line that used to
+   * claim "all bin arrays exist" on a path that had checked nothing.
+   */
+  let poolBinStep: number | null = null;
+
   if (liveMicroCapital.enabled) {
     const cost = await quoteOpenCost({
       poolAddress: params.poolAddress,
@@ -506,6 +557,7 @@ export async function openLivePosition(params: {
       upperBinPrice: params.upperBinPrice,
       strategy: params.strategy,
     });
+    poolBinStep = cost.binStep;
     const rentBudgetSol = liveMicroCapital.deployableSol - liveMicroCapital.maxExposureSol;
 
     if (cost.totalSol > rentBudgetSol) {
@@ -617,6 +669,78 @@ export async function openLivePosition(params: {
         `${(onchainConfig.maxLamportsPerTx / LAMPORTS_PER_SOL).toFixed(4)} SOL ceiling, ` +
         `~${cost.transactionCount} tx`,
     );
+  }
+
+  /*
+   * EXECUTION-TIME VOLATILITY — will this pool hold still long enough to fund?
+   *
+   * Added 9 Sep 2026, with the two fixes it belongs to: the deposit's active-bin
+   * tolerance now has its own bound (it used to inherit Jupiter's 0.5%, which is ONE
+   * bin on most of the universe), and the funding transactions are rebuilt against a
+   * fresh active bin when their blockhash expires. This gate is the third leg: some
+   * pools move faster than any tolerance worth sending, and the cheapest response is
+   * to not start.
+   *
+   * The arithmetic is deliberately crude and deliberately in BINS. `binStep` is bps,
+   * so one bin is `binStep/100` percent of price; realized volatility in percent per
+   * hour therefore divides straight into bins per hour, and the execution window
+   * scales it. It is an order-of-magnitude check, not a forecast — which is why the
+   * default ratio is 1 rather than something finer.
+   *
+   * FAILS AS THE SCREENER DOES. `VOLATILITY_ON_UNKNOWN` already answers "what do we do
+   * when volatility cannot be measured" for this engine, and answering it twice, two
+   * different ways, is how one concept becomes two configurations. Default is reject.
+   */
+  if (Number.isFinite(env.LIVE_MAX_BIN_DRIFT_RATIO)) {
+    if (poolBinStep === null) {
+      console.warn(
+        `[live] ${params.pairName}: NO BIN-DRIFT CHECK — the open cost quote did not ` +
+          `run (LIVE_MICRO_CAPITAL is off), so the pool's bin step is unknown and the ` +
+          `execution-time volatility gate was skipped, not passed`,
+      );
+    } else {
+      const tolerance = depositSlippage(auth, poolBinStep);
+      const rvol = await fetchRealizedVolatilityPctPerHour(params.poolAddress);
+
+      if (rvol === null) {
+        if (env.VOLATILITY_ON_UNKNOWN === "reject") {
+          throw new ActiveBinRaceError(
+            params.pairName,
+            params.poolAddress,
+            Number.NaN,
+            tolerance.bins,
+            null,
+            env.LIVE_EXECUTION_WINDOW_SECONDS,
+          );
+        }
+        console.warn(
+          `[live] ${params.pairName}: realized volatility unavailable; admitted by ` +
+            `VOLATILITY_ON_UNKNOWN=allow`,
+        );
+      } else {
+        const binsPerHour = rvol / (poolBinStep / 100);
+        const projectedBins = binsPerHour * (env.LIVE_EXECUTION_WINDOW_SECONDS / 3600);
+        const limitBins = tolerance.bins * env.LIVE_MAX_BIN_DRIFT_RATIO;
+
+        if (projectedBins > limitBins) {
+          throw new ActiveBinRaceError(
+            params.pairName,
+            params.poolAddress,
+            projectedBins,
+            tolerance.bins,
+            rvol,
+            env.LIVE_EXECUTION_WINDOW_SECONDS,
+          );
+        }
+
+        console.log(
+          `[live] ${params.pairName}: bin drift ${projectedBins.toFixed(2)} bin(s) ` +
+            `projected over ${env.LIVE_EXECUTION_WINDOW_SECONDS}s ` +
+            `(${rvol.toFixed(1)}%/h at bin_step ${poolBinStep}) against a ` +
+            `${tolerance.bins}-bin tolerance x ${env.LIVE_MAX_BIN_DRIFT_RATIO}`,
+        );
+      }
+    }
   }
 
   /*

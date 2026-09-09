@@ -65,6 +65,31 @@ import { getPriorityFeeEstimateSafe } from "./solana.js";
  */
 export const HARD_MAX_SLIPPAGE_BPS = 50 as const;
 
+/**
+ * Absolute ceiling on the DLMM ACTIVE-BIN tolerance, in basis points. 1000 bps = 10%.
+ *
+ * A DIFFERENT QUANTITY FROM `HARD_MAX_SLIPPAGE_BPS`, and conflating the two is the
+ * 9 Sep 2026 defect. Jupiter's bound prices a SWAP: every bp of it is money the trade
+ * can lose to a worse fill, which is why 50 bps is right there. The DLMM deposit's
+ * `slippage` prices something else entirely — the SDK converts it to a BIN COUNT,
+ *
+ *     maxActiveBinSlippage = ceil(slippagePercent / (binStep / 100))
+ *
+ * which is how far the pool's active bin may drift between the moment the funding
+ * instructions are BUILT and the moment they LAND before the program rejects them
+ * (`ExceededBinSlippageTolerance`, custom 6004). At the swap's 0.5% that is
+ * `ceil(0.5 / 1) = 1 bin` on a bin_step-100 pool — one bin of tolerance on a memecoin
+ * pool, across a window that includes a blockhash lifetime. It is not a loss bound
+ * being widened here; it is a race the tight number could not win.
+ *
+ * It is still a bound, and still a constant for the same reason: the SDK applies the
+ * SAME percentage to `maxDeposit{X,Y}Amount` (`floor(amount x (100 + pct) / 100)`), so
+ * widening it does raise the ceiling on what the program may pull from the wallet.
+ * That overshoot is charged to `assertWithinSpendLimit` rather than assumed away —
+ * see `depositSlippage`.
+ */
+export const HARD_MAX_ACTIVE_BIN_SLIPPAGE_BPS = 1000 as const;
+
 const numeric = (defaultValue: number) =>
   z
     .string()
@@ -95,6 +120,16 @@ const OnchainSchema = z.object({
   ONCHAIN_MAX_LAMPORTS_PER_TX: numeric(20_000_000),
   /** Slippage bound in bps. Clamped down to HARD_MAX_SLIPPAGE_BPS; never up. */
   ONCHAIN_MAX_SLIPPAGE_BPS: numeric(HARD_MAX_SLIPPAGE_BPS),
+  /**
+   * DLMM active-bin tolerance in bps. Clamped down to
+   * HARD_MAX_ACTIVE_BIN_SLIPPAGE_BPS; never up.
+   *
+   * 300 bps (3%) by default rather than the swap's 50, because this number does not
+   * bound a loss — it buys bins of drift. On a bin_step-100 pool it is 3 bins where
+   * the swap bound gave 1; on bin_step 20 it is 15. See
+   * HARD_MAX_ACTIVE_BIN_SLIPPAGE_BPS for why the two must not share a knob.
+   */
+  ONCHAIN_MAX_ACTIVE_BIN_SLIPPAGE_BPS: numeric(300),
   /** Compute units requested per transaction. */
   ONCHAIN_COMPUTE_UNIT_LIMIT: numeric(400_000),
   /** Starting priority fee when the live sample is unavailable or zero. */
@@ -113,6 +148,7 @@ export type OnchainConfig = {
   readonly armed: boolean;
   readonly maxLamportsPerTx: number;
   readonly maxSlippageBps: number;
+  readonly maxActiveBinSlippageBps: number;
   readonly computeUnitLimit: number;
   readonly minPriorityMicroLamports: number;
   readonly maxPriorityMicroLamports: number;
@@ -127,11 +163,16 @@ export function resolveOnchainConfig(source: NodeJS.ProcessEnv = process.env): O
   // Clamped DOWN only. A configured 300 bps silently becomes 50, because the point of
   // a hard cap is that no configuration can widen it.
   const slippage = Math.max(1, Math.min(parsed.ONCHAIN_MAX_SLIPPAGE_BPS, HARD_MAX_SLIPPAGE_BPS));
+  const binSlippage = Math.max(
+    1,
+    Math.min(parsed.ONCHAIN_MAX_ACTIVE_BIN_SLIPPAGE_BPS, HARD_MAX_ACTIVE_BIN_SLIPPAGE_BPS),
+  );
 
   return Object.freeze({
     armed: parsed.ONCHAIN_EXECUTION_ARMED,
     maxLamportsPerTx: parsed.ONCHAIN_MAX_LAMPORTS_PER_TX,
     maxSlippageBps: slippage,
+    maxActiveBinSlippageBps: binSlippage,
     computeUnitLimit: parsed.ONCHAIN_COMPUTE_UNIT_LIMIT,
     minPriorityMicroLamports: parsed.ONCHAIN_MIN_PRIORITY_MICRO_LAMPORTS,
     maxPriorityMicroLamports: parsed.ONCHAIN_MAX_PRIORITY_MICRO_LAMPORTS,
@@ -176,6 +217,7 @@ export interface ExecutionAuthorization {
   readonly wallet: PublicKey;
   readonly maxLamportsPerTx: number;
   readonly maxSlippageBps: number;
+  readonly maxActiveBinSlippageBps: number;
   readonly armedAt: string;
 }
 
@@ -251,6 +293,15 @@ export function authorizeExecution(
   if (!(config.maxLamportsPerTx > 0)) {
     throw new ExecutionNotArmedError("ONCHAIN_MAX_LAMPORTS_PER_TX must be greater than zero");
   }
+  if (config.maxActiveBinSlippageBps > HARD_MAX_ACTIVE_BIN_SLIPPAGE_BPS) {
+    // Same reasoning as the swap bound below: a hand-built config must not be able to
+    // widen it either. The cap is looser because the quantity is a bin count, not a
+    // loss — but a bound configuration can widen is not a bound.
+    throw new ExecutionNotArmedError(
+      `active-bin slippage ${config.maxActiveBinSlippageBps} bps exceeds the hard cap ` +
+        `of ${HARD_MAX_ACTIVE_BIN_SLIPPAGE_BPS} bps`,
+    );
+  }
   if (config.maxSlippageBps > HARD_MAX_SLIPPAGE_BPS) {
     // Unreachable via resolveOnchainConfig, which clamps. Kept because a hand-built
     // config object reaching here must not be able to widen the bound either.
@@ -265,6 +316,7 @@ export function authorizeExecution(
     wallet: wallet.publicKey,
     maxLamportsPerTx: config.maxLamportsPerTx,
     maxSlippageBps: config.maxSlippageBps,
+    maxActiveBinSlippageBps: config.maxActiveBinSlippageBps,
     armedAt: new Date().toISOString(),
   }) as ExecutionAuthorization;
 }
@@ -303,6 +355,68 @@ export function resolveSlippageBps(auth: ExecutionAuthorization, requestedBps?: 
     throw new ExecutionLimitError("slippage must be a positive number of basis points");
   }
   return Math.min(Math.floor(requested), auth.maxSlippageBps, HARD_MAX_SLIPPAGE_BPS);
+}
+
+/**
+ * The DLMM deposit's slippage, resolved for one pool, in all three units at once.
+ *
+ * The SDK takes ONE number — a percentage — and derives two different bounds from it,
+ * which is why this returns both rather than letting a call site convert one and
+ * forget the other:
+ *
+ *  - `bins`, the active-bin tolerance, `ceil(percent / (binStep / 100))`. This is the
+ *    number that decides whether funding lands: the program compares the `activeId`
+ *    baked into the instruction against the pool's activeId when it EXECUTES, and
+ *    rejects beyond this many bins of drift.
+ *  - `depositCeilingFactor`, `(100 + percent) / 100`, which the SDK applies to
+ *    `maxDeposit{X,Y}Amount`. Widening the tolerance therefore widens the most the
+ *    program may pull, and that is a spend the ceiling has to see.
+ *
+ * Both formulas MIRROR the SDK (`getAndCapMaxActiveBinSlippage`, `getSlippageMaxAmount`
+ * in the installed bundle) rather than approximate it, and `onchainExecutor.test.ts`
+ * binds them to the shipped text so a bump that changes either fails the build.
+ */
+export function depositSlippage(
+  auth: ExecutionAuthorization,
+  binStep: number,
+  requestedBps?: number,
+): { bps: number; percent: number; bins: number; depositCeilingFactor: number } {
+  const requested = requestedBps ?? auth.maxActiveBinSlippageBps;
+  if (!Number.isFinite(requested) || requested <= 0) {
+    throw new ExecutionLimitError("active-bin slippage must be a positive number of bps");
+  }
+  const bps = Math.min(
+    Math.floor(requested),
+    auth.maxActiveBinSlippageBps,
+    HARD_MAX_ACTIVE_BIN_SLIPPAGE_BPS,
+  );
+  const percent = bps / 100;
+
+  if (!Number.isFinite(binStep) || binStep <= 0) {
+    throw new ExecutionLimitError(`pool bin step ${binStep} is not a positive number`);
+  }
+
+  return {
+    bps,
+    percent,
+    // The SDK's own expression. `binStep` is in bps, so `binStep / 100` is the percent
+    // of price one bin covers; do not "simplify" it to `percent * 100 / binStep`
+    // without keeping the ceil, which is what makes a sub-bin tolerance still 1 bin.
+    bins: Math.ceil(percent / (binStep / 100)),
+    depositCeilingFactor: (100 + percent) / 100,
+  };
+}
+
+/**
+ * The most the program may pull for a deposit of `amount`, given that slippage.
+ *
+ * Mirrors the SDK's `getSlippageMaxAmount`, floor included. Used to charge the WIDENED
+ * figure to the spend ceiling rather than the nominal one: a ceiling checked against a
+ * number smaller than the transaction can move is not a ceiling, which is the same
+ * defect this file already fixed for bin-array rent.
+ */
+export function maxDepositLamports(amount: number, depositCeilingFactor: number): number {
+  return Math.floor(amount * depositCeilingFactor);
 }
 
 /* ------------------------------------------------------------------ */
@@ -674,6 +788,31 @@ function preflightRejection(err: unknown): { logs: string[] | null } | null {
   return null;
 }
 
+/**
+ * Whether a rejection is the program refusing a STALE ACTIVE BIN, rather than refusing
+ * the work itself.
+ *
+ * `ExceededBinSlippageTolerance` (Anchor 6004, `0x1774`) means the pool's active bin
+ * moved further than the tolerance baked into the instruction between the moment it was
+ * BUILT and the moment it was simulated. That is a statement about elapsed time, not
+ * about the transaction: the identical instructions rebuilt against current state may
+ * well be accepted, which is exactly what makes it worth rebuilding for and what
+ * separates it from every other deterministic rejection.
+ *
+ * Matched on the Anchor NAME first and the raw code second, because the cluster logs
+ * carry the name and the outer error message usually carries only `custom program
+ * error: 0x1774`. Both appear in the 9 Sep 2026 OTC-SOL incident.
+ */
+export function isStaleActiveBinRejection(
+  logs: readonly string[] | null,
+  message: string,
+): boolean {
+  const haystack = [message, ...(logs ?? [])].join(" | ");
+  return /ExceededBinSlippageTolerance|custom program error: 0x1774|Error Number: 6004/i.test(
+    haystack,
+  );
+}
+
 /** Builds a signed transaction for one attempt. Receives the blockhash to embed. */
 export type TransactionBuilder = (input: {
   blockhash: BlockhashWithExpiryBlockHeight;
@@ -708,6 +847,21 @@ export async function sendAndConfirm(
     lockedAccounts?: string[];
     label?: string;
     onAttempt?: (info: { attempt: number; signature: string; plan: PriorityFeePlan }) => void;
+    /**
+     * Whether a PREFLIGHT rejection should be rebuilt rather than reported as terminal.
+     *
+     * Preflight rejections are otherwise terminal here, and the reasoning is sound:
+     * the RPC simulated the transaction and refused it, so identical instructions would
+     * be refused identically. The exception is a rejection caused by state that has
+     * MOVED — the builder can produce different instructions, so "identical" no longer
+     * holds. Only a caller that actually rebuilds from fresh state may pass this;
+     * supplying it for a builder that returns the same bytes just burns the attempts.
+     *
+     * It is safe for the same reason the terminal report is honest: preflight means
+     * nothing entered the network, so there is nothing in flight to double-spend
+     * against. That is a stronger guarantee than the blockhash-expiry path has.
+     */
+    rebuildableRejection?: (logs: string[] | null, message: string) => boolean;
   } = {},
 ): Promise<SendResult> {
   const config = options.config ?? onchainConfig;
@@ -798,6 +952,27 @@ export async function sendAndConfirm(
          */
         const preflight = preflightRejection(err);
         if (preflight) {
+          const message = (err as Error).message ?? "";
+
+          if (
+            options.rebuildableRejection?.(preflight.logs, message) === true &&
+            attempt + 1 < config.maxBuildAttempts
+          ) {
+            /*
+             * Rebuild rather than give up. Nothing entered the network, so this is the
+             * safest possible place in this function to build a different transaction
+             * — safer than the expiry path, which relies on the old blockhash being
+             * dead rather than on the old bytes never having been broadcast.
+             */
+            lastError = err;
+            console.warn(
+              `[onchain] ${label}: rejected at preflight by state that has since moved ` +
+                `(attempt ${attempt + 1}/${config.maxBuildAttempts}); nothing was ` +
+                `broadcast, rebuilding against current state`,
+            );
+            continue;
+          }
+
           throw new TransactionFailedError(
             `${label}: rejected at preflight, so it never reached the network and ` +
               `nothing is in flight: ${(err as Error).message}` +
@@ -1415,6 +1590,12 @@ export function positionAccountBytes(binWidth: number): number {
  */
 export interface OpenCostQuote {
   binWidth: number;
+  /**
+   * The pool's bin step in bps, carried out so a caller can convert a rate of price
+   * movement into BINS without opening the pool a second time. The execution-time
+   * volatility gate in `liveExecution.ts` is the only consumer.
+   */
+  binStep: number;
   /** Position account rent + realloc + any bitmap extension. */
   positionSol: number;
   binArraysToCreate: number;
@@ -1449,6 +1630,7 @@ export async function quoteOpenCost(params: {
   const positionSol = quote.positionCost + quote.positionReallocCost + quote.bitmapExtensionCost;
   return {
     binWidth: maxBinId - minBinId + 1,
+    binStep: pool.lbPair.binStep,
     positionSol,
     binArraysToCreate: quote.binArraysCount,
     binArraySol: quote.binArrayCost,
@@ -1779,29 +1961,83 @@ async function sendSequentially(
      * it and sized by whatever budget it carries.
      */
     prepare?: (legacy: Transaction) => { transaction: Transaction; requestedUnits: number | null };
+    /**
+     * Re-derives the whole sequence from CURRENT chain state, for the attempt about to
+     * be built. Returns the full array so the caller's chunking can be checked, not
+     * just the one transaction.
+     *
+     * WHY REBUILDING IS SAFE HERE, given that this file's central rule is that an
+     * unconfirmed transaction is rebroadcast unchanged rather than rebuilt.
+     * `sendAndConfirm` calls its builder on the first attempt and then ONLY after the
+     * previous blockhash has definitively expired — the one condition that makes the
+     * previous signature permanently unlandable. At that point the bytes are dead, so
+     * changing the instructions is exactly as safe as changing the blockhash, which
+     * that loop already does. Any other failure never reaches a second build.
+     *
+     * WHY IT IS NECESSARY (9 Sep 2026). The DLMM funding instructions bake in the
+     * pool's `activeId` as READ AT BUILD TIME — both as the strategy's bin deltas and
+     * as the `activeId` the program compares against on execution. A rebuild that
+     * reuses them re-sends a stale active bin with a fresh blockhash, so on a moving
+     * pool every escalation attempt fails the same `ExceededBinSlippageTolerance`
+     * check, more expensively each time. The SDK caches that state on the pool object,
+     * so the caller must `refetchStates()` before rebuilding or it will hand back
+     * identical instructions.
+     */
+    rebuild?: (index: number, attempt: number) => Promise<Transaction[]>;
+    /**
+     * Passed straight to `sendAndConfirm`. Only meaningful alongside `rebuild`: it
+     * turns a preflight rejection into another build, and without a rebuild the next
+     * build produces the same bytes.
+     */
+    rebuildableRejection?: (logs: string[] | null, message: string) => boolean;
   },
 ): Promise<SendResult[]> {
   const landed: SendResult[] = [];
 
   for (const [index, original] of transactions.entries()) {
     const label = `dlmm ${context.operation} ${index + 1}/${transactions.length}`;
-    const prepared = context.prepare?.(original);
-    const legacy = prepared?.transaction ?? original;
-    const requestedUnits = prepared?.requestedUnits ?? null;
     try {
       landed.push(
         await sendAndConfirm(
           auth,
-          async ({ blockhash, plan }) =>
-            asVersionedTransaction(
-              legacy,
+          async ({ blockhash, plan, attempt }) => {
+            let source = original;
+
+            if (attempt > 0 && context.rebuild) {
+              const fresh = await context.rebuild(index, attempt);
+              /*
+               * Fail rather than guess. The chunking is derived from the bin range,
+               * which does not move, so a different length means the SDK partitioned
+               * the deposit differently than the run that is already part-landed —
+               * and sending `fresh[index]` under that assumption would fund a bin
+               * range that does not correspond to the chunk this slot represents.
+               * Refusing leaves a partial-execution error naming what did land.
+               */
+              if (fresh.length !== transactions.length) {
+                throw new DlmmExecutionError(
+                  `${label}: rebuild produced ${fresh.length} transaction(s) where the ` +
+                    `first build produced ${transactions.length}; refusing to map ` +
+                    `chunk ${index + 1} onto a different partition`,
+                );
+              }
+              const replacement = fresh[index];
+              if (!replacement) {
+                throw new DlmmExecutionError(`${label}: rebuild returned no transaction`);
+              }
+              source = replacement;
+            }
+
+            const prepared = context.prepare?.(source);
+            return asVersionedTransaction(
+              prepared?.transaction ?? source,
               blockhash,
               plan,
               auth.wallet,
               context.extraSigners ?? [],
-              requestedUnits,
-            ),
-          { label },
+              prepared?.requestedUnits ?? null,
+            );
+          },
+          { label, rebuildableRejection: context.rebuildableRejection },
         ),
       );
     } catch (err) {
@@ -2029,7 +2265,6 @@ export const dlmmExecutor: DlmmExecutor = {
   ): Promise<DlmmSendResult> {
     // Before any network call: the SOL leg is a spend, so it faces the ceiling first.
     assertWithinSpendLimit(auth, params.amountLamports, "dlmm openPosition");
-    const slippageBps = resolveSlippageBps(auth, params.slippageBps);
 
     const { StrategyType: Strategy } = await loadDlmmSdk();
     const pool = await openPool(params.poolAddress);
@@ -2051,6 +2286,17 @@ export const dlmmExecutor: DlmmExecutor = {
           `${pool.tokenY.publicKey.toBase58()}); amountLamports has no meaning here`,
       );
     }
+
+    /*
+     * The deposit's slippage is the ACTIVE-BIN bound, not the swap bound.
+     *
+     * This used to be `resolveSlippageBps(...) / 100`, i.e. Jupiter's 0.5% price
+     * ceiling handed to a parameter the SDK reads as a bin count — one bin of drift
+     * on any pool of bin_step 50 or more. Two quantities, one knob, and the tight one
+     * won. `depositSlippage` resolves it against the pool's own bin step and reports
+     * the bins it buys, so the log says what was actually sent.
+     */
+    const slip = depositSlippage(auth, pool.lbPair.binStep, params.slippageBps);
 
     const paired = new BN(Math.floor(params.pairedTokenAmount ?? 0));
     const sol = new BN(Math.floor(params.amountLamports));
@@ -2080,7 +2326,7 @@ export const dlmmExecutor: DlmmExecutor = {
         strategyType: Strategy[STRATEGY_TYPE[params.strategy]],
       },
       // The SDK takes slippage as a PERCENTAGE; our bound is in bps.
-      slippage: slippageBps / 100,
+      slippage: slip.percent,
     };
 
     /*
@@ -2110,11 +2356,17 @@ export const dlmmExecutor: DlmmExecutor = {
      * is easier to hold when there is exactly one thing to confirm.
      */
     if (binWidth <= DLMM_BINS_PER_INIT) {
-      // One transaction moves all three, so the ceiling faces their sum.
+      /*
+       * One transaction moves all three, so the ceiling faces their sum — and the
+       * deposit term is the SLIPPAGE-WIDENED one, because that is what the program is
+       * authorised to pull (`maxDepositXAmount`), not the nominal figure we asked for.
+       */
       assertWithinSpendLimit(
         auth,
-        params.amountLamports + positionRentLamports + binArrayRentLamports,
-        "dlmm openPosition (deposit + rent)",
+        maxDepositLamports(params.amountLamports, slip.depositCeilingFactor) +
+          positionRentLamports +
+          binArrayRentLamports,
+        "dlmm openPosition (max deposit + rent)",
       );
 
       const transaction = await pool.initializePositionAndAddLiquidityByStrategy(deposit);
@@ -2138,10 +2390,14 @@ export const dlmmExecutor: DlmmExecutor = {
      * `initializePosition(70)` plus top-level `increasePositionLength` instructions,
      * which is the only shape the program accepts for a wide account.
      *
-     * The liquidity transactions cannot be built ahead of time: the SDK reads the
-     * position account to build them, so it must already exist on-chain. That is what
-     * makes this two phases rather than one, and why the failure mode below is real
-     * rather than theoretical.
+     * Two phases is forced by the CREATE, not by the funding. This comment used to say
+     * the funding transactions "cannot be built ahead of time: the SDK reads the
+     * position account", which is false in 1.9.14 — `chunkDepositWithRebalanceEndpoint`
+     * uses the position only as an account meta and never fetches it. That is worth
+     * knowing rather than tidying away: it is what lets `scripts/reproWideFunding.cjs`
+     * inspect real funding transactions for free, and what makes the rebuild below
+     * cheap. The failure mode is still real — once the create lands, the account
+     * exists and holds rent whatever happens next.
      *
      * The rent is charged here too, and it is NOT small — it scales with the width
      * (~0.996 SOL at 1400 bins). It faces the spend ceiling for the same reason the
@@ -2153,11 +2409,13 @@ export const dlmmExecutor: DlmmExecutor = {
       positionRentLamports,
       "dlmm openPosition (wide position account rent)",
     );
-    // The funding transactions carry the deposit and any new bin arrays.
+    // The funding transactions carry the deposit and any new bin arrays. Same
+    // widening as the narrow path: the ceiling faces what the program MAY pull.
     assertWithinSpendLimit(
       auth,
-      params.amountLamports + binArrayRentLamports,
-      "dlmm openPosition (deposit + bin array rent)",
+      maxDepositLamports(params.amountLamports, slip.depositCeilingFactor) +
+        binArrayRentLamports,
+      "dlmm openPosition (max deposit + bin array rent)",
     );
 
     console.log(
@@ -2166,6 +2424,12 @@ export const dlmmExecutor: DlmmExecutor = {
         `${(positionRentLamports / 1e9).toFixed(4)} SOL account rent + ` +
         `${(binArrayRentLamports / 1e9).toFixed(4)} SOL for ${cost.binArraysCount} bin arrays, ` +
         `~${cost.transactionCount} tx); creating the account before funding it`,
+    );
+    console.log(
+      `[onchain/dlmm] ${params.poolAddress}: active-bin tolerance ${slip.bins} bin(s) ` +
+        `(${slip.percent}% at bin_step ${pool.lbPair.binStep}); max deposit ` +
+        `${maxDepositLamports(params.amountLamports, slip.depositCeilingFactor)} lamports ` +
+        `against ${params.amountLamports} nominal`,
     );
 
     /*
@@ -2202,6 +2466,7 @@ export const dlmmExecutor: DlmmExecutor = {
      */
     let funded: SendResult[] = [];
     try {
+      const activeIdAtBuild = pool.lbPair.activeId;
       const liquidityTxs = await pool.addLiquidityByStrategyChunkable(deposit);
 
       if (liquidityTxs.length === 0) {
@@ -2239,6 +2504,35 @@ export const dlmmExecutor: DlmmExecutor = {
         operation: "openPosition (fund wide position)",
         position: positionAddress,
         extraSigners: [],
+        /*
+         * Every rebuild re-reads the pool and re-derives the instructions, so the
+         * `activeId` they carry is the one the cluster will compare against rather
+         * than the one that was current when the first attempt was signed.
+         *
+         * `refetchStates` is what makes this more than a no-op: the SDK builds from
+         * `this.lbPair`, which it caches, so without the refetch a "rebuild" hands
+         * back byte-identical instructions and escalates the fee on a transaction
+         * that is going to be rejected for the same reason.
+         */
+        /*
+         * The 9 Sep 2026 OTC-SOL failure was a PREFLIGHT rejection, which this file
+         * otherwise treats as terminal — correctly, for every other cause. Without
+         * this the rebuild above would be dead code on the exact incident it was
+         * written for: `sendAndConfirm` only rebuilds after a blockhash EXPIRES, and
+         * the funding transaction never got that far. It was refused in simulation,
+         * deterministically, on every attempt it was allowed to make (one).
+         */
+        rebuildableRejection: isStaleActiveBinRejection,
+        rebuild: async (index, attempt) => {
+          await pool.refetchStates();
+          console.log(
+            `[onchain/dlmm] ${positionAddress}: rebuilding funding tx ${index + 1} for ` +
+              `attempt ${attempt + 1} — active bin ${activeIdAtBuild} -> ` +
+              `${pool.lbPair.activeId} (${Math.abs(pool.lbPair.activeId - activeIdAtBuild)} ` +
+              `bin(s) of drift, tolerance ${slip.bins})`,
+          );
+          return pool.addLiquidityByStrategyChunkable(deposit);
+        },
         prepare: (legacy) => {
           const { kept, dropped, keptBinArrayInits } = partitionFundingInstructions(
             legacy.instructions,
