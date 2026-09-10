@@ -16,7 +16,16 @@ import {
   minutesOfHourInZone,
   readPostNewsFastWindow,
 } from "./services/screenerCadence.js";
-import { describeReconciliation, reconcilePositions } from "./services/reconciliation.js";
+import {
+  assessWalletDrift,
+  describeReconciliation,
+  describeWalletDrift,
+  reconcilePositions,
+} from "./services/reconciliation.js";
+import { assessLiveSizing, describeLiveSizing } from "./services/liveSizingGuard.js";
+import { getWalletBalanceSol } from "./services/solana.js";
+import { getStartingBalanceUsd } from "./config/startingBalance.js";
+import { sendMessage } from "./services/telegram.js";
 import {
   describeLiveExecutionBlockers,
   isLiveExecutionActive,
@@ -143,6 +152,71 @@ async function preflight(): Promise<void> {
   }
 }
 
+/**
+ * The two wallet-level checks, reported together because they answer one operator
+ * question — "is what the engine believes about its money still true?" — from opposite
+ * ends: the capital it SIZES against, and the balance it REPORTS.
+ *
+ * Reports; never throws, never refuses, never corrects. A failure here is a failure of
+ * diagnostics, and diagnostics must not be able to stop an engine that is holding a
+ * position. The enforcement lives at the spend (`liveSizingGuard.ts` via
+ * `openLivePosition`) and the correction is an operator's `.env` edit.
+ *
+ * Alerts are sent only for a BREACH, and only once per run of this function, so a check
+ * on the screener's clock cannot turn a standing condition into a stream of messages
+ * the operator learns to ignore.
+ */
+async function reportCapitalHealth(): Promise<void> {
+  const address = liveMicroCapital.walletAddress;
+  let walletSol: number | null = null;
+  let readError: string | null = null;
+  if (address) {
+    try {
+      walletSol = (await getWalletBalanceSol(address)).sol;
+    } catch (err) {
+      readError = err instanceof Error ? err.message : String(err);
+    }
+  } else {
+    readError = "SOLANA_WALLET_ADDRESS is not set";
+  }
+
+  const sizing = assessLiveSizing({ balanceSol: walletSol, balanceError: readError });
+  const line = describeLiveSizing(sizing);
+  if (sizing.ok) console.log(`[main]     ${line}`);
+  else {
+    console.error(`[main]     ${line}`);
+    await sendMessage(line, false).catch(() => undefined);
+  }
+
+  try {
+    const solPriceUsd = await fetchSolPriceUsd().catch(() => null);
+    const drift = assessWalletDrift({
+      // The same identity the dashboard renders: baseline plus realised PnL. It mixes
+      // paper and live trades, which `getLifetimeStats` does on purpose and which is
+      // stated in CLAUDE.md — the drift is measured against the book as PUBLISHED, not
+      // against a version of it invented here.
+      bookUsd: getStartingBalanceUsd() + getLifetimeStats().realizedPnlUsd,
+      walletSol,
+      solPriceUsd,
+      thresholds: {
+        maxPct: env.WALLET_DRIFT_MAX_PCT,
+        maxSol: env.WALLET_DRIFT_MAX_SOL,
+      },
+    });
+    const driftLine = describeWalletDrift(drift);
+    if (drift.status === "drifted") {
+      console.warn(`[main]     ${driftLine}`);
+      await sendMessage(driftLine, false).catch(() => undefined);
+    } else {
+      console.log(`[main]     ${driftLine}`);
+    }
+  } catch (err) {
+    console.warn(
+      `[main] wallet drift check unavailable: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
 async function main(): Promise<void> {
   banner();
   await preflight();
@@ -173,6 +247,15 @@ async function main(): Promise<void> {
           `${err instanceof Error ? err.message : String(err)}`,
       );
     }
+    /*
+     * And the two checks that had no home until 11 Sep 2026: is the capital this engine
+     * sizes against actually in the wallet, and does the accounting baseline still
+     * describe it. Both are REPORTED here and neither refuses a start — the enforcement
+     * of the first lives in `openLivePosition`, where it can refuse a SPEND without
+     * also stopping the monitor from enforcing a stop-loss on a position already open.
+     * Refusing to boot would hold the exits too, which is the opposite of prudent.
+     */
+    await reportCapitalHealth();
   }
 
   const tasks = [
@@ -218,6 +301,27 @@ async function main(): Promise<void> {
       timezone: env.TZ,
     }),
   ];
+
+  /*
+   * The capital checks again, PERIODICALLY, not only at boot.
+   *
+   * Both quantities move while the process does not restart: the wallet is eroded by
+   * fees, slippage and rent, and the book steps on every close. A boot-only check is
+   * exactly what let a `LIVE_CAPITAL_SOL` that was correct when it was set become wrong
+   * by 0.169 SOL without anything noticing. Its own lock, so a slow RPC read cannot
+   * delay a screener tick or an exit.
+   *
+   * Live only. In paper mode there is no wallet to compare anything to, and the cycle
+   * stays byte-identical — the same discipline every other live-only gate follows.
+   */
+  if (isLiveExecutionActive()) {
+    tasks.push(
+      cron.schedule(CRON.CAPITAL_HEALTH, withLock("capital-health", reportCapitalHealth), {
+        timezone: env.TZ,
+      }),
+    );
+    console.log(`[cron] capital  ${CRON.CAPITAL_HEALTH}     (${env.TZ})`);
+  }
 
   if (env.FAST_MONITOR_ENABLED) {
     /*

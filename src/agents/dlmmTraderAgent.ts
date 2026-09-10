@@ -20,6 +20,7 @@ import {
   assessExecutionBreaker,
   assessTokenBench,
   benchTokenKey,
+  describeUnkeyedBenches,
   indexExecutionHistory,
   isPoolDenied,
   poolDenylist,
@@ -1547,6 +1548,20 @@ async function seekNewEntry(): Promise<EntrySummary> {
      * past it (OTC-SOL, four pools: one benched at 13:32, another opened at 21:22).
      */
     const executionHistory = indexExecutionHistory(getPoolExecutionRecords());
+
+    /*
+     * SAY WHEN THE TOKEN-LEVEL BENCH IS NARROWER THAN IT READS.
+     *
+     * The by-token half is only as good as the `token_mint` column, and on 11 Sep 2026
+     * every stored row had a NULL one — so this gate was fully implemented, fully
+     * tested, and propagating nothing, while the boot line reported it as armed. A gate
+     * that silently does nothing is the "all bin arrays exist" line again, and this is
+     * the sentence that stops it happening a third time. `openLivePosition` backfills
+     * the mint whenever it resolves a pair, so the warning is self-clearing.
+     */
+    const unkeyed = describeUnkeyedBenches(executionHistory);
+    if (unkeyed) console.warn(unkeyed);
+
     const executable: typeof fresh = [];
 
     for (const pool of fresh) {
