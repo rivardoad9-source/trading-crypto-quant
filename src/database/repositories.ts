@@ -1001,6 +1001,34 @@ export function recordPoolExecutionFailure(input: {
 }
 
 /**
+ * Teaches an EXISTING bench row the token it is a pool of, without touching anything
+ * else about it.
+ *
+ * WHY THIS IS SEPARATE FROM RECORDING A FAILURE. The token-level bench shipped on
+ * 10 Sep 2026 and every write path passes `tokenMint`, yet on 11 Sep all six stored
+ * rows still had a NULL one — rows written before the column existed keep their NULL
+ * until the pool fails AGAIN, which is exactly the event the bench is supposed to
+ * prevent. So the mint cannot only be learned from failures: it has to be learned the
+ * first time the engine resolves the pair, which is on the way IN.
+ *
+ * It never creates a row and never touches the counters, the stage or the timestamps.
+ * A pool with no history stays with no history — inventing a zero-failure row here
+ * would put every pool the engine has ever looked at into the breaker's table and make
+ * "has this pool ever failed" unanswerable from its own storage.
+ *
+ * `WHERE token_mint IS NULL` for the same reason `recordPoolExecutionFailure` uses
+ * COALESCE: a known key must never be overwritten, least of all by a later caller with
+ * a different idea of which side of the pair is the token.
+ */
+export function learnPoolExecutionToken(poolAddress: string, tokenMint: string): void {
+  db.prepare(
+    `UPDATE pool_execution_failures
+        SET token_mint = @tokenMint
+      WHERE pool_address = @poolAddress AND token_mint IS NULL`,
+  ).run({ poolAddress, tokenMint });
+}
+
+/**
  * Clears a pool's consecutive-failure run after a confirmed open.
  *
  * `total_failures` is deliberately NOT reset: it is the lifetime count an operator
@@ -1017,4 +1045,219 @@ export function recordPoolExecutionSuccess(poolAddress: string, pairName: string
        consecutive_failures = 0,
        last_success_at      = CURRENT_TIMESTAMP`,
   ).run({ poolAddress, pairName });
+}
+
+/* ------------------------------------------------------------------ */
+/* Live execution attempts — the cost of failures that produced nothing */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One live entry attempt that could have spent lamports.
+ *
+ * See the table comment in `schema.sql`: a failed open writes no position row by
+ * design, which is right, and the consequence discovered on 11 Sep 2026 is that the
+ * SOL it burns is invisible everywhere. This is the ledger for that spend, and it
+ * exists beside the position rows rather than inside them precisely because a failed
+ * attempt is not a position.
+ */
+export type LiveAttemptOutcome = "opened" | "failed";
+
+/**
+ * What became of the tokens the balancing swap bought.
+ *
+ * `clean` — the swap was unwound back to SOL, nothing is left holding value.
+ * `orphan` — something IS still on-chain (a funded position, or a token balance the
+ *   rescue could not sell) and needs a human.
+ * `none` — nothing had been swapped when the attempt failed, so there was nothing to
+ *   unwind. Distinct from `clean`, which asserts an unwind actually ran.
+ * `unknown` — the unwind's outcome could not be established. Never collapsed into
+ *   `clean`: an unverified rescue is not a successful one.
+ */
+export type LiveAttemptUnwind = "clean" | "orphan" | "none" | "unknown";
+
+export interface LiveExecutionAttemptInput {
+  poolAddress: string;
+  pairName: string | null;
+  tokenMint: string | null;
+  outcome: LiveAttemptOutcome;
+  stage: string | null;
+  walletLamportsBefore: number | null;
+  walletLamportsAfter: number | null;
+  unwind: LiveAttemptUnwind;
+  swapSignature: string | null;
+  rescueSignature: string | null;
+  positionAddress: string | null;
+  reason: string | null;
+}
+
+export interface LiveExecutionAttempt extends LiveExecutionAttemptInput {
+  id: number;
+  attemptedAt: string;
+  /** before - after, or null when either read failed. NEVER 0 as a stand-in. */
+  costLamports: number | null;
+}
+
+/**
+ * The measured cost of one attempt, or null.
+ *
+ * Null whenever either balance is missing, and null rather than 0 for the same reason
+ * `est_gas_cost_usd` is: an unmeasured cost counted as zero would let a real spend
+ * silently deflate the budget the breaker enforces.
+ *
+ * A NEGATIVE result — the wallet is richer afterwards — is kept as-is rather than
+ * clamped. It is real when a recovery reclaimed more rent than the attempt spent, and
+ * clamping it to zero would hide the one case where the accounting deserves a look.
+ */
+export function attemptCostLamports(
+  before: number | null,
+  after: number | null,
+): number | null {
+  if (before === null || after === null) return null;
+  if (!Number.isFinite(before) || !Number.isFinite(after)) return null;
+  return Math.round(before - after);
+}
+
+export function recordLiveExecutionAttempt(input: LiveExecutionAttemptInput): void {
+  db.prepare(
+    `INSERT INTO live_execution_attempts (
+       pool_address, pair_name, token_mint, outcome, stage,
+       wallet_lamports_before, wallet_lamports_after, cost_lamports,
+       unwind, swap_signature, rescue_signature, position_address, reason
+     ) VALUES (
+       @poolAddress, @pairName, @tokenMint, @outcome, @stage,
+       @walletLamportsBefore, @walletLamportsAfter, @costLamports,
+       @unwind, @swapSignature, @rescueSignature, @positionAddress, @reason
+     )`,
+  ).run({
+    ...input,
+    reason: input.reason === null ? null : input.reason.slice(0, 500),
+    costLamports: attemptCostLamports(input.walletLamportsBefore, input.walletLamportsAfter),
+  });
+}
+
+interface RawAttemptRow {
+  id: number;
+  attempted_at: string;
+  pool_address: string;
+  pair_name: string | null;
+  token_mint: string | null;
+  outcome: string;
+  stage: string | null;
+  wallet_lamports_before: number | null;
+  wallet_lamports_after: number | null;
+  cost_lamports: number | null;
+  unwind: string | null;
+  swap_signature: string | null;
+  rescue_signature: string | null;
+  position_address: string | null;
+  reason: string | null;
+}
+
+function toAttempt(r: RawAttemptRow): LiveExecutionAttempt {
+  return {
+    id: r.id,
+    attemptedAt: r.attempted_at,
+    poolAddress: r.pool_address,
+    pairName: r.pair_name,
+    tokenMint: r.token_mint,
+    outcome: r.outcome === "opened" ? "opened" : "failed",
+    stage: r.stage,
+    walletLamportsBefore: r.wallet_lamports_before,
+    walletLamportsAfter: r.wallet_lamports_after,
+    costLamports: r.cost_lamports,
+    unwind: (["clean", "orphan", "none", "unknown"] as const).includes(
+      r.unwind as LiveAttemptUnwind,
+    )
+      ? (r.unwind as LiveAttemptUnwind)
+      : "unknown",
+    swapSignature: r.swap_signature,
+    rescueSignature: r.rescue_signature,
+    positionAddress: r.position_address,
+    reason: r.reason,
+  };
+}
+
+/** The most recent attempts, newest first. Diagnostics for `/status` and the audit. */
+export function getRecentLiveExecutionAttempts(limit = 20): LiveExecutionAttempt[] {
+  return (
+    db
+      .prepare(
+        `SELECT * FROM live_execution_attempts ORDER BY datetime(attempted_at) DESC, id DESC LIMIT ?`,
+      )
+      .all(limit) as RawAttemptRow[]
+  ).map(toAttempt);
+}
+
+export interface FailedAttemptCost {
+  /** Sum of measured costs, in lamports. Only rows that HAVE a measurement. */
+  lamports: number;
+  /** How many failed attempts fell in the window. */
+  attempts: number;
+  /**
+   * How many of those carried no measurement, and so contributed nothing to the sum.
+   *
+   * Reported rather than hidden: a budget summed from three rows of which two were
+   * unmeasured is a different fact from one summed from three measured rows, and only
+   * one of them means the breaker is seeing what it thinks it is seeing.
+   */
+  unmeasured: number;
+}
+
+/**
+ * What FAILED live attempts have cost the wallet over the last `hours`.
+ *
+ * The `datetime(...)` comparison is the same UTC-without-a-zone-marker treatment the
+ * rest of this file uses: SQLite writes `CURRENT_TIMESTAMP` in UTC and comparing it in
+ * SQL keeps a local-clock box (Asia/Jakarta, seven hours out) from measuring the wrong
+ * window. `parseDbTimestamp` is the JavaScript-side equivalent, and this is why the sum
+ * happens here rather than over rows read into memory.
+ */
+export function sumFailedAttemptCost(hours: number): FailedAttemptCost {
+  const row = db
+    .prepare(
+      `SELECT
+         COALESCE(SUM(CASE WHEN cost_lamports IS NOT NULL THEN cost_lamports ELSE 0 END), 0) AS lamports,
+         COUNT(*)                                                     AS attempts,
+         SUM(CASE WHEN cost_lamports IS NULL THEN 1 ELSE 0 END)       AS unmeasured
+       FROM live_execution_attempts
+       WHERE outcome = 'failed'
+         AND datetime(attempted_at) >= datetime('now', ?)`,
+    )
+    .get(`-${hours} hours`) as
+    | { lamports: number; attempts: number; unmeasured: number | null }
+    | undefined;
+
+  return {
+    lamports: row?.lamports ?? 0,
+    attempts: row?.attempts ?? 0,
+    unmeasured: row?.unmeasured ?? 0,
+  };
+}
+
+/**
+ * Deletes recorded attempts, which is how the failed-cost breaker is CLEARED.
+ *
+ * `FailedCostBreakerError` holds new entries until the recent failed spend falls back
+ * under the budget, and a budget that can only be waited out is not a breaker an
+ * operator controls — it is a timer. This is the other half: once the cause has been
+ * dealt with (a lowered `LIVE_CAPITAL_SOL`, a topped-up wallet, a denylisted token),
+ * the attempts that recorded it are cleared and entries resume.
+ *
+ * `olderThanHours` defaults to 0, meaning everything. A caller that wants to keep the
+ * recent history while releasing the hold cannot: releasing the hold IS forgetting the
+ * spend, and pretending otherwise would leave a breaker nobody can clear.
+ *
+ * Returns how many rows went, so a command can report a number rather than a claim.
+ */
+export function clearLiveExecutionAttempts(olderThanHours = 0): number {
+  const result =
+    olderThanHours > 0
+      ? db
+          .prepare(
+            `DELETE FROM live_execution_attempts
+              WHERE datetime(attempted_at) < datetime('now', ?)`,
+          )
+          .run(`-${olderThanHours} hours`)
+      : db.prepare(`DELETE FROM live_execution_attempts`).run();
+  return result.changes;
 }

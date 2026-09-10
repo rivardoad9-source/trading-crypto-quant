@@ -21,6 +21,21 @@ export const CRON = {
    */
   DLMM_TICK: "*/5 * * * *",
   /**
+   * The wallet-vs-capital and wallet-vs-book checks, hourly, LIVE ONLY.
+   *
+   * Deliberately slower than every other clock in this object. Both quantities move
+   * slowly — a wallet is eroded by fees and rent, a book steps on a close — and each
+   * run costs an RPC balance read and a SOL/USD quote, which is the same endpoint the
+   * dashboard's health widget already rate-limits itself against. Hourly is often
+   * enough that a `LIVE_CAPITAL_SOL` gone stale is caught within one screener cadence
+   * of it mattering, and rare enough that it cannot become the reason a provider starts
+   * answering 429.
+   *
+   * It is not the enforcement. `openLivePosition` re-reads the balance and refuses at
+   * the spend; this is the clock that tells an operator BEFORE an entry is refused.
+   */
+  CAPITAL_HEALTH: "7 * * * *",
+  /**
    * Position monitor every 60 seconds.
    *
    * Deliberately far faster than the screener, and independent of it. Exit thresholds
