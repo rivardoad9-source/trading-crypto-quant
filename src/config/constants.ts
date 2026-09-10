@@ -58,13 +58,13 @@ export const DLMM_BASE_CADENCE_MIN = 30;
  * rewritten, and fee flow is at its highest — the conditions this strategy is built for.
  * A 30-minute clock can spend the whole move waiting for its next tick.
  *
- * WHY BOUNDED. Every tick that reaches the screener is a DeepSeek call, so an unbounded
- * fast cadence would be a permanent 6x token bill for a condition that is interesting for
- * about two hours. 120 minutes covers the release reaction plus the first range reset,
- * and events are only a few a week, so the added burn is minutes-of-reaction money rather
- * than a change to the engine's operating cost.
+ * WHY BOUNDED, AND WHY 90. Every tick that reaches the screener is a DeepSeek call, so an
+ * unbounded fast cadence would be a permanent 6x token bill for a condition that is
+ * interesting for about an hour. 90 minutes is the operator's call (10 Sep 2026): it
+ * covers the release reaction and the first range reset, and hands the engine back to its
+ * normal clock before the fast stretch can become the way it always trades.
  */
-export const DLMM_POST_NEWS_FAST_MIN = 120;
+export const DLMM_POST_NEWS_FAST_MIN = 90;
 
 /** Meteora DLMM charges fees per swap; APR figures from the API are 24h-based. */
 export const HOURS_PER_YEAR = 24 * 365;
