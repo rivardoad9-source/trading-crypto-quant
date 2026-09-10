@@ -95,6 +95,21 @@ export function buildStatusText(): string {
     `🎛 Engine: ${isEnginePaused() ? "⏸ **PAUSED** (scanning off)" : "▶️ **RUNNING**"}`,
   ];
 
+  /*
+   * Printed only while a window is in force, and on its own line rather than folded
+   * into the Engine line above. A news blackout and a Telegram /pause are independent
+   * reasons for the same silence: an operator seeing "RUNNING" and no new positions
+   * needs to be told which one applies, and /resume does not clear this one.
+   *
+   * Null in paper mode, where the gate is inert — see `Overview.newsBlackout`.
+   */
+  if (o.newsBlackout) {
+    lines.push(
+      `📰 News: ⛔ **BLACKOUT** — ${o.newsBlackout.event} until ${o.newsBlackout.untilWib} ` +
+        `(new entries paused; monitoring, exits and fee accrual continue)`,
+    );
+  }
+
   if (active.length > 0) {
     lines.push("", `**Active positions:**`);
     for (const row of active) {

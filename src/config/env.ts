@@ -439,6 +439,32 @@ const EnvSchema = z
      */
     MIN_FEE_COST_COVERAGE: numeric(2.5),
 
+    /* ---- Macro-news entry blackout (live path only) ---- */
+    /**
+     * Whether NEW entries are skipped during a scheduled US data release (CPI, PPI,
+     * NFP, FOMC). Monitoring, fee accrual and closes are never affected.
+     *
+     * Defaults to ON, which is the safe direction here for once: the gate reads a file
+     * this repository does not write, and on a box with no calendar the read fails open
+     * and warns, so an enabled-but-unfed gate costs a log line rather than an outage.
+     * Leaving it OFF by default would instead mean a correctly provisioned host quietly
+     * not using a calendar it is refreshing.
+     *
+     * INERT IN PAPER MODE regardless: the read lives behind `isLiveExecutionActive()`
+     * in `runDlmmTradingCycle`, so a dry run does not open the file at all.
+     */
+    NEWS_BLACKOUT_ENABLED: booleanish(true),
+    /**
+     * Where the blackout calendar lives. Written by a Hermes cron from the NewsAgent
+     * BLS/FOMC forward calendar (release -60min -> +45min) plus any ad-hoc operator
+     * windows; never written by this engine.
+     *
+     * Resolved against `process.cwd()` like `DATABASE_PATH`, so an absolute path also
+     * works — which is what the live host uses, since the cron and the engine do not
+     * share a working directory.
+     */
+    NEWS_BLACKOUT_FILE: z.string().default("./data/news_blackout.json"),
+
     // Database
     DATABASE_PATH: z.string().default("./data/flowmetrix.db"),
   })

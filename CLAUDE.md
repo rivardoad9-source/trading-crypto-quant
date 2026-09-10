@@ -858,6 +858,88 @@ denylist, breaker, rehearsal — and `seekNewEntry` catches THAT, not one subcla
 to catch `BinWidthExceededError` specifically, so any new refusal would have fallen
 through and paged the operator for a pool the engine had merely declined to enter.
 
+### The news blackout is a TIMING gate, and the only one that is not about a pool
+
+Every other gate on the entry path asks something about the candidate — its width, its
+rent, its holders, its volatility, its history. `src/services/newsBlackout.ts` asks
+about the CLOCK: is the next few minutes a bad moment to be putting capital into a
+range at all, because a scheduled US release (CPI, PPI, NFP, FOMC) is about to move SOL
+several bins in seconds. That is the same drift `ActiveBinRaceError` refuses an entry
+over, arriving on a calendar instead of out of the pool's own realized volatility — and
+the screener's `MAX_REALIZED_VOL_PCT_PER_HOUR` cannot see it, because a pool is not
+volatile *yet* at 20:29 for a 20:30 print.
+
+**It prices nothing and it moves no threshold.** Friction, breakeven, anti-rug, the
+volatility gates, the cooldowns, `LIVE_MAX_POSITION_BINS` and `POOL_DENYLIST` are all
+untouched and still decide whether a pool is worth entering. This decides only *when*,
+and it is not a `LiveEntryRefusedError` — it never reaches `openLivePosition`, because
+`seekNewEntry` is not called at all.
+
+**ENTRIES ONLY, and the ordering in `runDlmmTradingCycle` is what enforces it.** The
+monitor stage runs ABOVE the skip decision, so fee accrual, stop-losses and closes run
+through a window exactly as at any other time. Blocking an EXIT during a release is the
+opposite of prudent — the stop-loss is most needed precisely then, and a position the
+engine has stopped acting on is the 10 Sep half-landed open all over again.
+`newsBlackout.test.ts` asserts the monitor call precedes the check.
+
+**A blackout and `/pause` are INDEPENDENT reasons for the same silence**, and both are
+reported when both apply. `/resume` does not shorten a blackout and a window ending does
+not un-pause a paused engine, so neither is expressed in terms of the other and
+`engineControl.ts` knows nothing about the calendar. The `/pause` skip reason keeps its
+exact previous wording, because it is already written to
+`scan_funnel_cycles.skip_reason`; a blackout appends a second clause rather than
+replacing it. One flag for two causes is how "why is nothing opening" becomes
+unanswerable from the log — the same failure the funnel-ordering fix was about.
+
+**The calendar is READ, never written.** A Hermes cron renders
+`data/news_blackout.json` from the NewsAgent BLS/FOMC forward calendar (release −60min →
++45min), plus ad-hoc operator windows. Keeping the fetch out of the engine is what stops
+a dead calendar service from stalling a trading cycle. `NEWS_BLACKOUT_FILE` resolves
+against the working directory like `DATABASE_PATH`, so the live host passes an absolute
+path — the cron and the engine do not share a cwd.
+
+Five properties are load-bearing:
+
+- **FAILS OPEN, LOUDLY, on every fault.** Missing file, malformed JSON, an unreadable
+  instant, a `generated_at` over 48h old — all mean "trade normally", all warn, and
+  nothing on this path can throw. Same rule as `assessPoolCooldown` and deliberately the
+  opposite of `screenTokenSafety`: this protects RETURNS, and capital is protected by the
+  gates that fail closed. A third party's dead cron must never be able to freeze an
+  unattended engine.
+- **A missing `generated_at` is NOT stale**, and that asymmetry is deliberate. The
+  windows carry absolute instants and none is longer than two hours, so honouring an
+  unverifiable calendar can delay an entry by minutes and can never freeze trading, while
+  ignoring it would silently switch the gate off whenever the writer omitted one field.
+  The unverifiable freshness is warned about every cycle instead. The 48h rule exists for
+  the other direction only: records nobody is maintaining must not hold the engine out of
+  the market.
+- **START INCLUSIVE, END EXCLUSIVE.** The instant a window ends is the first instant
+  trading is allowed again, which is what "until 20:15" means to whoever reads it; and
+  adjacent windows from the same feed share an instant, which a closed upper bound would
+  put inside both. Where windows overlap the EARLIEST-ending one is reported, so the
+  operator is never told the freeze is longer than it is.
+- **A broken window is dropped, not guessed at, and the file is not discarded over it.**
+  Guessing an unreadable instant is how a gate enforces a period nobody scheduled;
+  throwing the file away over one bad row is how a gate switches itself off. Rejection is
+  per row, with a warning per row.
+- **INERT IN PAPER MODE**, behind `isLiveExecutionActive()` — the same discipline
+  `defaultBacktestConfig()`, `liveConfig.ts` and the execution breaker follow. A dry run
+  does not open the file, logs nothing, and produces a byte-identical cycle, so cached
+  sweep results stay comparable. `/api/overview` and `/status` therefore publish
+  `newsBlackout: null` in paper mode: reporting a window the engine is not enforcing
+  would be an advertised bound that is not enforced, which is the defect class this file
+  already records three times.
+
+**`isLiveExecutionActive()` MOVED, and it is still one definition.** It now lives in
+`src/config/liveConfig.ts` and `liveExecution.ts` re-exports it, so every existing caller
+is unchanged and "the single predicate the engine asks" stays literally true. The reason
+is import-graph hygiene, not trading logic: `services/overview.ts` has to ask the
+question — a status payload must not advertise a gate the engine is not applying — and
+`overview.ts` is imported by `api/server.ts`, which `npm run api` runs as a process of
+its own. Importing the bridge for one boolean would have pulled `onchainExecutor.ts`
+into the import graph of the network-facing process. `newsBlackout.test.ts` asserts
+`overview.ts` never imports the bridge and that no second copy of the predicate exists.
+
 ### `scripts/closeOrphanPosition.cjs` is dry-run by default
 
 Same shape as `scripts/testMicroSwap.ts`, and not decoration: it loads a private key and
