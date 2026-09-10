@@ -1,6 +1,10 @@
 import { PublicKey } from "@solana/web3.js";
-import { env, isLiveTradingEnabled } from "../config/env.js";
-import { liveMicroCapital, LAMPORTS_PER_SOL } from "../config/liveConfig.js";
+import { env } from "../config/env.js";
+import {
+  isLiveExecutionActive,
+  liveMicroCapital,
+  LAMPORTS_PER_SOL,
+} from "../config/liveConfig.js";
 import {
   getPoolExecutionRecord,
   recordPoolExecutionFailure,
@@ -54,10 +58,16 @@ import { sendError } from "./telegram.js";
  * that is merely behind it.
  */
 
-/** Whether the engine should execute on-chain rather than simulate. */
-export function isLiveExecutionActive(): boolean {
-  return isLiveTradingEnabled && liveMicroCapital.enabled;
-}
+/**
+ * Whether the engine should execute on-chain rather than simulate.
+ *
+ * STILL THE SINGLE PREDICATE the engine asks, and still reached through this module by
+ * every caller that was already asking it — this is a re-export, not a second copy.
+ * The definition sits in `config/liveConfig.ts` so that `services/overview.ts` can ask
+ * the same question without importing this file, which would have dragged the signer
+ * into the import graph of the API-only process. See the note on the definition.
+ */
+export { isLiveExecutionActive };
 
 export interface LiveOpenOutcome {
   /** The DLMM position account. Without this nothing can later claim or close. */

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { env } from "./env.js";
+import { env, isLiveTradingEnabled } from "./env.js";
 
 /**
  * Live micro-capital profile: 1.15 SOL of real money, not the $1,000 paper baseline.
@@ -353,6 +353,27 @@ if (!resolved.ok) {
 }
 
 export const liveMicroCapital: LiveMicroCapitalConfig = resolved.config;
+
+/**
+ * Whether the engine should execute on-chain rather than simulate.
+ *
+ * THE SINGLE PREDICATE, and it still is: `liveExecution.ts` re-exports this one
+ * function rather than declaring a second, so every caller gets the same answer and
+ * "two copies of a guardrail" cannot happen here. It is DEFINED here, one level below
+ * the bridge, for a reason that has nothing to do with the trading rules:
+ * `services/overview.ts` has to ask the question — a status payload must not announce
+ * a gate the engine is not enforcing — and `overview.ts` is imported by
+ * `api/server.ts`, which `npm run api` runs as a process of its own. Importing the
+ * bridge to get the answer would have pulled `onchainExecutor.ts` into the import
+ * graph of the network-facing, API-only process, widening the one boundary this
+ * repository guards hardest for the sake of a boolean. It reads only the two flags
+ * this file and `env.ts` already own, and it reaches no signer.
+ *
+ * Both switches, never one: `env.ts` refuses to boot on a half-armed configuration.
+ */
+export function isLiveExecutionActive(): boolean {
+  return isLiveTradingEnabled && liveMicroCapital.enabled;
+}
 
 /* ------------------------------------------------------------------ */
 /* Private key handling                                                */

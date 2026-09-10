@@ -10,6 +10,7 @@ import { startTelegramCommands, stopTelegramCommands } from "./services/telegram
 import { liveMicroCapital } from "./config/liveConfig.js";
 import { InsufficientGasReserveError, runLivePreflight } from "./services/livePreflight.js";
 import { describeExecutionGuard } from "./services/executionGuard.js";
+import { describeNewsBlackout } from "./services/newsBlackout.js";
 import { describeReconciliation, reconcilePositions } from "./services/reconciliation.js";
 import {
   describeLiveExecutionBlockers,
@@ -107,6 +108,13 @@ async function preflight(): Promise<void> {
      * standing between the engine and a pool that had already cost money twice.
      */
     console.warn(`[main]     ${describeExecutionGuard()}`);
+    /*
+     * Same reasoning, one gate along: the news blackout reads a file this repository
+     * does not write, so "armed" and "actually fed a calendar" are different facts and
+     * only the boot line can tell them apart. A gate believed to be running while its
+     * calendar is missing is the failure this line exists to make impossible.
+     */
+    console.warn(`[main]     ${describeNewsBlackout()}`);
   }
 
   // Best-effort, and only to render the envelope summary. A missing price must not

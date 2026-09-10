@@ -67,6 +67,11 @@ import {
 import { sendError, sendPositionClosed, sendPositionOpened } from "../services/telegram.js";
 import { isEnginePaused } from "../services/engineControl.js";
 import {
+  describeBlackoutWindow,
+  formatZonedStamp,
+  readNewsBlackout,
+} from "../services/newsBlackout.js";
+import {
   closePosition,
   countActivePositions,
   getActivePositions,
@@ -2352,30 +2357,72 @@ export async function runDlmmTradingCycle(
       monitor.reflected = await settleClosedPositions(pass.deferred);
     }
 
-    // /pause stops scanning for new entries but keeps monitoring open positions,
-    // so existing ones still accrue, exit and reflect normally.
-    const entry = isEnginePaused()
-      ? {
-          scanned: 0,
-          screenRejections: {},
-          screenerCandidates: 0,
-          heldExcluded: 0,
-          candidates: 0,
-          safeCandidates: 0,
-          cooldownRejected: [],
-          executionRejected: [],
-          rugRejected: [],
-          gmgnFlagged: [],
-          gmgnRejected: [],
-          volatilityRejected: [],
-          breakevenRejected: [],
-          microFrictionRejected: [],
-          priorityFee: null,
-          decision: null,
-          opened: false,
-          skipReason: "engine paused via Telegram /pause — scanning disabled",
-        }
-      : await seekNewEntry();
+    /*
+     * TWO INDEPENDENT REASONS TO SKIP ENTRIES, reported separately.
+     *
+     * /pause is an operator holding the engine still until they say otherwise; a news
+     * blackout is the clock holding it still until a scheduled release has passed.
+     * They answer different questions and clear on different events, so neither is
+     * expressed in terms of the other: `/resume` does not shorten a blackout, and a
+     * window ending does not un-pause a paused engine. Collapsing them into one flag
+     * would make "why is nothing opening" unanswerable from the log — which is the
+     * whole failure mode the funnel ordering fix of 8 Sep 2026 was about.
+     *
+     * Both keep MONITORING fully live. Fee accrual, stop-losses and closes run exactly
+     * as they do on any other cycle; blocking an exit during a release would remove
+     * the stop-loss at the moment it is most needed.
+     *
+     * INERT IN PAPER MODE. The blackout read sits behind `isLiveExecutionActive()`,
+     * mirroring where the `LIVE_MAX_POSITION_BINS` candidate filter sits in
+     * `seekNewEntry`, so a dry run never opens the calendar and its cycle is
+     * byte-identical to what it was before this gate existed.
+     */
+    const paused = isEnginePaused();
+    const blackout = isLiveExecutionActive() ? readNewsBlackout() : null;
+
+    // Once per cycle, and only here: `readNewsBlackout` returns its warnings rather
+    // than printing them so that /api/overview can read the same file on the
+    // dashboard's poll without filling the log.
+    for (const warning of blackout?.warnings ?? []) console.warn(`[news] ${warning}`);
+
+    const blackoutWindow = blackout?.active ?? null;
+    if (blackoutWindow) console.log(describeBlackoutWindow(blackoutWindow));
+
+    const skipReasons: string[] = [];
+    // The /pause wording is unchanged, character for character: it is what an operator
+    // reads in the funnel row and in `scan_funnel_cycles.skip_reason` today.
+    if (paused) skipReasons.push("engine paused via Telegram /pause — scanning disabled");
+    if (blackoutWindow) {
+      skipReasons.push(
+        `news blackout: ${blackoutWindow.event} until ` +
+          `${formatZonedStamp(blackoutWindow.end)} — new entries skipped, ` +
+          `monitoring continues`,
+      );
+    }
+
+    const entry: EntrySummary =
+      skipReasons.length > 0
+        ? {
+            scanned: 0,
+            screenRejections: {},
+            screenerCandidates: 0,
+            heldExcluded: 0,
+            candidates: 0,
+            safeCandidates: 0,
+            cooldownRejected: [],
+            executionRejected: [],
+            rugRejected: [],
+            gmgnFlagged: [],
+            gmgnRejected: [],
+            volatilityRejected: [],
+            breakevenRejected: [],
+            microFrictionRejected: [],
+            priorityFee: null,
+            decision: null,
+            opened: false,
+            skipReason: skipReasons.join("; "),
+          }
+        : await seekNewEntry();
 
     // Retry any reflection that failed on an earlier cycle.
     const postMortemsBackfilled = await runPostMortemSweep();

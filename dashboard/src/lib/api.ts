@@ -74,6 +74,14 @@ export interface Overview {
   grossLossUSD: number;
   serverStatus: "ONLINE";
   isDryRun: boolean;
+  /**
+   * The macro-news window currently holding NEW entries back, or null.
+   *
+   * Null in paper mode always, because the gate is inert there — anything rendering
+   * this must not present its absence as "no release is scheduled". Open positions are
+   * monitored and closed through a blackout exactly as at any other time.
+   */
+  newsBlackout: { event: string; untilWib: string } | null;
   serverTime: string;
   timezone: string;
 }

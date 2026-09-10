@@ -11,6 +11,8 @@ import { defaultCohort, type Cohort } from "./cohort.js";
 import { localDateString } from "../agents/researcherAgent.js";
 import { getStartingBalanceUsd } from "../config/startingBalance.js";
 import { env } from "../config/env.js";
+import { isLiveExecutionActive } from "../config/liveConfig.js";
+import { readNewsBlackout, toBlackoutStatus, type NewsBlackoutStatus } from "./newsBlackout.js";
 
 /**
  * The KPI payload served by GET /api/overview and reused verbatim by the
@@ -64,6 +66,18 @@ export interface Overview {
   grossLossUSD: number;
   serverStatus: "ONLINE";
   isDryRun: boolean;
+  /**
+   * The macro-news window currently holding NEW entries back, or null.
+   *
+   * Null means nothing is holding entries back, and in PAPER mode it is always null:
+   * the gate is inert there by construction, so reporting a window would advertise a
+   * restriction the engine is not applying — the same "advertised bound, unenforced"
+   * defect the coverage gate and the bin-array rent ceiling were each fixed for.
+   *
+   * It says nothing about OPEN positions, which are monitored, accrued and closed
+   * through a blackout exactly as at any other time.
+   */
+  newsBlackout: NewsBlackoutStatus | null;
   serverTime: string;
   timezone: string;
 }
@@ -141,6 +155,12 @@ export function computeOverview(cohort: Cohort = defaultCohort()): Overview {
     grossLossUSD: profit.grossLossUsd,
     serverStatus: "ONLINE" as const,
     isDryRun: env.DRY_RUN,
+    /*
+     * Read live, not cached, and gated on the same predicate the trading cycle uses.
+     * The warnings the read returns are deliberately dropped here: the cycle logs them
+     * once per cycle, and this route is polled once a minute per open dashboard tab.
+     */
+    newsBlackout: isLiveExecutionActive() ? toBlackoutStatus(readNewsBlackout().active) : null,
     serverTime: new Date().toISOString(),
     timezone: env.TZ,
   };
