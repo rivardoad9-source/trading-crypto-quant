@@ -1,0 +1,83 @@
+FlowMetrix — 2 perbaikan KODE (bukan env), dari insiden 11 Sep 2026. Branch: main. READ-ONLY kecuali file yang disebut.
+
+KONTEKS SINGKAT (baca dulu, jangan riset ulang):
+Insiden 11 Sep 2026 02:0x–02:31 WIB: engine 3x mencoba buka posisi live KNOTS-SOL; tiap kali
+swap balancing 0.9 SOL SUDAH landed, lalu kaki deposit DLMM gagal
+(`RebalanceLiquidity -> process deposit -> TransferChecked -> Error: insufficient funds`, program 0x1),
+lalu auto-unwind balik ke SOL. Hasil: 0 posisi kebuka tapi −0,0639 SOL (~$6,33, 2,17% wallet) hangus —
+swap masuk + tx gagal + unwind keluar semuanya tetap dibayar.
+Penyebab: `LIVE_CAPITAL_SOL=3.05` padahal wallet on-chain hanya 2.880994 SOL → engine men-size
+seolah punya +0,169 SOL lebih. Sudah ditambal SEMENTARA di server oleh operator (Hermes):
+`LIVE_CAPITAL_SOL=2.85` + `POOL_DENYLIST` + `KNOTS-SOL`. Detail + bukti: `docs/incidents/2026-09-11-failed-live-opens-sizing.md`.
+Dokumen itu WAJIB dibaca sebelum mulai.
+
+JANGAN SENTUH `.env`, jangan restart pm2, jangan deploy, jangan jalankan engine. `.env` di-gitignore dan
+hanya ada di server — itu wilayah operator, BUKAN kamu. Tugasmu murni kode di `src/` + test.
+
+====================================================================
+TASK 1 — Guard FAIL-CLOSED: modal yang diasumsikan tidak boleh melebihi saldo on-chain
+====================================================================
+Masalah: engine tidak pernah membandingkan `LIVE_CAPITAL_SOL` dengan saldo nyata. Ia sudah MEMBACA
+saldo (lihat `src/services/walletBalance.ts` + log preflight `wallet …: X SOL (floor 0.2 SOL) — OK`
+di `src/services/livePreflight.ts`), tapi hasil bacaan itu tidak dipakai untuk memvalidasi sizing.
+
+Yang diminta (minimal, jangan refactor besar):
+1. Pakai saldo on-chain yang sudah dibaca saat boot untuk MEMVALIDASI sizing live. Definisi
+   "deployable" = `LIVE_CAPITAL_SOL − reserve` (reserve = 0.15 SOL, lihat preflight).
+   Kalau deployable > saldo nyata → **FAIL CLOSED**: JANGAN mengizinkan eksekusi live, cetak log
+   tegas berisi angka (asumsi vs nyata vs selisih) + kirim alert operator (pakai jalur alert yang
+   sudah ada di `src/services/telegram.ts`). Mode paper tetap boleh jalan.
+2. Kalau bacaan saldo GAGAL (RPC error/timeout): perlakukan sebagai UNKNOWN. Untuk jalur yang bisa
+   membelanjakan uang, UNKNOWN harus DIANGGAP GAGAL (fail-closed), bukan lolos — konsisten dengan
+   `ANTIRUG_ON_ERROR=reject` / `VOLATILITY_ON_UNKNOWN=reject`.
+3. Pertahankan perilaku PAPER byte-identical (cek: tidak ada perubahan output di mode paper).
+4. Struktur kode: taruh logikanya di modul kecil yang bisa di-unit-test tanpa RPC (mis.
+   `src/services/liveSizingGuard.ts`) + panggil dari tempat yang sudah ada. Jangan menaruh helper
+   sekali-pakai di `src/scripts/` (melanggar import-graph test).
+
+TEST yang wajib ada (offline, tanpa network):
+- deployable > saldo → guard menolak eksekusi live (dan paper tetap jalan).
+- deployable ≤ saldo → lolos.
+- bacaan saldo error/null → ditolak (fail-closed), bukan lolos.
+- batas persis (deployable == saldo) → tentukan dan dokumentasikan arahnya.
+
+====================================================================
+TASK 2 — Bench level MINT + bench panjang untuk kegagalan PASCA-swap
+====================================================================
+Masalah (dua-duanya sudah terbukti di produksi):
+(a) Bench di-key per `pool_address`, jadi sibling pool dari mint yang SAMA bisa menembusnya.
+    10 Sep: KNOTS-SOL kena strike di 2 pool berbeda, 29 menit jarak, satu mint — percobaan kedua
+    membakar ~0,078 SOL tanpa perlindungan.
+(b) Kolom `token_mint` ADA di tabel `pool_execution_failures` (migrasi sudah jalan) tapi
+    **selalu NULL** — untuk 6 baris yang ada. Jadi tidak ada guard level-mint yang bisa dibangun dari DB.
+(c) Bench saat ini hanya menahan **~3 jam** untuk kegagalan yang terjadi SETELAH swap terlanjur
+    dibelanjakan (`benched for another 3.0h of 24h`) → diulang tiap 3 jam, tiap ulangan bakar SOL.
+
+Yang diminta (minimal):
+1. Isi `token_mint` saat menulis baris bench (ambil dari kandidat/pool yang gagal). Backfill 6 baris
+   lama hanya kalau bisa dilakukan aman dari data yang ada; kalau tidak bisa, biarkan NULL dan
+   pastikan NULL tidak bikin guard fail-open.
+2. Guard bench memeriksa level MINT (bukan hanya pool): satu strike pada satu mint memblokir SEMUA
+   pool yang memakai mint itu. Sertakan test sibling-pool: pool A gagal → pool B (mint sama)
+   ditolak.
+3. Kegagalan yang terjadi SETELAH dana keluar (swap balancing confirmed / pasca-swap) → bench MINT
+   untuk window yang jauh lebih panjang (minimal 24 jam; kalau enum/kolommu mendukung, "sampai
+   dibersihkan manual"). Sertakan test: kegagalan pasca-swap tidak dicoba lagi sebelum window habis.
+4. Jangan melemahkan gate apa pun yang sudah ada; hanya menambah proteksi.
+5. Jangan mengubah semantik `POOL_DENYLIST` (level pair/address) — itu jalur operator, biarkan.
+
+TEST yang wajib ada (offline): sibling-pool diblokir; mint berbeda tidak saling memblokir;
+baris `token_mint` NULL (data lama) tidak membuat guard fail-open; window bench pasca-swap dihormati.
+
+====================================================================
+DEFINISI SELESAI
+====================================================================
+- `npm run typecheck` bersih, `npm test` dijalankan dan hasilnya dilaporkan apa adanya.
+  CATATAN PENTING: 7 test FAIL di mesin armed itu NORMAL dan didokumentasikan (mereka menegaskan
+  profil live dalam keadaan inert) — JANGAN "diperbaiki" dan JANGAN dihapus. Baseline 10 Sep 2026:
+  729 total / 722 pass / 7 fail. Setelah perubahanmu: 0 regresi baru + test barumu lolos.
+- Ringkasan di akhir jawaban: file yang diubah, kenapa, hasil typecheck+test (angka nyata), dan hal
+  apa pun yang kamu TIDAK bisa pastikan (tanpa spekulasi).
+- Commit + push ke `main` dengan pesan yang jelas (mis. `fix(live): fail-closed sizing guard vs on-chain balance` dan `fix(bench): mint-level strikes + long bench after a post-swap failure`). Satu commit per task boleh, dua boleh — asal rapi.
+- JANGAN deploy, JANGAN restart, JANGAN sentuh `.env`. Operator (Hermes) yang akan pause → build →
+  deploy → verifikasi di server setelah kamu push.
