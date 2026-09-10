@@ -710,13 +710,43 @@ describe("execution guard - the bench covers the TOKEN, not one pool address", (
        * A bench can only cover a token it was stored under. All three strike sites use
        * `pairedMint`, which `describePair` takes from the SDK, so the key written can
        * never drift from the key the filter looks up.
+       *
+       * Counted per STRIKE CALL rather than by grepping the whole file for the
+       * assignment: `live_execution_attempts` also records the same mint, and a raw
+       * count would then be asserting how many unrelated rows the bridge writes. This
+       * asserts what the sentence above actually says.
        */
       const bridge = readFileSync(join(SRC, "services/liveExecution.ts"), "utf8");
+      const strikes = [
+        ...bridge.matchAll(/recordPoolExecutionFailure\(\{[\s\S]*?\n\s*\}\)/g),
+      ].map((m) => m[0]);
       assert.equal(
-        (bridge.match(/tokenMint: pairedMint\.toBase58\(\)/g) ?? []).length,
+        strikes.length,
         3,
-        "rehearsal, bin-array-prep and post-swap strikes must all record the token",
+        "rehearsal, bin-array-prep and post-swap are the three strike sites",
       );
+      for (const strike of strikes) {
+        assert.match(
+          strike,
+          /tokenMint: pairedMint\.toBase58\(\)/,
+          `every strike must record the SDK's own mint:\n${strike}`,
+        );
+      }
+    });
+
+    /*
+     * THE BACKFILL, which is what made the token-level bench real rather than merely
+     * implemented. Every strike site above passed `tokenMint` from 10 Sep 2026 onward
+     * and every stored row was still NULL on 11 Sep, because a row written before the
+     * column existed keeps its NULL until the pool fails AGAIN — the event the bench
+     * exists to prevent. The mint therefore has to be learned on the way IN.
+     */
+    it("backfills the mint when the pair is resolved, before the swap", () => {
+      const bridge = readFileSync(join(SRC, "services/liveExecution.ts"), "utf8");
+      const backfill = bridge.indexOf("learnPoolExecutionToken(params.poolAddress");
+      const swap = bridge.indexOf("await executeJupiterSwap(auth, {");
+      assert.ok(backfill > 0, "openLivePosition must backfill the bench token");
+      assert.ok(backfill < swap, "the backfill must not depend on the entry succeeding");
     });
   });
 });
