@@ -123,6 +123,43 @@ CREATE TABLE IF NOT EXISTS pool_execution_failures (
     token_mint           TEXT
 );
 
+-- Every LIVE entry attempt that COULD have spent lamports, whether or not a position
+-- came out of it.
+--
+-- WHY IT EXISTS. On 11 Sep 2026 the engine attempted three live opens on one token.
+-- Each balancing swap confirmed; each DLMM deposit leg then failed; each auto-unwind
+-- sold back to SOL. The wallet fell 0.0639 SOL and the DATABASE RECORDED NOTHING —
+-- `simulated_positions` had zero rows, realised PnL was zero, `daily_pnl_snapshots`
+-- was clean. Money that leaves without producing a position was invisible to every
+-- accounting surface the engine has, in the book, in the PnL and in the alerts, so
+-- the pattern could repeat until the wallet was empty with nothing reporting a fault.
+--
+-- This does NOT change what `realized_pnl_usd` means, for the same reason gas is
+-- recorded and not deducted: silently redefining a historical column is worse than a
+-- reported gap. A failed attempt has no position and therefore no PnL. It has a COST,
+-- and this is where the cost lives.
+--
+-- `cost_lamports` is NULL, never 0, when either balance read failed. "Not measured"
+-- and "measured as free" are different facts, and the failed-cost breaker sums only
+-- what was actually measured.
+CREATE TABLE IF NOT EXISTS live_execution_attempts (
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    attempted_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    pool_address           TEXT NOT NULL,
+    pair_name              TEXT,
+    token_mint             TEXT,
+    outcome                TEXT NOT NULL,   -- opened | failed
+    stage                  TEXT,            -- where it failed: swap | open | fund | ...
+    wallet_lamports_before INTEGER,
+    wallet_lamports_after  INTEGER,
+    cost_lamports          INTEGER,         -- before - after; NULL when unmeasured
+    unwind                 TEXT,            -- clean | orphan | partial | none | unknown
+    swap_signature         TEXT,
+    rescue_signature       TEXT,
+    position_address       TEXT,
+    reason                 TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_positions_status    ON simulated_positions(status);
 CREATE INDEX IF NOT EXISTS idx_positions_pool      ON simulated_positions(pool_address);
 CREATE INDEX IF NOT EXISTS idx_positions_closed_at ON simulated_positions(closed_at);
@@ -130,3 +167,4 @@ CREATE INDEX IF NOT EXISTS idx_positions_opened_at ON simulated_positions(opened
 CREATE INDEX IF NOT EXISTS idx_research_date       ON daily_research_logs(report_date);
 CREATE INDEX IF NOT EXISTS idx_snapshot_date       ON daily_pnl_snapshots(date);
 CREATE INDEX IF NOT EXISTS idx_funnel_cycle_at     ON scan_funnel_cycles(cycle_at);
+CREATE INDEX IF NOT EXISTS idx_attempts_at        ON live_execution_attempts(attempted_at);

@@ -391,6 +391,55 @@ const EnvSchema = z
     /** How long a pool benched by execution failures stays benched. */
     EXECUTION_FAILURE_LOCKOUT_HOURS: numeric(24),
     /**
+     * How long a pool AND ITS TOKEN stay benched after a failure that had already
+     * SPENT — i.e. the balancing swap confirmed and the open then failed.
+     *
+     * Deliberately a SECOND knob rather than a reuse of the one above, because the two
+     * measure different things. `EXECUTION_FAILURE_LOCKOUT_HOURS` governs the free
+     * case, where the cluster refused a simulation and a day is a generous wait for
+     * transient state to clear. This one governs the case where SOL left the wallet and
+     * nothing came back: on 11 Sep 2026 three such attempts on one token burned
+     * 0.0639 SOL between 02:0x and 02:31, and the pool-keyed 24h bench was the only
+     * thing between that and a fourth.
+     *
+     * NO ZERO-DISABLE, unlike every other lockout in this file. A post-swap failure is
+     * the exact outcome the breaker exists to stop repeating, and a gate an operator
+     * can switch off with a typo is not a gate. Validated at or above 24 hours for the
+     * same reason; the default is a week, on the argument that a token which took money
+     * and produced no position is worth a human look before it is tried again.
+     */
+    EXECUTION_POST_SWAP_LOCKOUT_HOURS: numeric(168),
+
+    /**
+     * The 24-hour budget for FAILED live-entry attempts, in SOL. Infinity disables it.
+     *
+     * The 11 Sep 2026 incident left ZERO trace in the database: no position row, no
+     * PnL, a clean `daily_pnl_snapshots` — and a wallet 0.0639 SOL lighter. Money that
+     * leaves without producing a position is invisible to every accounting surface the
+     * engine has, so the pattern can repeat until the wallet is empty with nothing
+     * reporting anything wrong. `live_execution_attempts` makes the spend visible; this
+     * is the number that acts on it.
+     *
+     * Fail-CLOSED and ENTRY-ONLY: over budget, `openLivePosition` refuses. Monitoring,
+     * fee accrual and closes are untouched — holding an exit is how a stop-loss stops
+     * being enforced.
+     */
+    LIVE_MAX_FAILED_COST_SOL: numeric(0.05),
+    /** The window the budget above is measured over. */
+    LIVE_FAILED_COST_WINDOW_HOURS: numeric(24),
+
+    /**
+     * Drift thresholds for the periodic wallet-vs-book reconciliation, in percent of
+     * the book and in absolute SOL. EITHER being exceeded raises the alert.
+     *
+     * Two units because one alone is wrong at one end of the range: a percentage alone
+     * never fires on a large book that has quietly lost real SOL, and an absolute alone
+     * fires constantly on a small one. On 11 Sep 2026 the pinned baseline was ~$12
+     * above the wallet and nothing said so.
+     */
+    WALLET_DRIFT_MAX_PCT: numeric(1),
+    WALLET_DRIFT_MAX_SOL: numeric(0.02),
+    /**
      * The widest position, in bins, the LIVE path may open. Default 70 — narrow only.
      *
      * This is a CIRCUIT BREAKER on an execution path, not a view about what the DLMM
@@ -541,6 +590,9 @@ const EnvSchema = z
       "POOL_LOCKOUT_CONSECUTIVE_FAILURES",
       "EXECUTION_FAILURE_LOCKOUT_COUNT",
       "EXECUTION_FAILURE_LOCKOUT_HOURS",
+      "LIVE_FAILED_COST_WINDOW_HOURS",
+      "WALLET_DRIFT_MAX_PCT",
+      "WALLET_DRIFT_MAX_SOL",
     ] as const) {
       if (cfg[key] < 0) {
         ctx.addIssue({
@@ -564,6 +616,35 @@ const EnvSchema = z
         message:
           "LIVE_MAX_POSITION_BINS must be between 1 and 1400 (the DLMM one-position " +
           "maximum). 70 is narrow-only, the path with a measured success rate.",
+      });
+    }
+    /*
+     * No zero-disable, and a hard 24h floor. See the setting's own note: a post-swap
+     * failure is the outcome the breaker exists to stop repeating, so "off" is not one
+     * of the values an operator should be able to reach through a typo, and 24 hours is
+     * the minimum the 11 Sep 2026 incident settled on.
+     */
+    if (cfg.EXECUTION_POST_SWAP_LOCKOUT_HOURS < 24) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["EXECUTION_POST_SWAP_LOCKOUT_HOURS"],
+        message:
+          "EXECUTION_POST_SWAP_LOCKOUT_HOURS must be at least 24. A failure that " +
+          "already spent SOL is not a gate to switch off.",
+      });
+    }
+    /*
+     * Infinity is the documented way to disable the failed-cost breaker. Zero is not:
+     * it would block every entry the moment one lamport of failure was measured, while
+     * reading like "no budget configured".
+     */
+    if (cfg.LIVE_MAX_FAILED_COST_SOL <= 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["LIVE_MAX_FAILED_COST_SOL"],
+        message:
+          "LIVE_MAX_FAILED_COST_SOL must be positive. Use Infinity to disable the " +
+          "failed-attempt cost breaker; zero would refuse every entry.",
       });
     }
   });

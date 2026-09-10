@@ -216,3 +216,165 @@ export function describeReconciliation(report: ReconciliationReport): string {
       : "")
   );
 }
+
+/* ------------------------------------------------------------------ */
+/* Wallet drift — the book's LEVEL against the chain                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Does the accounting baseline still describe the wallet it claims to?
+ *
+ * A DIFFERENT QUESTION from `reconcilePositions` above, and they must not be merged.
+ * That one asks, per closed trade, whether the model's PnL matched what the chain did —
+ * a question about individual trades, answerable only from rows that carry both balance
+ * reads. This asks whether the whole book's LEVEL still matches the wallet, which is
+ * answerable at any moment and from a wallet that has never traded.
+ *
+ * WHY IT EXISTS. On 11 Sep 2026 `STARTING_BALANCE_USD` was pinned at 298.02 while the
+ * wallet held about $285.5 — roughly $12 apart — and nothing told anyone. The gap had
+ * two sources at once, and only the second is a defect: the pin double-counts trades
+ * already booked (`impliedStartingBalanceUsd` in `startingBalance.ts` is the arithmetic
+ * for that), and real SOL had left the wallet on failed attempts that produced no rows
+ * at all. Either way the number an operator reaches for first was wrong in a way that
+ * did not announce itself.
+ *
+ * TWO UNITS, EITHER OF WHICH FIRES. A percentage alone never fires on a large book that
+ * has quietly lost real SOL; an absolute alone fires constantly on a small one. Both are
+ * reported whichever triggered, so the alert can be read without re-deriving the other.
+ *
+ * IT CORRECTS NOTHING, exactly like the reconciliation above. It measures and names.
+ * Re-pinning the baseline is an operator decision recorded in `.env`, for the reason
+ * `seedStartingBalanceFromWallet` already refuses to do it under existing trades:
+ * rebasing re-scales every percentage already reported.
+ *
+ * UNMEASURED IS NOT ZERO. A balance or a price that could not be read yields
+ * `status: "unmeasured"` and no alert — never a drift of 0, which would render
+ * identically to "compared, and they agree".
+ */
+export interface WalletDriftReading {
+  status: "ok" | "drifted" | "unmeasured";
+  /** The book: `STARTING_BALANCE_USD + realised PnL`. Null when unavailable. */
+  bookUsd: number | null;
+  /** The chain, priced in USD. Null when the balance or the price could not be read. */
+  walletUsd: number | null;
+  walletSol: number | null;
+  /** `walletUsd - bookUsd`. Negative means the wallet is poorer than the book claims. */
+  driftUsd: number | null;
+  /** The same gap in SOL, which is the unit the thresholds and the losses are in. */
+  driftSol: number | null;
+  /** `|driftUsd| / bookUsd x 100`, or null when the book is zero or unmeasured. */
+  driftPct: number | null;
+  /** Which threshold(s) the reading breached. Empty when it breached none. */
+  breached: ("pct" | "sol")[];
+  /** Operator-readable. Null when nothing is wrong or nothing could be measured. */
+  reason: string | null;
+}
+
+export interface WalletDriftThresholds {
+  maxPct: number;
+  maxSol: number;
+}
+
+/**
+ * Pure: no RPC, no database, no clock. Every input is passed in, so the whole rule is
+ * unit-testable offline — the same reason `assessLiveSizing` is shaped this way.
+ */
+export function assessWalletDrift(input: {
+  /** `STARTING_BALANCE_USD + realised PnL`, or null when it could not be computed. */
+  bookUsd: number | null;
+  /** The chain's balance in SOL, or null when the read failed. */
+  walletSol: number | null;
+  solPriceUsd: number | null;
+  thresholds: WalletDriftThresholds;
+}): WalletDriftReading {
+  const { bookUsd, walletSol, solPriceUsd, thresholds } = input;
+
+  const measurable =
+    bookUsd !== null &&
+    Number.isFinite(bookUsd) &&
+    walletSol !== null &&
+    Number.isFinite(walletSol) &&
+    solPriceUsd !== null &&
+    Number.isFinite(solPriceUsd) &&
+    solPriceUsd > 0;
+
+  if (!measurable) {
+    return {
+      status: "unmeasured",
+      bookUsd: bookUsd ?? null,
+      walletUsd: null,
+      walletSol: walletSol ?? null,
+      driftUsd: null,
+      driftSol: null,
+      driftPct: null,
+      breached: [],
+      reason: null,
+    };
+  }
+
+  const walletUsd = walletSol * solPriceUsd;
+  const driftUsd = walletUsd - bookUsd;
+  const driftSol = driftUsd / solPriceUsd;
+  // Null rather than Infinity on a zero book: an undefined ratio must not render as a
+  // real measurement. Same rule `profitFactor` follows.
+  const driftPct = bookUsd === 0 ? null : (Math.abs(driftUsd) / Math.abs(bookUsd)) * 100;
+
+  const breached: ("pct" | "sol")[] = [];
+  if (driftPct !== null && driftPct > thresholds.maxPct) breached.push("pct");
+  if (Math.abs(driftSol) > thresholds.maxSol) breached.push("sol");
+
+  if (breached.length === 0) {
+    return {
+      status: "ok",
+      bookUsd,
+      walletUsd,
+      walletSol,
+      driftUsd,
+      driftSol,
+      driftPct,
+      breached,
+      reason: null,
+    };
+  }
+
+  return {
+    status: "drifted",
+    bookUsd,
+    walletUsd,
+    walletSol,
+    driftUsd,
+    driftSol,
+    driftPct,
+    breached,
+    reason:
+      `the book says $${bookUsd.toFixed(2)} and the wallet holds ` +
+      `${walletSol.toFixed(6)} SOL (~$${walletUsd.toFixed(2)}) — a drift of ` +
+      `$${driftUsd.toFixed(2)} (${driftSol.toFixed(6)} SOL` +
+      (driftPct === null ? `` : `, ${driftPct.toFixed(2)}% of the book`) + `), over the ` +
+      `${breached.includes("pct") ? `${thresholds.maxPct}% ` : ``}` +
+      `${breached.length === 2 ? `and ` : ``}` +
+      `${breached.includes("sol") ? `${thresholds.maxSol} SOL ` : ``}threshold. ` +
+      `Nothing has been corrected: STARTING_BALANCE_USD keeps its value and ` +
+      `realized_pnl_usd keeps its definition. Two causes look identical here and both ` +
+      `need a human — a baseline pinned above what the wallet ever held (see the ` +
+      `preflight's suggested STARTING_BALANCE_USD line), and real SOL spent on live ` +
+      `attempts that produced no position (see live_execution_attempts).`,
+  };
+}
+
+/** One line for the boot log and the periodic check. Always says which way it went. */
+export function describeWalletDrift(reading: WalletDriftReading): string {
+  switch (reading.status) {
+    case "unmeasured":
+      return "[drift] wallet vs book NOT MEASURED (balance or SOL/USD unavailable)";
+    case "ok":
+      return (
+        `[drift] wallet vs book: $${(reading.driftUsd ?? 0).toFixed(2)} ` +
+        `(${(reading.driftSol ?? 0).toFixed(6)} SOL` +
+        (reading.driftPct === null ? `` : `, ${reading.driftPct.toFixed(2)}%`) +
+        `) — within thresholds`
+      );
+    case "drifted":
+      return `[drift] WALLET/BOOK DRIFT: ${reading.reason}`;
+  }
+}
