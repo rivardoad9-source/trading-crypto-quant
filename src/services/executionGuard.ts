@@ -93,6 +93,24 @@ export const poolDenylist: readonly string[] = parseDenylist(env.POOL_DENYLIST);
 export interface ExecutionBreakerThresholds {
   consecutiveFailures: number;
   hours: number;
+  /**
+   * The bench a POST-SWAP failure earns, which is a different quantity from `hours`.
+   *
+   * `hours` governs the free case — a simulation the cluster refused, where nothing was
+   * spent and a day is a generous wait for transient state to clear. This governs the
+   * case where SOL left the wallet and no position came back. On 11 Sep 2026 three such
+   * attempts on one token burned 0.0639 SOL inside half an hour, and the incident's own
+   * conclusion was that a bench measured in hours is the wrong shape of answer for a
+   * failure measured in spent capital.
+   *
+   * `env.ts` refuses a value below 24 and offers no zero-disable, unlike every other
+   * lockout: this is the outcome the breaker exists to stop repeating.
+   *
+   * OPTIONAL so a caller that predates it — a hand-built threshold object in a test —
+   * still compiles. Absent, it falls back to `hours`, never to zero: the expensive case
+   * must not be able to become the shortest bench in the system by omission.
+   */
+  postSwapHours?: number;
 }
 
 /**
@@ -128,10 +146,19 @@ export function classifyFailureStage(stage: string | null | undefined): Executio
  */
 const BENCH_IMMEDIATELY: ExecutionFailureStage = "open";
 
+/**
+ * The bench a post-swap failure earns. Never shorter than the ordinary window — see
+ * `ExecutionBreakerThresholds.postSwapHours`.
+ */
+export function postSwapWindow(thresholds: ExecutionBreakerThresholds): number {
+  return Math.max(thresholds.postSwapHours ?? thresholds.hours, thresholds.hours);
+}
+
 export function defaultExecutionBreakerThresholds(): ExecutionBreakerThresholds {
   return {
     consecutiveFailures: env.EXECUTION_FAILURE_LOCKOUT_COUNT,
     hours: env.EXECUTION_FAILURE_LOCKOUT_HOURS,
+    postSwapHours: env.EXECUTION_POST_SWAP_LOCKOUT_HOURS,
   };
 }
 
@@ -175,13 +202,25 @@ export function assessExecutionBreaker(
   const limit = stage === BENCH_IMMEDIATELY ? 1 : thresholds.consecutiveFailures;
   if (record.consecutiveFailures < limit) return NOT_BLOCKED;
 
+  /*
+   * THE WINDOW IS CHOSEN BY STAGE, not shared.
+   *
+   * A post-swap failure has already spent, so the question "how long before trying
+   * again" is not the same question a refused simulation asks. `postSwapHours` is the
+   * longer answer (default a week) and cannot be configured below 24. Falls back to
+   * `hours` only when a caller supplies thresholds without it — an older test, or a
+   * caller built by hand — rather than defaulting to zero, which would silently turn
+   * the expensive case into the SHORTEST bench in the system.
+   */
+  const window = stage === BENCH_IMMEDIATELY ? postSwapWindow(thresholds) : thresholds.hours;
+
   // An unparseable or missing timestamp expires the bench. See the fail-open note above.
   if (parseDbTimestamp(record.lastFailureAt) === null) return NOT_BLOCKED;
 
   const elapsed = hoursSince(record.lastFailureAt, now);
-  if (elapsed >= thresholds.hours) return NOT_BLOCKED;
+  if (elapsed >= window) return NOT_BLOCKED;
 
-  const remaining = thresholds.hours - elapsed;
+  const remaining = window - elapsed;
   const count = record.consecutiveFailures;
   return {
     blocked: true,
@@ -193,7 +232,7 @@ export function assessExecutionBreaker(
         : `${count} consecutive pre-swap rehearsal refusals (limit ${limit}, nothing spent)`) +
       `; last at the ${record.lastStage ?? "unknown"} stage: ` +
       `${record.lastReason ?? "no reason recorded"}; benched for another ` +
-      `${remaining.toFixed(1)}h of ${thresholds.hours}h`,
+      `${remaining.toFixed(1)}h of ${window}h`,
   };
 }
 
@@ -266,6 +305,20 @@ export function benchTokenKey(
 export interface ExecutionHistoryIndex {
   byPool: Map<string, PoolExecutionRecord>;
   byToken: Map<string, PoolExecutionRecord[]>;
+  /**
+   * Records that are BLOCKING but carry no token, so their bench covers one pool
+   * address and no sibling of the same mint.
+   *
+   * Surfaced rather than silently skipped. On 11 Sep 2026 every one of the six stored
+   * rows had a NULL `token_mint`, so the token-level bench — which exists, is tested,
+   * and is correct — propagated nothing at all, and the gate read as armed while
+   * covering a single address. A NULL still cannot be guessed into a mint (a pair name
+   * is built from symbols and memecoin tickers collide), so the answer is not to invent
+   * a key: it is to say out loud how many benches are narrower than they look, and to
+   * BACKFILL the mint the moment the engine learns it. `learnPoolExecutionToken` is
+   * that backfill; this list is what tells an operator it is still needed.
+   */
+  unkeyed: PoolExecutionRecord[];
 }
 
 export function indexExecutionHistory(
@@ -273,17 +326,44 @@ export function indexExecutionHistory(
 ): ExecutionHistoryIndex {
   const byPool = new Map<string, PoolExecutionRecord>();
   const byToken = new Map<string, PoolExecutionRecord[]>();
+  const unkeyed: PoolExecutionRecord[] = [];
 
   for (const record of records) {
     byPool.set(record.poolAddress, record);
     // A record with no token propagates nothing — see `benchTokenKey`.
-    if (!record.tokenMint) continue;
+    if (!record.tokenMint) {
+      // Counted only when it is actually holding something back. A cleared record with
+      // no token is not a narrower bench, it is no bench.
+      if (record.consecutiveFailures >= 1) unkeyed.push(record);
+      continue;
+    }
     const bucket = byToken.get(record.tokenMint);
     if (bucket) bucket.push(record);
     else byToken.set(record.tokenMint, [record]);
   }
 
-  return { byPool, byToken };
+  return { byPool, byToken, unkeyed };
+}
+
+/**
+ * One warning line naming the benches that cover only their own pool, or null when
+ * every stored bench is keyed on a token.
+ *
+ * Returned rather than logged so the caller decides how often it is printed — the same
+ * reason `readEngineControlFile` hands back `warnings`.
+ */
+export function describeUnkeyedBenches(index: ExecutionHistoryIndex): string | null {
+  if (index.unkeyed.length === 0) return null;
+  const names = index.unkeyed
+    .map((r) => r.pairName ?? `${r.poolAddress.slice(0, 8)}...`)
+    .join(", ");
+  return (
+    `[guard] ${index.unkeyed.length} active bench${index.unkeyed.length === 1 ? "" : "es"} ` +
+    `carr${index.unkeyed.length === 1 ? "ies" : "y"} NO token mint (${names}), so ` +
+    `${index.unkeyed.length === 1 ? "it covers" : "they cover"} that pool address ONLY — ` +
+    `a sibling pool of the same token is NOT blocked. The mint is backfilled the next ` +
+    `time the engine resolves the pair; until then this bench is narrower than it reads.`
+  );
 }
 
 /**
@@ -329,8 +409,8 @@ export function describeExecutionGuard(): string {
   const thresholds = defaultExecutionBreakerThresholds();
   const breaker =
     thresholds.consecutiveFailures > 0 && thresholds.hours > 0
-      ? `1 post-swap failure, or ${thresholds.consecutiveFailures} pre-swap refusals ` +
-        `-> ${thresholds.hours}h bench`
+      ? `1 post-swap failure -> ${postSwapWindow(thresholds)}h bench (pool AND token), ` +
+        `or ${thresholds.consecutiveFailures} pre-swap refusals -> ${thresholds.hours}h`
       : "DISABLED";
 
   const denylist =
