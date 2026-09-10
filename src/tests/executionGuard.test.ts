@@ -5,11 +5,15 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   assessExecutionBreaker,
+  assessTokenBench,
+  benchTokenKey,
   describeExecutionGuard,
+  indexExecutionHistory,
   isPoolDenied,
   parseDenylist,
   type ExecutionBreakerThresholds,
 } from "../services/executionGuard.js";
+import { countExecutionBlocks } from "../agents/dlmmTraderAgent.js";
 import {
   isLivePositionBinCapActive,
   maxLivePositionBins,
@@ -37,6 +41,7 @@ function record(over: Partial<PoolExecutionRecord> = {}): PoolExecutionRecord {
     lastReason: "exceeded CUs meter",
     totalFailures: 2,
     lastSuccessAt: null,
+    tokenMint: null,
     ...over,
   };
 }
@@ -394,5 +399,324 @@ describe("execution guard - the operator width cap", () => {
       !baseline.includes("LIVE_MAX_POSITION_BINS"),
       "LIVE_MAX_POSITION_BINS must not be pinned as part of the V1.1 baseline",
     );
+  });
+});
+
+
+/*
+ * TOKEN-LEVEL BENCH PROPAGATION, added 10 Sep 2026.
+ *
+ * THE GAP, and it is proven rather than inferred. The breaker keyed on `pool_address`
+ * alone — `getPoolExecutionHistory()` returns a `Map<pool_address, record>` and the
+ * candidate filter asked it `.get(pool.address)` — while one token routinely has
+ * several DLMM pools at different bin steps. It was observed live on 9 Sep 2026 and
+ * recorded in commit `7dff605`: OTC-SOL (Muk/SOL) exists as FOUR pools, `Ekm4LYki` was
+ * benched at 13:32, and `8LZK8W9P` — a sibling of the same token — was OPENED at 21:22.
+ * The bench was never consulted, because it was never asked about that address. The
+ * operator's same-day mitigation was to put the PAIR NAME in `POOL_DENYLIST`, which
+ * `isPoolDenied` already matches across siblings; this is the automatic version.
+ *
+ * KEYED ON THE MINT, NOT THE PAIR NAME, and the difference matters. A pair name is
+ * built from token SYMBOLS, and memecoin tickers collide constantly; a symbol-keyed
+ * bench would eventually refuse an unrelated token that happened to share three
+ * letters. The denylist may match on names because a human chose those names and can
+ * see what they cover — an automatic gate cannot.
+ *
+ * THE KNOTS-SOL INCIDENT (10 Sep, 02:32 WIB) IS THE SAME MECHANISM, CONFIRMED. It was
+ * first read as "a post-swap failure recorded no strike", which would have been a far
+ * worse defect — the bench counter itself failing. That reading was an artifact of
+ * querying a single `pool_address`. Querying by `pair_name` returns TWO rows, each with
+ * `consecutive_failures 1`:
+ *
+ *   nBXytBBfKLhj6teXarAv8rk6WNgUFBMyybUFRkuK7ad  2026-09-09 19:02:49Z  open
+ *   95NyuWzMDmWnPgLGBotT1XB2v1fQkqxhCrGLBDfxXfhn 2026-09-09 19:32:10Z  open
+ *
+ * Two different pools of the SAME pair. The 02:02:49 strike benched the first address
+ * only, and 29 minutes later the engine spent a balancing swap on the sibling. The
+ * strike was never lost; the bench simply never covered the token. That is the 7 Sep
+ * repeat-loss mechanism still live, and it is what the tests below close.
+ */
+describe("execution guard - the bench covers the TOKEN, not one pool address", () => {
+  const HERE = dirname(fileURLToPath(import.meta.url));
+  const SRC = resolve(HERE, "..");
+
+  const WSOL = "So11111111111111111111111111111111111111112";
+  const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+  const USDT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
+  const KNOTS = "KNoTs1111111111111111111111111111111111111111";
+
+  describe("benchTokenKey", () => {
+    it("is the NON-SOL side, whichever way round the pair is", () => {
+      assert.equal(benchTokenKey(WSOL, KNOTS), KNOTS);
+      assert.equal(benchTokenKey(KNOTS, WSOL), KNOTS);
+    });
+
+    it("is null when neither side is wSOL", () => {
+      /*
+       * The live path refuses such a pool anyway — the engine funds in SOL — so there
+       * is no token to key on and nothing to propagate. Null narrows the bench to the
+       * pool itself; it never widens it.
+       */
+      assert.equal(benchTokenKey(KNOTS, USDC), null);
+    });
+
+    it("REFUSES to key on a major quote asset, and that is the anti-outage rule", () => {
+      /*
+       * The other side of a SOL-USDC pool is USDC. Keying a bench on it would bench
+       * EVERY USDC-quoted SOL pool over one pool's bad afternoon — one fact that is
+       * not about the token benching the universe a pool at a time, which is exactly
+       * what `isPoolAttributable` withholds a strike to prevent for wallet-level
+       * refusals. These pools keep their own per-pool bench; only propagation is
+       * withheld.
+       */
+      assert.equal(benchTokenKey(WSOL, USDC), null);
+      assert.equal(benchTokenKey(USDT, WSOL), null);
+      assert.equal(benchTokenKey(WSOL, WSOL), null);
+    });
+
+    it("is null on missing or blank mints rather than keying on an empty string", () => {
+      // An empty key would collide every unidentified pool into one bench.
+      assert.equal(benchTokenKey(WSOL, null), null);
+      assert.equal(benchTokenKey(WSOL, undefined), null);
+      assert.equal(benchTokenKey(WSOL, "   "), null);
+    });
+  });
+
+  describe("indexExecutionHistory", () => {
+    it("builds both indexes from ONE pass, so they describe the same instant", () => {
+      const a = record({ poolAddress: "PoolA", tokenMint: KNOTS });
+      const b = record({ poolAddress: "PoolB", tokenMint: KNOTS });
+      const idx = indexExecutionHistory([a, b]);
+
+      assert.equal(idx.byPool.size, 2);
+      assert.deepEqual(
+        idx.byToken.get(KNOTS)?.map((r) => r.poolAddress),
+        ["PoolA", "PoolB"],
+      );
+    });
+
+    it("propagates NOTHING for a record with no token", () => {
+      /*
+       * Null is every row written before the column existed, and any pool whose
+       * non-SOL side could not be identified. It must stay in `byPool` — the pool's own
+       * bench is unaffected — and out of `byToken`, which is the fail-open direction
+       * this gate takes everywhere else.
+       */
+      const idx = indexExecutionHistory([record({ poolAddress: "PoolA", tokenMint: null })]);
+
+      assert.ok(idx.byPool.has("PoolA"), "the pool keeps its own bench");
+      assert.equal(idx.byToken.size, 0, "an unidentified token must bench nothing else");
+    });
+  });
+
+  describe("assessTokenBench", () => {
+    const now = new Date("2026-09-10T12:00:00Z");
+    const hoursAgo = (h: number) =>
+      new Date(now.getTime() - h * 3_600_000).toISOString().replace("T", " ").slice(0, 19);
+
+    it("does not block when the token has no history", () => {
+      assert.equal(assessTokenBench(undefined, "PoolA", now, THRESHOLDS).blocked, false);
+      assert.equal(assessTokenBench([], "PoolA", now, THRESHOLDS).blocked, false);
+    });
+
+    it("blocks when ANY sibling blocks, not merely the most recent one", () => {
+      /*
+       * THE CASE A "LATEST WINS" INDEX WOULD MISS, and the reason this iterates.
+       *
+       * PoolA took an EXPENSIVE post-swap strike two hours ago — one is enough to
+       * bench, for 24h. PoolB then took a FREE rehearsal refusal ten minutes ago, which
+       * at a limit of two does not bench anything. Picking the freshest record would
+       * read PoolB, find it clear, and let a sibling straight through a bench that is
+       * still 22 hours from expiring.
+       */
+      const expensive = record({
+        poolAddress: "PoolA",
+        pairName: "KNOTS-SOL",
+        tokenMint: KNOTS,
+        consecutiveFailures: 1,
+        lastStage: "open",
+        lastFailureAt: hoursAgo(2),
+      });
+      const fresherButHarmless = record({
+        poolAddress: "PoolB",
+        tokenMint: KNOTS,
+        consecutiveFailures: 1,
+        lastStage: "rehearsal/init bin array 1/2",
+        lastFailureAt: hoursAgo(0.17),
+      });
+
+      const verdict = assessTokenBench(
+        [fresherButHarmless, expensive],
+        "PoolC",
+        now,
+        THRESHOLDS,
+      );
+
+      assert.equal(verdict.blocked, true);
+      assert.ok(verdict.hoursRemaining > 21, String(verdict.hoursRemaining));
+    });
+
+    it("says a SIBLING is benched, and names it", () => {
+      // The wording is the point: a pool with a clean record of its own is being held
+      // out, and an operator reading "this pool is benched" would go looking for a
+      // failure that never happened on it.
+      const verdict = assessTokenBench(
+        [
+          record({
+            poolAddress: "PoolAaaaaaaa",
+            pairName: "KNOTS-SOL",
+            tokenMint: KNOTS,
+            consecutiveFailures: 1,
+            lastStage: "open",
+            lastFailureAt: hoursAgo(1),
+          }),
+        ],
+        "PoolC",
+        now,
+        THRESHOLDS,
+      );
+
+      assert.equal(verdict.blocked, true);
+      assert.match(verdict.reason ?? "", /SIBLING pool of the same token/);
+      assert.match(verdict.reason ?? "", /KNOTS-SOL/);
+    });
+
+    it("EXCLUDES the pool being assessed, so the sibling wording stays true", () => {
+      /*
+       * The pool's own bench is assessed separately and reported separately. If this
+       * counted the pool itself, every per-pool bench would ALSO be reported as a
+       * sibling bench and the funnel could no longer tell the two apart.
+       */
+      const own = record({
+        poolAddress: "PoolA",
+        tokenMint: KNOTS,
+        consecutiveFailures: 1,
+        lastStage: "open",
+        lastFailureAt: hoursAgo(1),
+      });
+
+      assert.equal(assessTokenBench([own], "PoolA", now, THRESHOLDS).blocked, false);
+      assert.equal(assessTokenBench([own], "PoolB", now, THRESHOLDS).blocked, true);
+    });
+
+    it("releases the token bench once the sibling's window has passed", () => {
+      const stale = record({
+        poolAddress: "PoolA",
+        tokenMint: KNOTS,
+        consecutiveFailures: 1,
+        lastStage: "open",
+        lastFailureAt: hoursAgo(25),
+      });
+
+      assert.equal(assessTokenBench([stale], "PoolB", now, THRESHOLDS).blocked, false);
+    });
+
+    it("does not bench a token over a sibling that is below the FREE limit", () => {
+      // A single rehearsal refusal costs nothing and may be transient cluster state.
+      // Propagating it would let one bad simulation bench a whole token.
+      const oneFreeRefusal = record({
+        poolAddress: "PoolA",
+        tokenMint: KNOTS,
+        consecutiveFailures: 1,
+        lastStage: "rehearsal/init bin array 1/2",
+        lastFailureAt: hoursAgo(1),
+      });
+
+      assert.equal(assessTokenBench([oneFreeRefusal], "PoolB", now, THRESHOLDS).blocked, false);
+    });
+  });
+
+  describe("placement and reporting", () => {
+    const agent = readFileSync(join(SRC, "agents/dlmmTraderAgent.ts"), "utf8");
+
+    it("is counted APART from this pool's own bench in the funnel", () => {
+      /*
+       * A gate that removes candidates and does not appear in the funnel puts the
+       * funnel back in the state it was built to fix. And folding it into `breaker`
+       * would leave a count that can answer neither "is this pool broken" nor "is this
+       * TOKEN broken".
+       */
+      const counts = countExecutionBlocks([
+        { kind: "breaker" },
+        { kind: "tokenBench" },
+        { kind: "tokenBench" },
+      ]);
+
+      assert.equal(counts.breaker, 1);
+      assert.equal(counts.tokenBench, 2);
+    });
+
+    it("reports every kind, zero included, so an absent gate is a stated zero", () => {
+      const counts = countExecutionBlocks([]);
+      assert.deepEqual(counts, {
+        denylist: 0,
+        breaker: 0,
+        tokenBench: 0,
+        noWsol: 0,
+        binCap: 0,
+      });
+    });
+
+    it("is consulted by the candidate filter, after the pool's own bench", () => {
+      const own = agent.indexOf("assessExecutionBreaker(executionHistory.byPool.get(pool.address))");
+      const token = agent.indexOf("assessTokenBench(executionHistory.byToken.get(tokenKey)");
+
+      assert.ok(own > 0, "the per-pool bench check is gone");
+      assert.ok(token > own, "the token bench must be consulted after the pool's own");
+    });
+
+    it("is consulted only behind isLiveExecutionActive, so paper mode is unchanged", () => {
+      /*
+       * The same inert-default discipline the rest of this gate follows. A filter that
+       * ran in paper mode would silently rewrite every dry run and every cached sweep.
+       */
+      const token = agent.indexOf("assessTokenBench(executionHistory.byToken.get(tokenKey)");
+      assert.ok(token > 0);
+
+      const before = agent.slice(0, token);
+      const gate = before.lastIndexOf("if (isLiveExecutionActive())");
+      assert.ok(
+        gate > 0 && gate > before.lastIndexOf("summary.cooldownRejected ="),
+        "the token-bench filter must sit inside an isLiveExecutionActive() block",
+      );
+    });
+
+    it("is enforced again at execution time, before the balancing swap", () => {
+      /*
+       * The candidate filter is the first line; this is the second, for the window
+       * between a cycle building its candidate list and acting on one. It must land
+       * BEFORE the balancing swap, or the refusal costs a swap round trip instead of
+       * nothing.
+       */
+      const bridge = readFileSync(join(SRC, "services/liveExecution.ts"), "utf8");
+      const check = bridge.indexOf("new TokenBenchedError(");
+      const swap = bridge.indexOf("const { result: swap } = await executeJupiterSwap(");
+
+      assert.ok(check > 0, "openLivePosition must refuse a token-benched pool");
+      assert.ok(swap > 0, "the balancing swap is gone");
+      assert.ok(check < swap, "the token-bench refusal must come before the swap spends");
+    });
+
+    it("is a routine skip, not an operator page", () => {
+      // Every pre-swap refusal is a `LiveEntryRefusedError` so `seekNewEntry` catches
+      // the base class; a new subclass that missed it would page for a pool the engine
+      // merely declined to enter.
+      const bridge = readFileSync(join(SRC, "services/liveExecution.ts"), "utf8");
+      assert.match(bridge, /class TokenBenchedError extends LiveEntryRefusedError/);
+    });
+
+    it("records the token on EVERY strike, from the SDK's own answer", () => {
+      /*
+       * A bench can only cover a token it was stored under. All three strike sites use
+       * `pairedMint`, which `describePair` takes from the SDK, so the key written can
+       * never drift from the key the filter looks up.
+       */
+      const bridge = readFileSync(join(SRC, "services/liveExecution.ts"), "utf8");
+      assert.equal(
+        (bridge.match(/tokenMint: pairedMint\.toBase58\(\)/g) ?? []).length,
+        3,
+        "rehearsal, bin-array-prep and post-swap strikes must all record the token",
+      );
+    });
   });
 });

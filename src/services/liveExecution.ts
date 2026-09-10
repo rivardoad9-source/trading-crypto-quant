@@ -7,11 +7,15 @@ import {
 } from "../config/liveConfig.js";
 import {
   getPoolExecutionRecord,
+  getPoolExecutionRecords,
   recordPoolExecutionFailure,
   recordPoolExecutionSuccess,
 } from "../database/repositories.js";
 import {
   assessExecutionBreaker,
+  assessTokenBench,
+  benchTokenKey,
+  indexExecutionHistory,
   isPoolDenied,
   poolDenylist,
 } from "./executionGuard.js";
@@ -412,6 +416,32 @@ export class ExecutionBenchedError extends LiveEntryRefusedError {
 }
 
 /**
+ * A SIBLING pool of the same token is benched.
+ *
+ * Its own class rather than an `ExecutionBenchedError` with different words, because
+ * the two say different things to whoever reads the log: that one means THIS pool
+ * failed, this one means this pool's record is clean and another pool of the same
+ * token is what is holding it out. The message also cannot borrow that one's "skipped
+ * before any network call" — identifying the token needs `describePair`, so this
+ * refusal comes one RPC later. Still free: it is well before the balancing swap.
+ *
+ * A `LiveEntryRefusedError` like every other pre-swap refusal, so `seekNewEntry`
+ * treats it as a routine skip and no operator is paged for a pool the engine merely
+ * declined to enter.
+ */
+export class TokenBenchedError extends LiveEntryRefusedError {
+  constructor(pairName: string, poolAddress: string, reason: string) {
+    super(
+      `[live] ${pairName} (pool ${poolAddress}) is held out by a token-level bench: ` +
+        `${reason}; skipped before the balancing swap`,
+      pairName,
+      poolAddress,
+    );
+    this.name = "TokenBenchedError";
+  }
+}
+
+/**
  * The pool is moving faster than the deposit's active-bin tolerance can absorb.
  *
  * A REFUSAL, and a free one: it is decided before the balancing swap, from a
@@ -639,6 +669,38 @@ export async function openLivePosition(params: {
     params.lowerBinPrice,
     params.upperBinPrice,
   );
+
+  /*
+   * THE SAME BENCH, ASKED ABOUT THE TOKEN.
+   *
+   * The check above asks only about this pool ADDRESS, and one token routinely has
+   * several DLMM pools at different bin steps. Observed live on 9 Sep 2026: OTC-SOL
+   * (Muk/SOL) exists as four pools, one was benched at 13:32 and a SIBLING was opened
+   * at 21:22, because nothing ever asked the bench about that address. The operator's
+   * same-day mitigation was to put the PAIR NAME in `POOL_DENYLIST`, which
+   * `isPoolDenied` matches across siblings — a manual version of this check.
+   *
+   * It sits HERE, not beside the per-pool check, because naming the token needs
+   * `describePair` — `pairedMint` is the SDK's own answer for the non-SOL side, so the
+   * key cannot drift from the one the strike is recorded under below. Still free, and
+   * still well before the balancing swap spends anything.
+   *
+   * The candidate filter in `seekNewEntry` applies the same rule before the LLM ever
+   * sees the list; this is the second line, for the window between a cycle building
+   * its candidates and acting on one.
+   */
+  const tokenKey = benchTokenKey(pairedMint.toBase58(), WSOL_MINT);
+  if (tokenKey) {
+    const siblings = indexExecutionHistory(getPoolExecutionRecords()).byToken.get(tokenKey);
+    const tokenBench = assessTokenBench(siblings, params.poolAddress);
+    if (tokenBench.blocked) {
+      throw new TokenBenchedError(
+        params.pairName,
+        params.poolAddress,
+        tokenBench.reason ?? "a sibling pool of this token is benched",
+      );
+    }
+  }
 
   /*
    * Two gates BEFORE the balancing swap spends anything, because a failure after the
@@ -938,6 +1000,9 @@ export async function openLivePosition(params: {
           pairName: params.pairName,
           stage: `rehearsal/${failure.stage}`,
           reason: (failure.error ?? "simulation refused").slice(0, 500),
+          // The SDK's own answer for the non-SOL side, so the key a bench is stored
+          // under cannot drift from the one the candidate filter looks it up by.
+          tokenMint: pairedMint.toBase58(),
         });
       } catch (bookkeeping) {
         console.warn(`[live] could not record the rehearsal failure for ${params.pairName}:`, bookkeeping);
@@ -1064,6 +1129,7 @@ export async function openLivePosition(params: {
             pairName: params.pairName,
             stage: "bin-array-prep",
             reason: reason.slice(0, 500),
+            tokenMint: pairedMint.toBase58(),
           });
         } catch (bookkeeping) {
           console.warn(
@@ -1223,6 +1289,7 @@ export async function openLivePosition(params: {
         pairName: params.pairName,
         stage: "open",
         reason: err instanceof Error ? err.message.slice(0, 500) : String(err).slice(0, 500),
+        tokenMint: pairedMint.toBase58(),
       });
     } catch (bookkeeping) {
       console.warn(`[live] could not record the execution failure for ${params.pairName}:`, bookkeeping);

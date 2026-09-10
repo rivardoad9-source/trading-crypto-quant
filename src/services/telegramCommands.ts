@@ -2,7 +2,7 @@ import type { Context } from "telegraf";
 import { env, hasTelegram } from "../config/env.js";
 import { getTelegramBot, sanitize, chunk } from "./telegram.js";
 import { computeOverview } from "./overview.js";
-import { isEnginePaused, setEnginePaused } from "./engineControl.js";
+import { readEngineControlFile, setEnginePaused } from "./engineControl.js";
 import { claimLiveFees, isLiveExecutionActive } from "./liveExecution.js";
 import { forceCloseAllPositions } from "../agents/dlmmTraderAgent.js";
 import { addDaysToDayKey, currentZonedDay } from "./timezone.js";
@@ -92,8 +92,27 @@ export function buildStatusText(): string {
     `🏆 All-time: ${tradeWord(o.totalSimulatedTrades)} · win ${o.winRatePct.toFixed(0)}% · PF ${pf}`,
     `⚠️ Max drawdown: ${o.maxDrawdownPct.toFixed(2)}%`,
     `📌 Active: ${o.activePositionsCount}`,
-    `🎛 Engine: ${isEnginePaused() ? "⏸ **PAUSED** (scanning off)" : "▶️ **RUNNING**"}`,
+    `🎛 Engine: ${o.control.pausedByTelegram ? "⏸ **PAUSED** (scanning off)" : "▶️ **RUNNING**"}`,
   ];
+
+  /*
+   * The FILE hold, on its own line and never folded into the Engine line above.
+   *
+   * They are independent sources of the same silence and /resume clears only the
+   * Telegram one, so an operator shown a single "PAUSED" would have no way to know
+   * which lever lifts it — and one who sees "RUNNING" beside an engine opening nothing
+   * would have no way to know anything was holding it at all. That is the situation
+   * this whole file-control path exists to make impossible.
+   *
+   * Always false in paper mode, where the cycle does not read the file.
+   */
+  if (o.control.pausedByFile) {
+    lines.push(
+      `🛑 Control file: ⏸ **ENTRIES HELD**` +
+        (o.control.fileReason ? ` — ${o.control.fileReason}` : "") +
+        ` (clear it on the host; /resume does NOT lift this)`,
+    );
+  }
 
   /*
    * Printed only while a window is in force, and on its own line rather than folded
@@ -307,6 +326,116 @@ async function replyMarkdown(ctx: Context, text: string): Promise<void> {
 
 let started = false;
 
+/* ------------------------------------------------------------------ */
+/* Launch retries                                                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The backoff ladder, then a steady beat. `attempt` is 1-based and names the attempt
+ * that JUST FAILED, so `launchBackoffMs(1)` is the wait before attempt 2.
+ *
+ * 5s / 15s / 30s / 60s forever. The tail is INDEFINITE on purpose and is the whole
+ * point of this ladder: the failure it recovers from is an external poller holding the
+ * same bot token, which nothing on this box can clear and which may clear at any time.
+ * A retry budget that gave up would mean the kill-switch stays dead until someone
+ * restarts the engine — and restarting a live engine to recover a kill-switch is the
+ * intervention the kill-switch exists to avoid.
+ */
+export const TELEGRAM_LAUNCH_BACKOFF_MS: readonly number[] = [5_000, 15_000, 30_000];
+export const TELEGRAM_LAUNCH_RETRY_STEADY_MS = 60_000;
+
+export function launchBackoffMs(attempt: number): number {
+  return TELEGRAM_LAUNCH_BACKOFF_MS[attempt - 1] ?? TELEGRAM_LAUNCH_RETRY_STEADY_MS;
+}
+
+export interface LaunchRetryHandle {
+  /** Cancels any pending retry and prevents further attempts. Idempotent. */
+  stop(): void;
+  /** How many launch attempts have been made. Diagnostic; used by the tests. */
+  attempts(): number;
+}
+
+/**
+ * Calls `launch` and keeps calling it, on the ladder above, until one sticks.
+ *
+ * WHY THIS EXISTS. Every boot on 10 Sep 2026 logged `409: Conflict: terminated by other
+ * getUpdates request` — an external poller holding the same token — and telegraf's
+ * `launch()` REJECTS on that. With a single `.catch()` the command bot was then dead for
+ * the entire life of the process: `/pause`, `/resume`, `/close_all` and `/status` all
+ * unresponsive, i.e. the operator kill-switch, gone until the next restart. Nothing in
+ * this repository caused the conflict and nothing here can clear it; what it can do is
+ * keep asking, so the switch comes back on its own the moment the conflict does clear.
+ *
+ * SUCCESS IS NOT AWAITABLE, and the logging follows from that rather than from choice.
+ * `launch()` resolves only when polling STOPS — it awaits the infinite update loop — so
+ * a promise that has not settled IS the success case. Readiness is therefore logged
+ * immediately after the call, exactly as before this loop existed, and a rejection that
+ * arrives afterwards corrects it on the next line. Awaiting it in the boot path would
+ * hang the orchestrator forever.
+ *
+ * The timer functions are injected so the tests can drive the ladder without waiting
+ * real minutes for it; `env.ts` parses at import, so a test cannot reach this by
+ * setting a variable. Same reason `readNewsBlackout` takes its clock and its path.
+ */
+export function launchWithBackoff(deps: {
+  launch: () => Promise<unknown>;
+  setTimer?: (fn: () => void, ms: number) => unknown;
+  clearTimer?: (handle: unknown) => void;
+  log?: (message: string) => void;
+  logError?: (message: string) => void;
+}): LaunchRetryHandle {
+  const setTimer = deps.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
+  const clearTimer = deps.clearTimer ?? ((handle) => clearTimeout(handle as NodeJS.Timeout));
+  const log = deps.log ?? ((m: string) => console.log(m));
+  const logError = deps.logError ?? ((m: string) => console.error(m));
+
+  let stopped = false;
+  let pending: unknown = null;
+  let attempt = 0;
+
+  const attemptLaunch = (): void => {
+    if (stopped) return;
+    attempt += 1;
+    const n = attempt;
+
+    /*
+     * The rejection handler is attached BEFORE readiness is logged, so a `launch` that
+     * rejects synchronously-ish cannot escape it. `started` is cleared on the way past
+     * because `stopTelegramCommands` reads it, and a bot that failed to launch must not
+     * be reported as one that is polling.
+     */
+    void deps.launch().catch((err) => {
+      started = false;
+      if (stopped) return;
+      logError(`[telegram] bot launch failed (attempt ${n}): ${err}`);
+
+      const wait = launchBackoffMs(n);
+      logError(`[telegram] retrying the command bot launch in ${Math.round(wait / 1000)}s`);
+      pending = setTimer(() => {
+        pending = null;
+        attemptLaunch();
+      }, wait);
+    });
+
+    log(`[telegram] command bot started (long-polling, attempt ${n})`);
+  };
+
+  attemptLaunch();
+
+  return {
+    stop(): void {
+      stopped = true;
+      if (pending !== null) {
+        clearTimer(pending);
+        pending = null;
+      }
+    },
+    attempts: () => attempt,
+  };
+}
+
+let launchHandle: LaunchRetryHandle | null = null;
+
 /**
  * Registers the command handlers and starts long-polling. Only the orchestrator
  * (npm run dev / dist/index.js) calls this — the pause flag is engine state, so
@@ -428,7 +557,25 @@ export function startTelegramCommands(): void {
     if (!isCommandAuthorized(ctx.from?.id)) return deny(ctx, "resume");
     setEnginePaused(false);
     console.log("[telegram] engine RESUMED via /resume");
-    await replyMarkdown(ctx, "▶️ **Engine resumed.**\nScanning for new positions is active again.");
+
+    /*
+     * /resume lifts the TELEGRAM hold and cannot lift the FILE one — they are separate
+     * decisions made through separate channels. Replying "resumed" while the control
+     * file still holds entries would be a claim the next cycle contradicts, leaving the
+     * operator watching a "running" engine open nothing — the exact confusion this
+     * file-control path exists to remove. Read live, so the answer is the one the next
+     * cycle will act on, and only in live mode, where the cycle reads the file at all.
+     */
+    const heldByFile = isLiveExecutionActive() && readEngineControlFile().paused;
+
+    await replyMarkdown(
+      ctx,
+      heldByFile
+        ? "▶️ **Telegram pause lifted** — but new entries are STILL HELD by the " +
+            "operator control file, which /resume cannot clear. Remove it on the host, " +
+            "or set `paused: false` in it. Monitoring and exits are unaffected."
+        : "▶️ **Engine resumed.**\nScanning for new positions is active again.",
+    );
   });
 
   bot.command("trades", async (ctx) => {
@@ -481,26 +628,40 @@ export function startTelegramCommands(): void {
     await replyMarkdown(ctx, buildHelpText());
   });
 
-  // launch() resolves only when polling STOPS — it awaits the infinite update
-  // loop — so log readiness immediately and keep the catch for boot failures
-  // (getMe / deleteWebhook errors). The 409 conflict case is handled inside
-  // telegraf's polling loop with retries; it surfaces here only on boot.
   // A command handler error must never kill the whole bot: log it and keep
   // polling (without bot.catch(), Telegraf re-throws and polling stops).
   bot.catch((err) => {
     console.error("[telegram] command error:", err);
   });
-  bot.launch().catch((err) => {
-    started = false;
-    console.error("[telegram] bot launch failed:", err);
-  });
-  console.log("[telegram] command bot started (long-polling)");
+
+  launchHandle = launchWithBackoff({ launch: () => bot.launch() });
 }
 
 export function stopTelegramCommands(): void {
   const bot = getTelegramBot();
+
+  /*
+   * The retry loop is stopped FIRST, and unconditionally.
+   *
+   * It can be pending while `started` is false and while the bot never launched at
+   * all — that is the whole state this retry loop adds — so gating the cancel behind
+   * either check is how a "stopped" engine keeps waking up every 60s to re-poll a
+   * token it no longer owns.
+   */
+  if (launchHandle) {
+    launchHandle.stop();
+    launchHandle = null;
+  }
+
   if (!bot || !started) return;
   started = false;
-  bot.stop();
+  // The bot may never have launched (every attempt rejected), and telegraf throws
+  // when stopping one that was never polling. Stopping is best effort by nature:
+  // there is nothing to recover from and nothing left to stop.
+  try {
+    bot.stop();
+  } catch {
+    // Already stopped, or never started. Either way we are where we wanted to be.
+  }
   console.log("[telegram] command bot stopped");
 }

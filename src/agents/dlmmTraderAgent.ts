@@ -18,6 +18,9 @@ import {
 } from "../services/liveExecution.js";
 import {
   assessExecutionBreaker,
+  assessTokenBench,
+  benchTokenKey,
+  indexExecutionHistory,
   isPoolDenied,
   poolDenylist,
 } from "../services/executionGuard.js";
@@ -65,7 +68,13 @@ import {
   type TokenSafetyReport,
 } from "../services/solana.js";
 import { sendError, sendPositionClosed, sendPositionOpened } from "../services/telegram.js";
-import { isEnginePaused } from "../services/engineControl.js";
+import {
+  describeEntriesHeld,
+  fileHoldSkipReason,
+  isEnginePaused,
+  readEngineControlFile,
+  type EngineControlStatus,
+} from "../services/engineControl.js";
 import {
   describeBlackoutWindow,
   formatZonedStamp,
@@ -75,7 +84,7 @@ import {
   closePosition,
   countActivePositions,
   getActivePositions,
-  getPoolExecutionHistory,
+  getPoolExecutionRecords,
   getPoolExitHistory,
   getPoolExitRecord,
   getRecentFailurePostMortems,
@@ -1276,17 +1285,27 @@ async function closeAllPositionsLocked(options: {
 /**
  * Which execution-level gate refused a pool.
  *
- * `denylist`, `breaker` and `noWsol` are facts about the POOL. `binCap` is a fact about the
- * OPERATOR'S CONFIGURATION — the same pool is admitted the moment
- * `LIVE_MAX_POSITION_BINS` is raised — so the four must stay countable apart.
+ * `denylist`, `breaker`, `tokenBench` and `noWsol` are facts about the POOL. `binCap` is
+ * a fact about the OPERATOR'S CONFIGURATION — the same pool is admitted the moment
+ * `LIVE_MAX_POSITION_BINS` is raised — so they must stay countable apart.
+ *
+ * `tokenBench` is separate from `breaker` for the same reason: "this pool failed" and "a
+ * SIBLING pool of this token failed" lead to different actions, and a pool with a clean
+ * record of its own being skipped is unreadable unless the funnel can say which it was.
  */
-export type ExecutionBlockKind = "denylist" | "breaker" | "noWsol" | "binCap";
+export type ExecutionBlockKind = "denylist" | "breaker" | "tokenBench" | "noWsol" | "binCap";
 
 /** Tallies execution refusals per gate. Every kind is present, zero included. */
 export function countExecutionBlocks(
   rejected: ReadonlyArray<{ kind: ExecutionBlockKind }>,
 ): Record<ExecutionBlockKind, number> {
-  const out: Record<ExecutionBlockKind, number> = { denylist: 0, breaker: 0, noWsol: 0, binCap: 0 };
+  const out: Record<ExecutionBlockKind, number> = {
+    denylist: 0,
+    breaker: 0,
+    tokenBench: 0,
+    noWsol: 0,
+    binCap: 0,
+  };
   for (const r of rejected) out[r.kind] += 1;
   return out;
 }
@@ -1519,7 +1538,15 @@ async function seekNewEntry(): Promise<EntrySummary> {
   let fresh = cooldownFilter.allowed;
 
   if (isLiveExecutionActive()) {
-    const executionHistory = getPoolExecutionHistory();
+    /*
+     * Indexed BY POOL and BY TOKEN, from one read.
+     *
+     * The by-token half closes the gap this gate was found to have on 9 Sep 2026: one
+     * token routinely has several DLMM pools at different bin steps, the bench was
+     * keyed on the pool address alone, and a benched pool's SIBLING sailed straight
+     * past it (OTC-SOL, four pools: one benched at 13:32, another opened at 21:22).
+     */
+    const executionHistory = indexExecutionHistory(getPoolExecutionRecords());
     const executable: typeof fresh = [];
 
     for (const pool of fresh) {
@@ -1533,13 +1560,37 @@ async function seekNewEntry(): Promise<EntrySummary> {
         continue;
       }
 
-      const verdict = assessExecutionBreaker(executionHistory.get(pool.address));
+      const verdict = assessExecutionBreaker(executionHistory.byPool.get(pool.address));
       if (verdict.blocked) {
         summary.executionRejected.push({
           pairName: pool.pairName,
           poolAddress: pool.address,
           kind: "breaker",
           reason: verdict.reason ?? "benched by the execution breaker",
+        });
+        continue;
+      }
+
+      /*
+       * The same bench, asked about the TOKEN rather than this one address.
+       *
+       * Reported as its own kind rather than folded into `breaker`, because the two
+       * answer different questions and lead to different actions: "this pool failed" is
+       * a fact about the pool, while "a sibling pool of this token failed" is what an
+       * operator needs in order to understand why a pool with a clean record of its own
+       * is being skipped. One bucket for both is the funnel-ordering defect of 8 Sep
+       * again — a count that can answer neither question.
+       */
+      const tokenKey = benchTokenKey(pool.baseMint, pool.quoteMint);
+      const sibling = tokenKey
+        ? assessTokenBench(executionHistory.byToken.get(tokenKey), pool.address)
+        : { blocked: false as const, hoursRemaining: 0, reason: null };
+      if (sibling.blocked) {
+        summary.executionRejected.push({
+          pairName: pool.pairName,
+          poolAddress: pool.address,
+          kind: "tokenBench",
+          reason: sibling.reason ?? "a sibling pool of this token is benched",
         });
         continue;
       }
@@ -2298,6 +2349,7 @@ function recordFunnel(entry: EntrySummary, monitor: MonitorSummary, durationMs: 
       execBreakerRejected: byKind.breaker,
       execBinCapRejected: byKind.binCap,
       execNoWsolRejected: byKind.noWsol,
+      execTokenBenchRejected: byKind.tokenBench,
       antirugPassed: entry.safeCandidates,
       antirugRejected: entry.rugRejected.length,
       volatilityRejected: entry.volatilityRejected.length,
@@ -2378,12 +2430,32 @@ export async function runDlmmTradingCycle(
      * byte-identical to what it was before this gate existed.
      */
     const paused = isEnginePaused();
+
+    /*
+     * BOTH file reads sit behind the SAME predicate, so a dry run does not so much as
+     * stat either file and its cycle stays byte-identical to what it was before either
+     * gate existed. The predicate is asked twice rather than hoisted into a local: it
+     * is a pure read of parsed env, the two calls cannot disagree, and the literal
+     * `isLiveExecutionActive() ? read...` at each read site is what the placement tests
+     * in `newsBlackout.test.ts` and `engineControl.test.ts` match on.
+     */
+    const control = isLiveExecutionActive() ? readEngineControlFile() : null;
     const blackout = isLiveExecutionActive() ? readNewsBlackout() : null;
 
-    // Once per cycle, and only here: `readNewsBlackout` returns its warnings rather
-    // than printing them so that /api/overview can read the same file on the
-    // dashboard's poll without filling the log.
+    // Once per cycle, and only here: both readers return their warnings rather than
+    // printing them so that /api/overview can read the same files on the dashboard's
+    // poll without filling the log.
+    for (const warning of control?.warnings ?? []) console.warn(`[control] ${warning}`);
     for (const warning of blackout?.warnings ?? []) console.warn(`[news] ${warning}`);
+
+    const controlStatus: EngineControlStatus = {
+      pausedByTelegram: paused,
+      pausedByFile: control?.paused ?? false,
+      fileReason: control?.reason ?? null,
+    };
+
+    const heldLine = describeEntriesHeld(controlStatus);
+    if (heldLine) console.log(heldLine);
 
     const blackoutWindow = blackout?.active ?? null;
     if (blackoutWindow) console.log(describeBlackoutWindow(blackoutWindow));
@@ -2392,6 +2464,10 @@ export async function runDlmmTradingCycle(
     // The /pause wording is unchanged, character for character: it is what an operator
     // reads in the funnel row and in `scan_funnel_cycles.skip_reason` today.
     if (paused) skipReasons.push("engine paused via Telegram /pause — scanning disabled");
+    // A SEPARATE clause, never a replacement: `/resume` clears the one above and not
+    // this one, so an operator has to be able to tell them apart in the funnel row.
+    const fileHold = fileHoldSkipReason(controlStatus);
+    if (fileHold) skipReasons.push(fileHold);
     if (blackoutWindow) {
       skipReasons.push(
         `news blackout: ${blackoutWindow.event} until ` +

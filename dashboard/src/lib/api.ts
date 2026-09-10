@@ -82,6 +82,16 @@ export interface Overview {
    * monitored and closed through a blackout exactly as at any other time.
    */
   newsBlackout: { event: string; untilWib: string } | null;
+  /**
+   * Why new entries are held, by SOURCE. Never collapse these into one boolean: only
+   * the Telegram hold is cleared by /resume, so a reader shown a single "paused" has
+   * no way to know which lever lifts it. `pausedByFile` is always false in paper mode.
+   */
+  control: {
+    pausedByTelegram: boolean;
+    pausedByFile: boolean;
+    fileReason: string | null;
+  };
   serverTime: string;
   timezone: string;
 }
@@ -333,6 +343,15 @@ export interface FunnelCycle {
    * costing the engine its universe.
    */
   execBinCapRejected: number;
+  /**
+   * Refused because a SIBLING pool of the same token is benched, not this pool.
+   *
+   * Separate from `execBreakerRejected` because they lead to different actions: that
+   * one says this pool failed, this one says a pool with a clean record of its own is
+   * being held out because another pool of the same token failed. Added 10 Sep 2026,
+   * when a benched pool's sibling was found to sail straight past the breaker.
+   */
+  execTokenBenchRejected: number;
   antirugPassed: number;
   antirugRejected: number;
   volatilityRejected: number;

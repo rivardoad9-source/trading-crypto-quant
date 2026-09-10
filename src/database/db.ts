@@ -132,6 +132,20 @@ export function initDatabase(): void {
   addColumnIfMissing("scan_funnel_cycles", "exec_bincap_rejected", "INTEGER DEFAULT 0");
   addColumnIfMissing("scan_funnel_cycles", "exec_no_wsol_rejected", "INTEGER DEFAULT 0");
 
+  /*
+   * The token a benched pool is a pool OF.
+   *
+   * The execution breaker keyed on `pool_address` alone, and one token routinely has
+   * several DLMM pools at different bin steps. On 9 Sep 2026 that was observed live:
+   * OTC-SOL exists as FOUR pools, one was benched at 13:32 and a SIBLING was opened at
+   * 21:22 — the bench was never consulted, because it was never asked about that
+   * address. NULL on every row written before this column, and on any pool whose
+   * non-SOL side could not be identified; a NULL propagates nothing, which is the
+   * fail-open direction this gate already takes everywhere else.
+   */
+  addColumnIfMissing("pool_execution_failures", "token_mint", "TEXT");
+  addColumnIfMissing("scan_funnel_cycles", "exec_token_bench_rejected", "INTEGER DEFAULT 0");
+
   initialised = true;
   console.log(`[db] ready at ${dbPath}`);
 }

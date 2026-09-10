@@ -116,7 +116,11 @@ CREATE TABLE IF NOT EXISTS pool_execution_failures (
     last_stage           TEXT,               -- rehearsal | swap | open | fund | unknown
     last_reason          TEXT,
     total_failures       INTEGER NOT NULL DEFAULT 0,
-    last_success_at      DATETIME
+    last_success_at      DATETIME,
+    -- The NON-SOL mint of the pair, so a bench can cover every pool of one token.
+    -- NULL on rows written before this column existed, and on any pool whose token
+    -- could not be identified; a NULL never propagates a bench. See executionGuard.ts.
+    token_mint           TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_positions_status    ON simulated_positions(status);

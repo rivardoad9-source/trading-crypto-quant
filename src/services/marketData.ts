@@ -404,6 +404,28 @@ export async function fetchTradFiMacro(): Promise<TradFiMacro> {
     sources: [],
   };
 
+  /*
+   * SAY IT OUT LOUD WHEN THE KEY IS MISSING.
+   *
+   * Without `FRED_API_KEY` these three are silently null on every run, and the only
+   * place that surfaced was the researcher's own prompt — so sections 1 (Macro &
+   * Geopolitics) and 2 (Institutional & On-Chain Flows) of the daily research had NEVER
+   * had real data, across the 8, 9 and 10 Sep runs, while every log line read healthy.
+   * A RISK-ON/RISK-OFF verdict reached without DXY, the 10Y or the S&P is a
+   * crypto-internal read wearing a cross-asset label.
+   *
+   * This warns and changes NOTHING else. The nullable fields and the explicit
+   * `unavailable` list are what keep the model from inventing numbers, and they stay
+   * exactly as they are — the fix for the gap is a key in `.env`, not a value invented
+   * here. Same contract as the missing ETF flows below.
+   */
+  if (!apiKey) {
+    console.warn(
+      "[marketData] FRED_API_KEY unset — DXY/10Y/S&P unavailable; the macro read is " +
+        "crypto-internal only this run",
+    );
+  }
+
   if (apiKey) {
     const [dxy, us10y, sp500] = await Promise.all([
       fetchFredLatest(FRED_SERIES.dxy, apiKey),

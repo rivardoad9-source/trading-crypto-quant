@@ -1,4 +1,5 @@
 import { env } from "../config/env.js";
+import { WSOL_MINT } from "../config/constants.js";
 import { hoursSince, parseDbTimestamp } from "./meteora.js";
 import type { PoolExecutionRecord } from "../database/repositories.js";
 
@@ -194,6 +195,133 @@ export function assessExecutionBreaker(
       `${record.lastReason ?? "no reason recorded"}; benched for another ` +
       `${remaining.toFixed(1)}h of ${thresholds.hours}h`,
   };
+}
+
+/* ------------------------------------------------------------------ */
+/* Token-level bench propagation                                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Quote mints that must NEVER key a bench.
+ *
+ * The engine funds in SOL, so the "other side" of a pair is usually a memecoin — and a
+ * failure there is usually a fact about the TOKEN (a transfer fee, a rug, a pool moving
+ * several bins a minute), which is exactly what should propagate. But the other side of
+ * a SOL-USDC pool is USDC, and benching "USDC" would bench every USDC-quoted SOL pool
+ * over one pool's bad afternoon.
+ *
+ * Same reasoning as `isPoolAttributable` withholding a strike for a WALLET-level
+ * refusal: one fact that is not about the token must not be allowed to bench the
+ * universe a pool at a time. These pools keep their own per-pool bench; only the
+ * propagation is withheld.
+ */
+const NEVER_A_BENCH_KEY: readonly string[] = [
+  // wSOL comes from the shared constant rather than being typed out again: this list
+  // is what stops one pool's bad afternoon benching a whole quote asset, and a
+  // mistyped address here would silently disable that protection.
+  WSOL_MINT,
+  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // USDC
+  "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", // USDT
+];
+
+/**
+ * The mint a bench should be keyed on, or null when there is no safe one.
+ *
+ * WHY THIS EXISTS. The breaker keyed on `pool_address` alone, and one token routinely
+ * has several DLMM pools at different bin steps. Observed live on 9 Sep 2026: OTC-SOL
+ * (Muk/SOL) exists as FOUR pools; one was benched at 13:32 and a SIBLING was opened at
+ * 21:22, because the bench was never asked about that address. The operator's same-day
+ * mitigation was to add the PAIR NAME to `POOL_DENYLIST`, which `isPoolDenied` matches
+ * across siblings — a manual version of this, proving the shape of the gap.
+ *
+ * KEYED ON THE MINT, NOT THE PAIR NAME. A pair name is built from token SYMBOLS, and
+ * memecoin tickers collide constantly; a symbol-keyed bench would eventually refuse an
+ * unrelated token that happened to share three letters. The denylist may match on names
+ * because a human chose those names and can see what they cover — an automatic gate
+ * cannot.
+ *
+ * Null when neither side is wSOL (the live path refuses such pools anyway) and when the
+ * non-SOL side is a major quote asset. Null propagates NOTHING; the pool keeps its own
+ * bench.
+ */
+export function benchTokenKey(
+  baseMint: string | null | undefined,
+  quoteMint: string | null | undefined,
+): string | null {
+  const wsol = WSOL_MINT;
+  const base = (baseMint ?? "").trim();
+  const quote = (quoteMint ?? "").trim();
+
+  const other = base === wsol ? quote : quote === wsol ? base : null;
+  if (other === null || other === "") return null;
+  return NEVER_A_BENCH_KEY.includes(other) ? null : other;
+}
+
+/**
+ * Every stored record, indexed both ways from ONE read.
+ *
+ * Two indexes off the same rows so they cannot describe different instants — the same
+ * reason `/api/overview` reads the control file once.
+ */
+export interface ExecutionHistoryIndex {
+  byPool: Map<string, PoolExecutionRecord>;
+  byToken: Map<string, PoolExecutionRecord[]>;
+}
+
+export function indexExecutionHistory(
+  records: readonly PoolExecutionRecord[],
+): ExecutionHistoryIndex {
+  const byPool = new Map<string, PoolExecutionRecord>();
+  const byToken = new Map<string, PoolExecutionRecord[]>();
+
+  for (const record of records) {
+    byPool.set(record.poolAddress, record);
+    // A record with no token propagates nothing — see `benchTokenKey`.
+    if (!record.tokenMint) continue;
+    const bucket = byToken.get(record.tokenMint);
+    if (bucket) bucket.push(record);
+    else byToken.set(record.tokenMint, [record]);
+  }
+
+  return { byPool, byToken };
+}
+
+/**
+ * Whether a SIBLING pool of the same token is benched.
+ *
+ * Blocks when ANY record for the token blocks, rather than picking the most recent one.
+ * A cheap "latest wins" would miss the case that matters: an expensive `open` strike on
+ * pool A two hours ago, then a free `rehearsal` refusal on pool B ten minutes ago, would
+ * let the still-live 24h bench from A go unseen behind B's fresher, weaker record.
+ *
+ * `self` is excluded so the caller can report a sibling bench in words that are true —
+ * "another pool of this token", not "this pool". The pool's own bench is assessed
+ * separately and reported separately.
+ */
+export function assessTokenBench(
+  records: readonly PoolExecutionRecord[] | undefined,
+  self: string,
+  now: Date = new Date(),
+  thresholds: ExecutionBreakerThresholds = defaultExecutionBreakerThresholds(),
+): ExecutionBreakerVerdict {
+  if (!records || records.length === 0) return NOT_BLOCKED;
+
+  let worst: ExecutionBreakerVerdict = NOT_BLOCKED;
+  for (const record of records) {
+    if (record.poolAddress === self) continue;
+    const verdict = assessExecutionBreaker(record, now, thresholds);
+    if (verdict.blocked && verdict.hoursRemaining > worst.hoursRemaining) {
+      worst = {
+        blocked: true,
+        hoursRemaining: verdict.hoursRemaining,
+        reason:
+          `a SIBLING pool of the same token (${record.pairName ?? record.poolAddress}, ` +
+          `${record.poolAddress.slice(0, 8)}...) is benched: ${verdict.reason}`,
+      };
+    }
+  }
+
+  return worst;
 }
 
 /** One line for the boot log, so an empty or mistyped denylist is visible. */
