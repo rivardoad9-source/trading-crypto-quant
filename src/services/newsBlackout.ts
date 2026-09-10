@@ -43,6 +43,23 @@ import { env } from "../config/env.js";
 /** How stale a calendar may be before it is ignored entirely. */
 export const NEWS_BLACKOUT_MAX_AGE_HOURS = 48;
 
+/**
+ * The longest single window that will be honoured.
+ *
+ * THE STALENESS RULE DOES NOT COVER THIS, and the gap is the dangerous one. 48h only
+ * helps when the cron STOPS writing; a cron that keeps running while emitting one bad
+ * row — a mistyped year, an end date that never arrives — refreshes `generated_at`
+ * every cycle and so stays permanently fresh, and the engine stops opening positions
+ * for good while every status line still reads healthy. That is the self-inflicted
+ * outage this module's own header warns about, reached from the one direction the
+ * freshness check cannot see.
+ *
+ * 6h against a feed whose windows are 105 minutes: wide enough for an FOMC day or a
+ * hand-added session an operator genuinely wants, far short of anything open-ended.
+ * A window over it is dropped and warned about, exactly like an unparseable one.
+ */
+export const NEWS_BLACKOUT_MAX_WINDOW_HOURS = 6;
+
 export interface NewsBlackoutWindow {
   /** The release this window brackets, e.g. "CPI". */
   event: string;
@@ -211,11 +228,31 @@ function parseInstant(value: unknown): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-/** The first non-empty string among the given keys. */
+/**
+ * The first non-empty string among the given keys, made safe to render.
+ *
+ * `event` and `source` come from a file this repository does not write, and they reach
+ * the Telegram `/status` reply. `markdownV2()` uses `**...**` to mark the bold spans it
+ * must NOT escape, so a label containing `**` would open a bold span of its own inside
+ * an otherwise-escaped message — the "can't parse entities" failure CLAUDE.md records,
+ * arriving through data instead of through static text. Asterisks are stripped here, at
+ * the boundary, so every consumer (log line, `/status`, `/api/overview`) is covered by
+ * one rule rather than each remembering its own.
+ *
+ * Control characters go too: a newline in an event name would forge a line in the
+ * status report.
+ */
 function pickString(row: Record<string, unknown>, keys: string[]): string | null {
   for (const key of keys) {
     const value = row[key];
-    if (typeof value === "string" && value.trim() !== "") return value.trim();
+    if (typeof value !== "string") continue;
+
+    const cleaned = value
+      .replace(/[\u0000-\u001f\u007f]/g, " ")
+      .replace(/\*/g, "")
+      .trim();
+
+    if (cleaned !== "") return cleaned.slice(0, 80);
   }
   return null;
 }
@@ -235,6 +272,15 @@ function pickString(row: Record<string, unknown>, keys: string[]): string | null
 export function parseNewsBlackoutFile(raw: string): {
   calendar: NewsBlackoutCalendar;
   warnings: string[];
+  /**
+   * Whether the file CARRIED a `generated_at`, regardless of whether it parsed.
+   *
+   * "the field is absent" and "the field is there and unreadable" are different faults
+   * with different fixes, and both leave `generatedAt` null. Without this the reader
+   * reported an unreadable timestamp as a missing one, contradicting the warning the
+   * parser had already emitted about the same field.
+   */
+  sawGeneratedAtField: boolean;
 } {
   const warnings: string[] = [];
   const empty: NewsBlackoutCalendar = { generatedAt: null, windows: [] };
@@ -244,25 +290,26 @@ export function parseNewsBlackoutFile(raw: string): {
     parsed = JSON.parse(raw);
   } catch (err) {
     warnings.push(`calendar is not valid JSON (${(err as Error).message})`);
-    return { calendar: empty, warnings };
+    return { calendar: empty, warnings, sawGeneratedAtField: false };
   }
 
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
     warnings.push("calendar is not a JSON object");
-    return { calendar: empty, warnings };
+    return { calendar: empty, warnings, sawGeneratedAtField: false };
   }
 
   const root = parsed as Record<string, unknown>;
   const rawGeneratedAt = root.generated_at ?? root.generatedAt;
+  const sawGeneratedAtField = rawGeneratedAt !== undefined;
   const generatedAt = parseInstant(rawGeneratedAt);
-  if (generatedAt === null && rawGeneratedAt !== undefined) {
+  if (generatedAt === null && sawGeneratedAtField) {
     warnings.push("generated_at is present but unreadable; freshness cannot be checked");
   }
 
   const rows = root.windows;
   if (!Array.isArray(rows)) {
     warnings.push("calendar has no windows array");
-    return { calendar: { generatedAt, windows: [] }, warnings };
+    return { calendar: { generatedAt, windows: [] }, warnings, sawGeneratedAtField };
   }
 
   const windows: NewsBlackoutWindow[] = [];
@@ -287,10 +334,21 @@ export function parseNewsBlackoutFile(raw: string): {
       return;
     }
 
+    const hours = (end.getTime() - start.getTime()) / 3_600_000;
+    if (hours > NEWS_BLACKOUT_MAX_WINDOW_HOURS) {
+      warnings.push(
+        `window ${i} (${event}) spans ${hours.toFixed(1)}h, over the ` +
+          `${NEWS_BLACKOUT_MAX_WINDOW_HOURS}h limit; ignored — a window this long is a ` +
+          `bad row, and honouring it would hold entries indefinitely while the calendar ` +
+          `kept reporting itself fresh`,
+      );
+      return;
+    }
+
     windows.push({ event, start, end, source: pickString(row, ["source", "origin"]) });
   });
 
-  return { calendar: { generatedAt, windows }, warnings };
+  return { calendar: { generatedAt, windows }, warnings, sawGeneratedAtField };
 }
 
 /**
@@ -394,7 +452,7 @@ export function readNewsBlackout(
     };
   }
 
-  const { calendar, warnings } = parseNewsBlackoutFile(raw);
+  const { calendar, warnings, sawGeneratedAtField } = parseNewsBlackoutFile(raw);
 
   if (isCalendarStale(calendar, now)) {
     const ageHours = (now.getTime() - (calendar.generatedAt?.getTime() ?? 0)) / 3_600_000;
@@ -406,10 +464,14 @@ export function readNewsBlackout(
     return { active: null, warnings, enabled: true, path };
   }
 
-  if (calendar.generatedAt === null) {
+  // Only when the field was genuinely ABSENT. When it was present and unreadable the
+  // parser has already said so, and saying "has no generated_at" on top of that is a
+  // second, contradictory claim about the same field.
+  if (calendar.generatedAt === null && !sawGeneratedAtField) {
     warnings.push(
       "calendar has no generated_at; its windows are still honoured (they carry " +
-        "absolute times) but its freshness cannot be verified",
+        "absolute times, and none may exceed " +
+        `${NEWS_BLACKOUT_MAX_WINDOW_HOURS}h) but its freshness cannot be verified`,
     );
   }
 
