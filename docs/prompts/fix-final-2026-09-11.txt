@@ -1,0 +1,107 @@
+FlowMetrix — perbaikan P0 + sapuan pencegahan, dari insiden 11 Sep 2026 (kegagalan PASCA-swap 3x berturut-turut).
+Repo: ~/flowmetrix-ai-agent, branch main. Baca DULU: `docs/incidents/2026-09-11-failed-live-opens-sizing.md`.
+
+KONTEKS (jangan riset ulang): engine 3x mencoba buka posisi live KNOTS-SOL. Tiap kali: swap balancing
+0.9 SOL SUDAH landed → kaki deposit DLMM gagal (`RebalanceLiquidity → process deposit → TransferChecked
+→ Error: insufficient funds`, program error 0x1) → auto-unwind balik ke SOL. Hasil: **0 posisi kebuka,
+tapi −0,0639 SOL (~$6,33 = 2,17% wallet) hangus** (swap masuk + tx gagal + unwind keluar semuanya
+tetap dibayar). Penyebab: `LIVE_CAPITAL_SOL=3.05` sedangkan wallet on-chain 2.880994 SOL → engine
+men-size seolah punya +0,169 SOL lebih. Sudah ditambal SEMENTARA oleh operator di server
+(`LIVE_CAPITAL_SOL=2.85`, `POOL_DENYLIST` +KNOTS-SOL) — jadi JANGAN heran kalau .env tidak cocok
+dengan yang kamu baca di dokumen.
+
+ATURAN KERAS (non-negotiable)
+- JANGAN sentuh `.env` (di-gitignore, hanya ada di server, itu wilayah operator). Jangan restart pm2,
+  jangan deploy, jangan jalankan engine. Kerjaanmu murni kode di `src/` + test di `src/tests/`.
+- Jangan melemahkan gate/guard apa pun yang sudah ada — hanya menambah proteksi.
+- Jangan menaruh helper sekali-pakai di `src/scripts/` (melanggar import-graph test).
+- Operator (Hermes) yang akan pause → build → deploy → verifikasi setelah kamu push.
+
+====================================================================
+P0-1. GUARD SIZING FAIL-CLOSED (modal yang diasumsikan tidak boleh > saldo on-chain)
+====================================================================
+Fakta: engine SUDAH membaca saldo on-chain saat boot (`src/services/walletBalance.ts`; log preflight
+`wallet …: X SOL (floor 0.2 SOL) — OK` di `src/services/livePreflight.ts`) tapi hasilnya TIDAK dipakai
+untuk memvalidasi sizing.
+Yang diminta:
+1. Validasi: `deployable = LIVE_CAPITAL_SOL − reserve` (reserve 0.15 SOL) harus ≤ saldo on-chain nyata.
+   Kalau tidak → **FAIL CLOSED**: eksekusi live ditolak (mode paper tetap jalan), log tegas berisi
+   angka asumsi vs nyata vs selisih, + alert operator lewat jalur yang sudah ada (`src/services/telegram.ts`).
+2. Saldo tidak terbaca (RPC error/timeout) = UNKNOWN = **dianggap GAGAL** untuk jalur yang bisa
+   membelanjakan uang. Konsisten dengan `ANTIRUG_ON_ERROR=reject` / `VOLATILITY_ON_UNKNOWN=reject`.
+3. PAPER mode harus tetap byte-identical.
+4. Logika di modul kecil yang bisa di-unit-test tanpa RPC (mis. `src/services/liveSizingGuard.ts`).
+TEST wajib (offline): deployable > saldo → ditolak (paper tetap jalan) · deployable ≤ saldo → lolos ·
+saldo error/null → ditolak · batas persis (==) → tentukan + dokumentasikan arahnya.
+
+====================================================================
+P0-2. BENCH LEVEL MINT + WINDOW PANJANG UNTUK KEGAGALAN PASCA-SWAP
+====================================================================
+Fakta: (a) bench di-key per `pool_address` → sibling pool dari mint yang sama bisa menembus (10 Sep:
+KNOTS-SOL kena strike di 2 pool, 29 menit jarak, ~0,078 SOL kebakar). (b) Kolom `token_mint` di
+`pool_execution_failures` ADA tapi **selalu NULL** (6 baris) → guard level-mint mustahil dibangun.
+(c) Bench hanya menahan **~3 jam** untuk kegagalan SETELAH dana keluar (`benched for another 3.0h of 24h`)
+→ diulang tiap 3 jam, tiap ulangan bakar SOL.
+Yang diminta:
+1. Isi `token_mint` setiap kali menulis baris bench. Backfill 6 baris lama hanya kalau aman dari data
+   yang ada; kalau tidak, biarkan NULL dan pastikan NULL tidak bikin guard FAIL OPEN.
+2. Guard memeriksa level MINT: satu strike memb lokir SEMUA pool yang memakai mint itu.
+3. Kegagalan yang terjadi SETELAH dana keluar (swap balancing confirmed / pasca-swap) → bench MINT
+   minimal **24 jam** (lebih panjang/kalau memungkinkan "sampai dibersihkan operator manual").
+4. Jangan ubah semantik `POOL_DENYLIST` (jalur operator).
+TEST wajib (offline): sibling pool diblokir · mint beda tidak saling memblokir · baris `token_mint`
+NULL tidak fail-open · window bench pasca-swap dihormati (tidak dicoba ulang sebelum habis).
+
+====================================================================
+P0-3. AKUNTANSI & PAGAR BIAYA KEGAGALAN  ← ini yang mencegah keulangan
+====================================================================
+Fakta yang paling penting dari insiden ini: 3 percobaan gagal itu meninggalkan **jejak NOL di DB** —
+0 baris posisi, PnL 0, `daily_pnl_snapshots` bersih — padahal wallet turun 0,0639 SOL. Artinya:
+**uang yang keluar tanpa posisi yang jadi TIDAK TERLIHAT** di pembukuan, di PnL, maupun di alert.
+Selama itu tetap begitu, pola ini bisa terulang tanpa ada yang sadar sampai saldo habis.
+Yang diminta:
+1. Catat setiap percobaan eksekusi live yang MEMBELANJAKAN lamports, berhasil atau gagal:
+   `wallet_lamports_before/after` (kolom ini sudah ada untuk posisi sukses — pakai pola yang sama),
+   biaya SOL, mint, pool, tahap gagal, hasil unwind, dan signature. Sisipkan ke tabel yang sudah ada
+   (mis. baris bench) atau tabel baru kecil — pilih yang paling sedikit mengubah skema. Wajib terisi
+   untuk jalur kegagalan pasca-swap.
+2. Alert operator saat kegagalan: sebut eksplisit **"unwound clean"** vs **"orphan left"** + **biaya
+   SOL-nya** + mint/pool. (Sekarang alert hanya bilang "execution failed" tanpa angka biaya.)
+3. PAGAR BIAYA (fail-closed): kalau total biaya percobaan GAGAL dalam 24 jam > ambang (usul 0,05 SOL,
+   jadikan konstanta/env tervalidasi) → **STOP membuka posisi baru** sampai operator membersihkan
+   (boleh memakai mekanisme `data/engine_control.json` yang sudah ada, atau flag baru). Monitoring,
+   fee claim, dan close TETAP jalan. Ini yang bikin "3x gagal semalam" tidak bisa terulang.
+4. REKONSILIASI BERKALA: bandingkan saldo on-chain vs nilai buku/pin modal. Kalau drift > 1% atau
+   > 0,02 SOL → alert (dan sebutkan angka drift-nya). Saat ini pin `STARTING_BALANCE_USD=298.02`
+   sementara wallet ~$285,5 (~$12 selisih) dan tidak ada yang memberi tahu.
+TEST wajib (offline): biaya kegagalan tercatat · ambang pagar tercapai → entry diblokir, close tetap
+jalan · di bawah ambang → entry tetap jalan · drift terdeteksi → alert dipanggil (mock).
+
+====================================================================
+P1. SAPUAN SISTEMIK: "uang keluar sebelum langkah yang bisa gagal"
+====================================================================
+Untuk SETIAP jalur yang membelanjakan lamports — single open, wide/chunked open (jalur bin yang lebar),
+rebalance, claim fee, close, auto-unwind, recover-partially-funded — buktikan dengan file:line bahwa
+SEMUA validasi yang mungkin gagal dijalankan SEBELUM pembelanjaan pertama:
+rent affordability · lebar bin (≤1400 + MAX_RESIZE_LENGTH) · `ONCHAIN_MAX_LAMPORTS_PER_TX` vs saldo nyata ·
+`LIVE_CAPITAL_SOL`/deployable · saldo token pasangan · concurrency/`maxConcurrentPositions` · bench/denylist.
+Kalau ada satu validasi yang baru jalan SESUDAH pembelanjaan → itu TEMUAN: perbaiki (geser validasi ke
+depan, atau pakai rehearsal/sim preflight yang sudah ada) ATAU bench mint-nya panjang (P0-2).
+Laporkan sebagai tabel: jalur | pembelanjaan pertama (file:line) | validasi sebelum | validasi sesudah (=temuan) | tindakan.
+Juga: laporkan setiap tempat lain yang menulis `pool_execution_failures` tanpa `token_mint`.
+
+====================================================================
+DOKUMEN & DEFINISI SELESAI
+====================================================================
+1. Kode + test untuk P0-1, P0-2, P0-3, dan perbaikan dari tabel P1.
+2. Satu dokumen ringkas `docs/audits/2026-09-11-recurrence-proof.md`: untuk tiap kelas kegagalan
+   (uang keluar tanpa posisi · sizing melebihi saldo · retry mint yang sudah gagal pasca-swap ·
+   drift buku vs saldo) tulis: kelas → guard yang sekarang mencegahnya → test yang membuktikan →
+   file:line. Ini yang dipakai operator untuk memastikan TIDAK TERULANG.
+3. `npm run typecheck` bersih. `npm test` dijalankan dan hasilnya dilaporkan APA ADANYA.
+   CATATAN: 7 test FAIL di mesin armed = NORMAL & terdokumentasi (menegaskan profil live inert) —
+   JANGAN diperbaiki, JANGAN dihapus. Baseline 10 Sep 2026: 729 total / 722 pass / 7 fail.
+   Target: 0 regresi baru + semua test barumu lolos (sebutkan angka total/pass/fail yang kamu dapat).
+4. Ringkasan akhir jawaban: file yang diubah + alasannya, angka typecheck/test nyata, dan apa yang
+   kamu TIDAK bisa pastikan (tanpa spekulasi, tanpa angka karangan).
+5. Commit + push ke `main`, pesan jelas per task. JANGAN deploy, JANGAN restart, JANGAN sentuh `.env`.
