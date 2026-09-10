@@ -28,7 +28,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { env } from "../config/env.js";
 import { liveMicroCapital } from "../config/liveConfig.js";
-import { CRON } from "../config/constants.js";
+import { CRON, DLMM_BASE_CADENCE_MIN, DLMM_POST_NEWS_FAST_MIN } from "../config/constants.js";
 import { REASONER_MAX_TOKENS, MAX_STRUCTURED_ATTEMPTS } from "../services/deepseek.js";
 
 const read = (relative: string): string =>
@@ -82,7 +82,24 @@ describe("V1.1 baseline — breakeven friction gate", () => {
 
 describe("V1.1 baseline — clocks", () => {
   it("screens every 30 minutes", () => {
-    assert.equal(CRON.DLMM_LOOP, "*/30 * * * *");
+    /*
+     * The baseline claim is about the RUN cadence: twice an hour, two DeepSeek calls an
+     * hour, and that is what the constants still say. The cron entry became a 5-minute
+     * tick to make room for the one bounded exception below — off-cadence ticks return
+     * before the screener, so the tick itself costs nothing.
+     */
+    assert.equal(CRON.DLMM_TICK, "*/5 * * * *");
+    assert.equal(DLMM_BASE_CADENCE_MIN, 30);
+  });
+
+  it("widens the cadence only in a bounded post-news window", () => {
+    /*
+     * The only sanctioned deviation from the 30-minute clock: for this many minutes after
+     * a macro-news blackout window closes, the screener runs on the tick. Asserted so the
+     * window cannot quietly grow into a cadence change — a fast clock that never ends is a
+     * six-fold token bill, which is the thing the 30-minute clock was chosen to prevent.
+     */
+    assert.equal(DLMM_POST_NEWS_FAST_MIN, 120);
   });
 
   it("marks open positions every 60 seconds", () => {

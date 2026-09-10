@@ -1,5 +1,5 @@
 import cron from "node-cron";
-import { CRON } from "./config/constants.js";
+import { CRON, DLMM_BASE_CADENCE_MIN, DLMM_POST_NEWS_FAST_MIN } from "./config/constants.js";
 import { env, hasDeepSeek, hasTelegram, isLiveTradingEnabled } from "./config/env.js";
 import { closeDatabase, initDatabase } from "./database/db.js";
 import { runMacroResearcher } from "./agents/researcherAgent.js";
@@ -11,6 +11,11 @@ import { liveMicroCapital } from "./config/liveConfig.js";
 import { InsufficientGasReserveError, runLivePreflight } from "./services/livePreflight.js";
 import { describeExecutionGuard } from "./services/executionGuard.js";
 import { describeNewsBlackout } from "./services/newsBlackout.js";
+import {
+  decideScreenerRun,
+  minutesOfHourInZone,
+  readPostNewsFastWindow,
+} from "./services/screenerCadence.js";
 import { describeReconciliation, reconcilePositions } from "./services/reconciliation.js";
 import {
   describeLiveExecutionBlockers,
@@ -179,9 +184,34 @@ async function main(): Promise<void> {
      * comes back so positions are never left unmonitored — note that would then be the
      * only exit check, on the 30-minute screener clock.
      */
+    /*
+     * The screener's clock is a TICK, not a cadence. It fires every 5 minutes, and each
+     * tick decides whether this is a real screener run: the 30-minute base cadence
+     * normally, or every 5 minutes for DLMM_POST_NEWS_FAST_MIN after a macro-news window
+     * closes (where a re-priced SOL and rewritten ranges are worth arriving at quickly).
+     * The rule lives in services/screenerCadence.ts so it is unit-tested rather than read
+     * off a cron string, and off-cadence ticks return before touching the network, the
+     * upstreams or DeepSeek — so the token bill is the 30-minute clock's, not the 5's.
+     */
     cron.schedule(
-      CRON.DLMM_LOOP,
-      withLock("dlmm", () => runDlmmTradingCycle({ skipMonitor: env.FAST_MONITOR_ENABLED })),
+      CRON.DLMM_TICK,
+      withLock("dlmm", async () => {
+        const now = new Date();
+        const live = isLiveExecutionActive();
+        const decision = decideScreenerRun({
+          now,
+          minutesOfHour: minutesOfHourInZone(now, env.TZ),
+          live,
+          // Paper mode is deliberately handed null: a dry run keeps the base cadence
+          // (and its byte-identical cycle) rather than chasing a re-pricing it cannot
+          // trade. Same reasoning as the news gate and the width filter.
+          fastWindow: live ? readPostNewsFastWindow(now) : null,
+        });
+
+        if (!decision.run) return;
+        if (decision.fast) console.log(decision.reason);
+        await runDlmmTradingCycle({ skipMonitor: env.FAST_MONITOR_ENABLED });
+      }),
       { timezone: env.TZ },
     ),
     cron.schedule(CRON.DAILY_SNAPSHOT, withLock("snapshot", () => runDailySnapshot()), {
@@ -206,7 +236,10 @@ async function main(): Promise<void> {
   }
 
   console.log(`[cron] macro    ${CRON.DAILY_MACRO}    (${env.TZ})`);
-  console.log(`[cron] dlmm     ${CRON.DLMM_LOOP}   (${env.TZ})`);
+  console.log(
+    `[cron] dlmm     ${CRON.DLMM_TICK} tick (every ${DLMM_BASE_CADENCE_MIN}m; ` +
+      `every 5m for ${DLMM_POST_NEWS_FAST_MIN}m after a news window)   (${env.TZ})`,
+  );
   console.log(`[cron] snapshot ${CRON.DAILY_SNAPSHOT}   (${env.TZ})`);
 
   // Run one cycle immediately so a fresh start has data rather than waiting 30 minutes.

@@ -21,7 +21,7 @@ import {
   REASONER_MAX_TOKENS,
   resolveTokenBudget,
 } from "../services/deepseek.js";
-import { CRON } from "../config/constants.js";
+import { CRON, DLMM_BASE_CADENCE_MIN } from "../config/constants.js";
 
 describe("deepseek token budget", () => {
   it("locks a reasoning call to REASONER_MAX_TOKENS", () => {
@@ -68,7 +68,14 @@ describe("deepseek retry policy", () => {
 
 describe("screener cadence", () => {
   it("runs the heavy screener every 30 minutes", () => {
-    assert.equal(CRON.DLMM_LOOP, "*/30 * * * *");
+    /*
+     * The cron entry is now a 5-minute TICK, and the RUN cadence it produces is still 30
+     * minutes — off-cadence ticks return before the screener, the upstreams or DeepSeek,
+     * so the bill is unchanged. The rule lives in services/screenerCadence.ts with its own
+     * tests; what is pinned here is the cost-relevant fact: the interval did not shrink.
+     */
+    assert.equal(CRON.DLMM_TICK, "*/5 * * * *");
+    assert.equal(DLMM_BASE_CADENCE_MIN, 30);
   });
 
   it("keeps the position monitor on its own 60-second clock", () => {
