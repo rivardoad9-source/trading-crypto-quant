@@ -1,0 +1,59 @@
+FlowMetrix engine — audit PRIORITAS (hemat kuota), report only. No code changes, no commits except the one doc, no restarts, no deploys.
+
+Repo: ~/flowmetrix-ai-agent (main). Read the audited SHA and record it in your report.
+
+LANGKAH 0 — WAJIB, jangan diulang dari nol:
+Baca DULU `docs/audits/2026-09-10-evidence-pack.md`. Isinya sudah jadi (dibuat di server, terbukti):
+env shadowing (.env vs proses pm2), dump DB (pool_execution_failures 6 baris, token_mint SEMUA NULL,
+simulated_positions 0 baris, integrity ok), pola log sepanjang umur, state wallet on-chain
+(2.944854 SOL + 1 USDC, 0 token orphan), git 12 commit terakhir, dan test baseline (729/722/7).
+FAKTA DI ATAS SUDAH TERVERIFIKASI — JANGAN cari ulang, jangan query ulang, jangan re-derive.
+Kamu TIDAK punya akses server; kalau butuh bukti live di luar pack, tulis "REQUESTED EVIDENCE: <perintah>".
+
+Yang gw minta: 3 area prioritas (bukan 9). Kedalaman > keluasan.
+
+AREA 1 — MONEY PATH: jaminan unwind (src/services/onchainExecutor.ts, src/services/liveExecution.ts)
+Untuk tiap titik gagal: setelah swap/swap-balancing CONFIRMED tapi open posisi GAGAL, apakah SOL/token
+DIJAMIN kembali? Urutannya benar (close account -> recover rent -> return token)? Kalau unwind itu
+sendiri gagal, apa yang terjadi dan siapa yang diberitahu? Ada jalur di mana dana bisa berhenti di luar
+pengawasan engine (token nyangkut di wallet, position account terisi yang engine ga bisa lihat,
+rent bin-array, tx in-flight yang hasilnya tidak diketahui)? Bukti: file:line + kutipan kode.
+Konteks lapangan (dari pack): sudah pernah terjadi 1x — swap confirmed, open gagal, wallet pegang
+3885908112 base units mint MukLDtJ8Cx9DxLbeyLRSWPSposTMWuwHANbuaudpump tanpa monitor; auto-unwind
+di-submit. Tentukan apakah itu berhasil BY DESIGN atau kebetulan, dan apa yang terjadi kalau gagal.
+
+AREA 2 — GRANULARITAS GUARD: per-pool vs per-mint
+Bukti dari pack: 6 baris pool_execution_failures, `token_mint` isinya NULL semua, dan ada 2 baris
+KNOTS-SOL beda pool_address (95NyuWzMDmW... 2026-09-09 19:32:10 dan nBXytBBfKLh... 2026-09-09 19:02:49)
+= percobaan eksekusi hidup kedua untuk mint yang sama, 29 menit setelah yang pertama.
+Tugas: temukan SETIAP guard di src/ yang di-key pakai pool_address (atau apa pun yang lebih sempit dari
+mint) sehingga sibling pool dari mint yang sama bisa nembus: bench/lockout/cooldown/POOL_DENYLIST/de-dup
+posisi/hafalan rejection di scan funnel/Set atau Map in-memory. Untuk masing-masing: file:line, skenario
+sibling-pool, dan beri label EXPLOITABLE di mode live (duit bisa hilang) vs kosmetik. Jelaskan juga kenapa
+`token_mint` tidak pernah terisi dan apakah itu menghalangi guard level-mint.
+
+AREA 3 — FAIL DIRECTION gate: blackout news, control file, cadence
+src/services/newsBlackout.ts, src/services/engineControl.ts, src/services/screenerCadence.ts.
+Untuk SETIAP cabang (file hilang, JSON rusak, kosong, timestamp basi, timezone gagal parse, indikator
+tidak dikenal, daftar window kosong, tepi detik/DST, kalender ga ada): FAIL OPEN (entry tetap boleh saat
+rilis makro) atau FAIL CLOSED? Tulis tabel dengan file:line. Catatan penting: gate ini SATU-SATUNYA yang
+menahan entry saat rilis berita, jadi tiap cabang fail-open = temuan. Pastikan juga dua arti "blackout"
+tidak bisa ketuker: (i) tahan entry di dalam window vs (ii) cadence cepat 5 menit SETELAH window.
+Dan jawab: bisakah salah baca jam/timezone/tepi zona bikin scan tiap 5 menit selamanya (bakarin token
+DeepSeek) atau tidak pernah jalan sama sekali?
+
+DILARANG (keras):
+- Jangan edit file sumber. Jangan restart pm2. Jangan deploy. Jangan jalanin `npm test` (baseline sudah ada).
+- Jangan ubah .env, jangan ubah nilai gate apa pun.
+- Jangan baca file di luar cakupan di atas kecuali benar-benar perlu; kalau konteks mulai besar, ringkas
+  progres ke catatan sebelum lanjut. Jangan pecah jadi beberapa sesi.
+- Jangan print API key/token/secret — mask [REDACTED].
+
+OUTPUT: tepat satu dokumen `docs/audits/2026-09-10-engine-audit-critical.md`.
+Format: ringkasan 10 baris di atas (temuan diurut risiko duit + 3 fix pertama), lalu 3 section sesuai area.
+Tiap temuan: judul, severity critical/major/minor, file:line, skenario reproduksi konkret, bukti yang
+kamu lihat sendiri (kode/kutipan; jangan mengarang angka), kenapa test yang ada tidak menangkapnya,
+sketsa fix minimal. Akhiri dengan "REQUESTED EVIDENCE" (perintah yang harus dijalankan operator di server)
+dan "UNDERIVED" (yang ga bisa kamu pastikan).
+
+Commit HANYA dokumen itu, pesan: `docs(audit): engine priority audit <sha>` lalu push ke main.
