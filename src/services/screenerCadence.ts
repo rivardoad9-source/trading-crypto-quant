@@ -32,7 +32,7 @@
  */
 import { readFileSync } from "node:fs";
 import { env } from "../config/env.js";
-import { DLMM_BASE_CADENCE_MIN, DLMM_POST_NEWS_FAST_MIN } from "../config/constants.js";
+import { CRON, DLMM_BASE_CADENCE_MIN, DLMM_POST_NEWS_FAST_MIN } from "../config/constants.js";
 import {
   isCalendarStale,
   newsBlackoutPath,
@@ -142,6 +142,20 @@ function describeAge(since: Date, now: Date): string {
 }
 
 /**
+ * The tick interval `CRON.DLMM_TICK` implies (a 5-minute tick -> 5), or null when it
+ * cannot be read.
+ *
+ * Interpolating the real value keeps the log line honest if the tick ever changes — the
+ * first version of this line printed the fast-window LENGTH in both slots, which read as
+ * "running every 90m for 90m", i.e. exactly the opposite of what happens.
+ */
+export function tickIntervalMinutes(expression: string = CRON.DLMM_TICK): number | null {
+  const match = /^\*\/(\d+)\s/.exec(expression.trim());
+  const value = match ? Number(match[1]) : Number.NaN;
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+/**
  * The decision itself. Pure: no clock, no filesystem, no env reads.
  *
  * `live` is why the fast window is passed in as a value rather than read here — in paper
@@ -154,12 +168,14 @@ export function decideScreenerRun(input: ScreenerCadenceInput): ScreenerCadenceD
 
   if (fastWindow !== null) {
     const age = describeAge(fastWindow.end, input.now);
+    const tick = tickIntervalMinutes();
+    const cadence = tick === null ? "every tick" : `every ${tick}m`;
     return {
       run: true,
       fast: true,
       reason:
         `[dlmm] post-news fast cadence: ${fastWindow.event} closed ${age} ago — ` +
-        `running every ${DLMM_POST_NEWS_FAST_MIN}m for ${DLMM_POST_NEWS_FAST_MIN}m after the window`,
+        `ticking ${cadence} instead of ${base}m, for ${DLMM_POST_NEWS_FAST_MIN}m after the window`,
     };
   }
 

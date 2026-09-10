@@ -79,6 +79,12 @@ describe("screener cadence — the post-news fast window", () => {
     assert.equal(d.fast, true);
     assert.match(d.reason, /PPI/);
     assert.match(d.reason, /5m ago/);
+    /*
+     * The wording is asserted because the first version interpolated the fast-window
+     * LENGTH into both slots and read as "running every 90m for 90m" — the log an operator
+     * reads to understand why the engine is ticking fast said the opposite.
+     */
+    assert.match(d.reason, /ticking every 5m instead of 30m/);
   });
 
   it("stays on the base cadence in paper mode even when the calendar says go fast", () => {
