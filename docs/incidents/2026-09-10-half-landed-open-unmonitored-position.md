@@ -214,27 +214,34 @@ Evidence, all primary:
 | attempt #1 balancing swap (77 bins, `38hfSJMv…`) | blockTime **02:01:55 WIB** (slot 445685556) |
 | attempt #2 balancing swap (27 bins, `4stmuaAS…`) | blockTime **02:32:08 WIB** (slot 445691275) |
 
-What this kills and what it leaves:
+What the evidence says (and one earlier reading RETRACTED):
 
-- **Hypothesis 1 is DEAD.** The 02:01 failure was NOT a free pre-swap refusal — the swap
-  landed at 02:01:55, the position landed 2 of its transactions, and the strike WAS stored
-  (02:02:49 WIB, stage `open`).
-- **What survives is worse than the hypothesis.** The pool was benched at 02:02:49 WIB
-  ("one is enough to bench", 24 h), and a SECOND live attempt on KNOT-SOL still ran at
-  **02:32:08 WIB** — a different screener cycle, ~29 min after the strike — spent a swap,
-  and failed post-swap (`the swap confirmed but no token balance could be read`).
-- **That second post-swap failure recorded NO strike.** The row still reads
-  `consecutive_failures 1 / total_failures 1` with the WIDE reason as `last_reason`. So a
-  post-swap failure (money spent) can fail to increment the bench counter.
-- The guard itself works *later*: `[guard] skipped KNOTS-SOL: 1 on-chain execution failure
-  AFTER the balancing swap spent (one is enough to bench)` repeats in the engine error log
-  for subsequent cycles.
-- **Caveat, stated so it is not overclaimed:** both failing swaps are Jupiter routes, so
-  their account lists do **not** contain the DLMM pool address. This evidence cannot tell
-  whether the 02:32 attempt targeted pool `nBXytBBf…` itself or a sibling pool of the same
-  token (the known same-token multi-pool gap). That distinction decides the fix: "the bench
-  was not consulted at all" vs "the bench is keyed per pool, so a sibling pool walks around
-  it" — the second would mean the bench needs a token-level key.
+- **RETRACTED: "the second post-swap failure recorded no strike."** That was an artifact of
+  querying a single `pool_address`. Query by `pair_name` and BOTH attempts have their own row
+  with `consecutive_failures 1`:
+
+  | pool_address | pair | strike (UTC) | stage | last_reason |
+  |---|---|---|---|---|
+  | `nBXytBBfKLhj6teXarAv8rk6WNgUFBMyybUFRkuK7ad` | KNOTS-SOL | 2026-09-09 19:02:49 (02:02:49 WIB) | open | `openPosition on position ENNpRNx6… landed 2 of its transactions and then failed` |
+  | `95NyuWzMDmWnPgLGBotT1XB2v1fQkqxhCrGLBDfxXfhn` | KNOTS-SOL | 2026-09-09 19:32:10 (02:32:10 WIB) | open | `the swap confirmed but no token balance could be read` |
+
+- **The real defect is TOKEN-LEVEL repeat loss, and it is the 7 Sep mechanism still live.**
+  The two rows are **different pool addresses for the SAME pair** — so the strike from 02:02:49
+  benched pool `nBXytBBf…` only ("one is enough to bench"), and 29 minutes later the engine
+  executed live against a **sibling pool `95NyuWz…`** for the same token, spent a swap
+  (blockTime 02:32:08, 2 s before its 02:32:10 strike) and failed post-swap. The bench is keyed
+  per `pool_address`; nothing about it is keyed per mint, so a sibling pool walks around it.
+- The guard is not broken per se — for the benched pool it behaves exactly as documented:
+  `[guard] skipped KNOTS-SOL: 1 on-chain execution failure AFTER the balancing swap spent (one
+  is enough to bench)` repeats in the error log for later cycles.
+- Hypotheses 1 and 3 from the list above are therefore both dead; the surviving question is
+  narrower and answerable: **why did the screener surface the same mint via a second pool**
+  (the known same-token multi-pool gap) — and the fix direction is a **mint-level bench**, not
+  another pool row.
+- **Caveat, so it is not overclaimed:** the failing swaps are Jupiter routes, so their account
+  lists contain no DLMM pool address. The link "attempt #2 ran against `95NyuWz…`" comes from
+  the bench row itself (`recordPoolExecutionFailure` is called with the pool the engine was
+  executing against), not from the transaction accounts.
 
 ## Verification
 

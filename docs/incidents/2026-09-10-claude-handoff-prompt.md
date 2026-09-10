@@ -53,27 +53,30 @@ TASK 2 — file-based engine control (kill-switch independent of Telegram)
   - Tests: absent -> running; paused: true -> entries skipped, monitoring untouched;
     unparseable -> paused + warning; /resume does not clear a file pause; paper byte-identical.
 
-TASK 3 — a benched pool got a second live attempt, and the second post-swap failure recorded no strike
+TASK 3 — MONEY-LOSING: the execution bench is keyed per pool, so the same token got a second
+  live attempt through a sibling pool 29 minutes later (the 7 Sep repeat-loss mechanism, still live)
   Evidence (verified 10 Sep 2026, DB + on-chain blockTime; full table in
   docs/incidents/2026-09-10-half-landed-open-unmonitored-position.md -> "Partial answer"):
-  - pool_execution_failures for pool nBXytBBfKLhj6teXarAv8rk6WNgUFBMyybUFRkuK7ad:
-    consecutive_failures 1, total_failures 1, last_stage "open", last_failure_at 02:02:49 WIB,
-    last_reason = the WIDE "landed 2 of its transactions" error.
-  - attempt #1 balancing swap (77 bins) landed 02:01:55 WIB; attempt #2 (27 bins, narrower,
-    different screener cycle) landed 02:32:08 WIB — i.e. ~29 min AFTER the immediate bench.
-  - attempt #2 failed post-swap (`the balancing swap CONFIRMED but the position open failed`;
-    `the swap confirmed but no token balance could be read`) and did NOT increment the counter.
-  - Later cycles DO show `[guard] skipped KNOTS-SOL: 1 on-chain execution failure AFTER the
-    balancing swap spent (one is enough to bench)`, so the guard works once it sees the strike.
-  Determine, with log/DB/code evidence, and report:
-  (a) why the 02:32 cycle reached a live attempt on an already-benched pool
-      (candidate list built before the strike? filter keyed per pool while the candidate came
-      from a sibling pool of the same token? retry path that skips the breaker?);
-  (b) why a post-swap failure did not record a strike (which `stage`/error classes increment
-      `consecutive_failures`; the narrow fused path's failure looked like it should count).
-  Fix minimally once (a)/(b) are proven — e.g. key the bench at token level if that is the
-  answer. Do NOT change gate thresholds to paper over it. If the evidence is inconclusive,
-  say so and hand back the exact queries/log lines you need.
+  - BOTH failing attempts have their OWN pool_execution_failures row, each `consecutive_failures 1`,
+    same pair KNOTS-SOL, DIFFERENT pool addresses:
+      nBXytBBfKLhj6teXarAv8rk6WNgUFBMyybUFRkuK7ad  strike 2026-09-09 19:02:49 UTC (02:02:49 WIB)
+        reason: wide open "landed 2 of its transactions and then failed" (created the orphan position)
+      95NyuWzMDmWnPgLGBotT1XB2v1fQkqxhCrGLBDfxXfhn  strike 2026-09-09 19:32:10 UTC (02:32:10 WIB)
+        reason: "the swap confirmed but no token balance could be read"
+  - attempt #1 balancing swap landed 02:01:55 WIB (77 bins); attempt #2 landed 02:32:08 WIB (27 bins).
+    So 29 min AFTER pool nBXytBBf… was benched ("one is enough to bench", 24 h) the engine executed
+    live against a SIBLING pool of the same token, spent the swap round trip, and failed post-swap.
+  - The guard behaves correctly PER POOL: `[guard] skipped KNOTS-SOL: 1 on-chain execution failure
+    AFTER the balancing swap spent (one is enough to bench)` repeats afterwards for the benched pool.
+  Do:
+  (a) make the execution bench MINT-level — a post-swap strike on one pool benches every pool of
+      that token for the lockout window — or, if you believe pool-level is correct, argue that
+      explicitly in the report (the repeat loss above is the counter-argument);
+  (b) trace how the same mint reached live execution twice via different pools, and say whether
+      candidate de-dup / the breaker filter belongs at mint level;
+  (c) report the minimal change + tests. Do NOT relax any gate threshold to paper over it.
+  If you cannot prove the mint-level link from the code, say so and hand back the exact queries or
+  log lines you need.
 
 TASK 4 (optional, low priority) — make the research blind spot loud
   src/services/marketData.ts: when FRED_API_KEY is empty, `fetchTradFiMacro()` silently
