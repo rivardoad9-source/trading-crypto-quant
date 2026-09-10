@@ -465,6 +465,27 @@ const EnvSchema = z
      */
     NEWS_BLACKOUT_FILE: z.string().default("./data/news_blackout.json"),
 
+    /* ---- Operator engine control (live path only) ---- */
+    /**
+     * A file that can hold NEW entries without going through Telegram.
+     *
+     * The kill-switch used to be Telegram-only, and on 10 Sep 2026 Telegram's intake
+     * was dead for every boot — an external poller held the token and every
+     * `bot.launch()` was refused with `409 Conflict` — so `/pause` did not exist.
+     * `engineControl.ts` keeps its pause in MEMORY, so there was no way to hold entries
+     * from outside the process at all, and `pm2 stop` is not a substitute because it
+     * also stops monitoring the open positions.
+     *
+     * Written by an operator or by Hermes; never written by this engine. Resolved
+     * against `process.cwd()` like `DATABASE_PATH` and `NEWS_BLACKOUT_FILE`, so an
+     * absolute path also works — which is what the live host uses, since the writer and
+     * the engine do not share a working directory.
+     *
+     * INERT IN PAPER MODE: the read lives behind `isLiveExecutionActive()` in
+     * `runDlmmTradingCycle`, so a dry run does not open the file at all.
+     */
+    ENGINE_CONTROL_FILE: z.string().default("./data/engine_control.json"),
+
     // Database
     DATABASE_PATH: z.string().default("./data/flowmetrix.db"),
   })

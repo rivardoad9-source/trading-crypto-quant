@@ -56,6 +56,7 @@ const hermesCycle = {
   execBreakerRejected: 0,
   execBinCapRejected: 26,
   execNoWsolRejected: 0,
+  execTokenBenchRejected: 0,
   antirugPassed: 0,
   antirugRejected: 4,
   volatilityRejected: 0,
@@ -98,7 +99,11 @@ describe("entry funnel — the stages have to add up", () => {
     const [row] = repos.getScanFunnel(1);
     assert.ok(row);
     assert.equal(
-      row.execDenylistRejected + row.execBreakerRejected + row.execBinCapRejected + row.execNoWsolRejected,
+      row.execDenylistRejected +
+        row.execBreakerRejected +
+        row.execBinCapRejected +
+        row.execNoWsolRejected +
+        row.execTokenBenchRejected,
       row.executionRejected,
       "the per-gate counts disagree with the total",
     );
@@ -110,6 +115,38 @@ describe("entry funnel — the stages have to add up", () => {
      */
     assert.equal(row.execBinCapRejected, 26);
     assert.equal(row.execBreakerRejected, 0);
+  });
+
+  it("counts a SIBLING-token bench apart from this pool's own bench", () => {
+    /*
+     * Added 10 Sep 2026 with token-level bench propagation. `execBreakerRejected` says
+     * THIS pool failed; `execTokenBenchRejected` says a pool with a clean record of its
+     * own was held out because a SIBLING pool of the same token failed. Folding the
+     * second into the first would leave an operator unable to tell a broken pool from a
+     * broken token, and — because the sum above must still hold — a new gate that did
+     * not get its own column would silently make the row unreconcilable.
+     */
+    repos.recordScanFunnel({
+      ...hermesCycle,
+      candidates: 2,
+      executionRejected: 28,
+      execBinCapRejected: 26,
+      execTokenBenchRejected: 2,
+    });
+
+    const [row] = repos.getScanFunnel(1);
+    assert.ok(row);
+    assert.equal(row.execTokenBenchRejected, 2);
+    assert.equal(row.execBreakerRejected, 0, "a sibling bench is not this pool's bench");
+    assert.equal(
+      row.execDenylistRejected +
+        row.execBreakerRejected +
+        row.execBinCapRejected +
+        row.execNoWsolRejected +
+        row.execTokenBenchRejected,
+      row.executionRejected,
+      "the per-gate counts disagree with the total",
+    );
   });
 
   it("keeps an unmeasured screener null, never zero", () => {
@@ -141,13 +178,23 @@ describe("entry funnel — the stages have to add up", () => {
       { kind: "breaker" as const },
       { kind: "noWsol" as const },
     ]);
-    assert.deepEqual(counted, { denylist: 0, breaker: 1, noWsol: 1, binCap: 2 });
+    assert.deepEqual(counted, {
+      denylist: 0,
+      breaker: 1,
+      // A SIBLING pool of the same token being benched is counted apart from this
+      // pool's own bench: the two lead to different actions, so one bucket for both
+      // could answer neither.
+      tokenBench: 0,
+      noWsol: 1,
+      binCap: 2,
+    });
 
     // Empty input still names every gate: a missing key would render as "undefined" in
     // the log line rather than as the zero it is.
     assert.deepEqual(agent.countExecutionBlocks([]), {
       denylist: 0,
       breaker: 0,
+      tokenBench: 0,
       noWsol: 0,
       binCap: 0,
     });

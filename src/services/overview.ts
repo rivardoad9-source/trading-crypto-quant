@@ -13,6 +13,11 @@ import { getStartingBalanceUsd } from "../config/startingBalance.js";
 import { env } from "../config/env.js";
 import { isLiveExecutionActive } from "../config/liveConfig.js";
 import { readNewsBlackout, toBlackoutStatus, type NewsBlackoutStatus } from "./newsBlackout.js";
+import {
+  isEnginePaused,
+  readEngineControlFile,
+  type EngineControlStatus,
+} from "./engineControl.js";
 
 /**
  * The KPI payload served by GET /api/overview and reused verbatim by the
@@ -78,6 +83,18 @@ export interface Overview {
    * through a blackout exactly as at any other time.
    */
   newsBlackout: NewsBlackoutStatus | null;
+  /**
+   * Why new entries are being held, by SOURCE.
+   *
+   * Two independent holds, reported separately and never collapsed into one boolean:
+   * `/resume` lifts the Telegram one and cannot touch the file one, so an operator who
+   * is only told "paused" has no way to know which lever to pull. `pausedByFile` is
+   * always false in PAPER mode, where the cycle does not read the file at all.
+   *
+   * Like the blackout, this says nothing about OPEN positions: they are monitored,
+   * accrued and closed through a hold exactly as at any other time.
+   */
+  control: EngineControlStatus;
   serverTime: string;
   timezone: string;
 }
@@ -118,6 +135,29 @@ export function computeOverview(cohort: Cohort = defaultCohort()): Overview {
   const pnlSeries = getRealisedPnlSeries(filter);
   const drawdown = computeMaxDrawdown(pnlSeries, startingBalanceUsd);
   const profit = computeProfitFactor(pnlSeries);
+
+  /*
+   * BOTH sources of an entry hold, always, so a reader can tell WHICH one to clear —
+   * `/resume` cannot lift a file pause, and reporting one boolean would leave an
+   * operator using the wrong lever.
+   *
+   * The Telegram half is reported in PAPER mode too: it is in-process state that
+   * applies whatever the engine trades with. The FILE half is gated on the same
+   * predicate the cycle uses, because in paper mode the cycle does not read the file,
+   * and publishing a hold the engine is not applying is the advertised-bound-that-is-
+   * not-enforced defect CLAUDE.md records three times.
+   *
+   * Read ONCE. Two reads could straddle an operator's write and report a paused file
+   * with no reason, or a reason with no pause. Warnings are dropped here on purpose:
+   * the cycle logs them once per cycle, and this route is polled once a minute per open
+   * dashboard tab.
+   */
+  const controlFile = isLiveExecutionActive() ? readEngineControlFile() : null;
+  const controlStatus: EngineControlStatus = {
+    pausedByTelegram: isEnginePaused(),
+    pausedByFile: controlFile?.paused ?? false,
+    fileReason: controlFile?.reason ?? null,
+  };
 
   return {
     cohort: {
@@ -161,6 +201,18 @@ export function computeOverview(cohort: Cohort = defaultCohort()): Overview {
      * once per cycle, and this route is polled once a minute per open dashboard tab.
      */
     newsBlackout: isLiveExecutionActive() ? toBlackoutStatus(readNewsBlackout().active) : null,
+    /*
+     * BOTH sources, always, and the Telegram one is reported in PAPER mode too.
+     *
+     * `/pause` is in-process state that applies whatever the engine is trading with, so
+     * hiding it in a dry run would misreport what the engine is actually doing. The
+     * FILE half is gated on the same predicate the cycle uses, because in paper mode
+     * the cycle does not read the file — and publishing a hold the engine is not
+     * applying is the advertised-bound-that-is-not-enforced defect CLAUDE.md records
+     * three times. Warnings are dropped here on purpose: the cycle logs them once per
+     * cycle, and this route is polled once a minute per open dashboard tab.
+     */
+    control: controlStatus,
     serverTime: new Date().toISOString(),
     timezone: env.TZ,
   };

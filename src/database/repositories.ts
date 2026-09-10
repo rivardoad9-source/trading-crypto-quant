@@ -723,13 +723,23 @@ export interface ScanFunnelRecord {
   executionRejected: number;
   /**
    * `executionRejected` split by gate. The bin cap is the operator's own setting and
-   * the other two are facts about the pool, so a single total cannot answer either
+   * the others are facts about the pool, so a single total cannot answer either
    * "is a pool broken" or "what is my width cap costing me".
    */
   execDenylistRejected: number;
   execBreakerRejected: number;
   execBinCapRejected: number;
   execNoWsolRejected: number;
+  /**
+   * Refused because a SIBLING pool of the same token is benched, not this pool.
+   *
+   * Counted apart from `execBreakerRejected` because the two lead to different
+   * actions: that one says this pool failed, this one says a pool with a clean record
+   * of its own is being held out because another pool of the same token failed. A
+   * single bucket for both makes "why was this skipped" unanswerable from the row —
+   * the failure the funnel ordering fix of 8 Sep 2026 was about.
+   */
+  execTokenBenchRejected: number;
   antirugPassed: number;
   antirugRejected: number;
   volatilityRejected: number;
@@ -762,7 +772,7 @@ export function recordScanFunnel(record: ScanFunnelRecord): void {
        scanned, screen_rejections, screener_candidates, held_excluded,
        candidates, cooldown_rejected, execution_rejected,
        exec_denylist_rejected, exec_breaker_rejected, exec_bincap_rejected,
-       exec_no_wsol_rejected,
+       exec_no_wsol_rejected, exec_token_bench_rejected,
        antirug_passed, antirug_rejected, volatility_rejected,
        coverage_rejected, micro_rejected, reached_decision, opened,
        skip_reason, positions_checked, positions_closed, duration_ms
@@ -770,7 +780,7 @@ export function recordScanFunnel(record: ScanFunnelRecord): void {
        @scanned, @screenRejections, @screenerCandidates, @heldExcluded,
        @candidates, @cooldownRejected, @executionRejected,
        @execDenylistRejected, @execBreakerRejected, @execBinCapRejected,
-       @execNoWsolRejected,
+       @execNoWsolRejected, @execTokenBenchRejected,
        @antirugPassed, @antirugRejected, @volatilityRejected,
        @coverageRejected, @microRejected, @reachedDecision, @opened,
        @skipReason, @positionsChecked, @positionsClosed, @durationMs
@@ -797,6 +807,7 @@ interface RawFunnelRow {
   exec_breaker_rejected: number | null;
   exec_bincap_rejected: number | null;
   exec_no_wsol_rejected: number | null;
+  exec_token_bench_rejected: number | null;
   antirug_passed: number;
   antirug_rejected: number;
   volatility_rejected: number;
@@ -834,6 +845,7 @@ export function getScanFunnel(limit = 100): ScanFunnelRow[] {
     execBreakerRejected: r.exec_breaker_rejected ?? 0,
     execBinCapRejected: r.exec_bincap_rejected ?? 0,
     execNoWsolRejected: r.exec_no_wsol_rejected ?? 0,
+    execTokenBenchRejected: r.exec_token_bench_rejected ?? 0,
     antirugPassed: r.antirug_passed,
     antirugRejected: r.antirug_rejected,
     volatilityRejected: r.volatility_rejected,
@@ -886,11 +898,21 @@ export interface PoolExecutionRecord {
   lastReason: string | null;
   totalFailures: number;
   lastSuccessAt: string | null;
+  /**
+   * The NON-SOL mint of the pair this pool trades, or null when it was not recorded.
+   *
+   * What makes a bench cover the TOKEN rather than only the pool address it happened
+   * on. Null on rows written before the column existed and on any pool whose non-SOL
+   * side could not be identified — and a null never propagates a bench, so an
+   * unidentified token benches nothing beyond its own pool.
+   */
+  tokenMint: string | null;
 }
 
 interface RawExecutionRow {
   pool_address: string;
   pair_name: string | null;
+  token_mint: string | null;
   consecutive_failures: number;
   last_failure_at: string | null;
   last_stage: string | null;
@@ -909,16 +931,28 @@ function toExecutionRecord(r: RawExecutionRow): PoolExecutionRecord {
     lastReason: r.last_reason,
     totalFailures: r.total_failures,
     lastSuccessAt: r.last_success_at,
+    tokenMint: r.token_mint ?? null,
   };
 }
 
 /** Every pool with an execution history, keyed by address. */
 export function getPoolExecutionHistory(): Map<string, PoolExecutionRecord> {
+  return new Map(getPoolExecutionRecords().map((r) => [r.poolAddress, r]));
+}
+
+/**
+ * The same rows, unindexed.
+ *
+ * The execution guard needs a SECOND index — by token — and building both from one
+ * read keeps them describing the same instant. Indexing lives in `executionGuard.ts`
+ * so the SQL stays here, per the one-place-for-queries rule.
+ */
+export function getPoolExecutionRecords(): PoolExecutionRecord[] {
   const rows = db
     .prepare(`SELECT * FROM pool_execution_failures`)
     .all() as RawExecutionRow[];
 
-  return new Map(rows.map((r) => [r.pool_address, toExecutionRecord(r)]));
+  return rows.map(toExecutionRecord);
 }
 
 export function getPoolExecutionRecord(poolAddress: string): PoolExecutionRecord | undefined {
@@ -941,20 +975,29 @@ export function recordPoolExecutionFailure(input: {
   pairName: string | null;
   stage: string;
   reason: string;
+  /**
+   * The pair's NON-SOL mint, when the caller knows it. Optional because the callers
+   * that do not know it must still be able to record a strike — a missing token is a
+   * narrower bench, never a lost one.
+   */
+  tokenMint?: string | null;
 }): void {
   db.prepare(
     `INSERT INTO pool_execution_failures (
        pool_address, pair_name, consecutive_failures, last_failure_at,
-       last_stage, last_reason, total_failures
-     ) VALUES (@poolAddress, @pairName, 1, CURRENT_TIMESTAMP, @stage, @reason, 1)
+       last_stage, last_reason, total_failures, token_mint
+     ) VALUES (@poolAddress, @pairName, 1, CURRENT_TIMESTAMP, @stage, @reason, 1, @tokenMint)
      ON CONFLICT(pool_address) DO UPDATE SET
        pair_name            = COALESCE(excluded.pair_name, pool_execution_failures.pair_name),
        consecutive_failures = pool_execution_failures.consecutive_failures + 1,
        last_failure_at      = CURRENT_TIMESTAMP,
        last_stage           = excluded.last_stage,
        last_reason          = excluded.last_reason,
-       total_failures       = pool_execution_failures.total_failures + 1`,
-  ).run(input);
+       total_failures       = pool_execution_failures.total_failures + 1,
+       -- COALESCE keeps a token already learned when a later strike does not carry one:
+       -- forgetting it would silently narrow an existing bench back to one pool.
+       token_mint           = COALESCE(excluded.token_mint, pool_execution_failures.token_mint)`,
+  ).run({ ...input, tokenMint: input.tokenMint ?? null });
 }
 
 /**

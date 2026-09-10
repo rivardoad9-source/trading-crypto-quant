@@ -207,6 +207,9 @@ function ExecutionBlocks({ cycle }: { cycle: FunnelCycle }) {
   const parts: Array<{ label: string; n: number; tone: string }> = [
     { label: "over bin cap", n: cycle.execBinCapRejected, tone: "text-amber-400/80" },
     { label: "breaker", n: cycle.execBreakerRejected, tone: "text-rose-400/80" },
+    // Its own chip, not folded into "breaker": this pool's record is clean and a
+    // SIBLING pool of the same token is what is holding it out.
+    { label: "token benched", n: cycle.execTokenBenchRejected, tone: "text-rose-400/80" },
     { label: "denylist", n: cycle.execDenylistRejected, tone: "text-rose-400/80" },
   ].filter((p) => p.n > 0);
 
