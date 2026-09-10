@@ -98,8 +98,9 @@ describe("V1.1 baseline — clocks", () => {
      * a macro-news blackout window closes, the screener runs on the tick. Asserted so the
      * window cannot quietly grow into a cadence change — a fast clock that never ends is a
      * six-fold token bill, which is the thing the 30-minute clock was chosen to prevent.
+     * 90 minutes is the operator's value (10 Sep 2026), not a default.
      */
-    assert.equal(DLMM_POST_NEWS_FAST_MIN, 120);
+    assert.equal(DLMM_POST_NEWS_FAST_MIN, 90);
   });
 
   it("marks open positions every 60 seconds", () => {
