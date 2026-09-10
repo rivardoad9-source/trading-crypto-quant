@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   NEWS_BLACKOUT_MAX_AGE_HOURS,
+  NEWS_BLACKOUT_MAX_WINDOW_HOURS,
   activeWindowAt,
   describeBlackoutWindow,
   formatZonedStamp,
@@ -276,6 +277,109 @@ describe("news blackout — parsing the calendar file", () => {
   });
 });
 
+describe("news blackout — a bad row cannot freeze trading forever", () => {
+  /*
+   * The hole the 48h staleness rule does NOT cover, found by audit. Staleness only
+   * fires when the cron STOPS writing. A cron that keeps running while emitting one
+   * open-ended row refreshes `generated_at` every cycle, so the calendar is
+   * permanently fresh and the engine permanently refuses to open — with every status
+   * line still reading healthy. That is the self-inflicted outage this module exists
+   * to avoid, arriving from the one direction freshness cannot see.
+   */
+  it("drops a window longer than the cap, even on a perfectly fresh calendar", () => {
+    const now = new Date("2026-09-10T12:00:00Z");
+    const { calendar: cal, warnings } = parseNewsBlackoutFile(
+      JSON.stringify({
+        generated_at: now.toISOString(),
+        windows: [{ event: "TYPO", start_utc: "2026-09-10T11:30:00Z", end_utc: "9999-12-31T23:59:59Z" }],
+      }),
+    );
+
+    assert.equal(isCalendarStale(cal, now), false, "the calendar really is fresh");
+    assert.equal(cal.windows.length, 0, "an open-ended window must not be honoured");
+    assert.equal(activeWindowAt(cal, now), null);
+    assert.ok(warnings.some((w) => /over the 6h limit/.test(w)), warnings.join(" | "));
+  });
+
+  it("keeps a window at the cap and drops one just over it", () => {
+    const base = (hours: number) =>
+      parseNewsBlackoutFile(
+        JSON.stringify({
+          windows: [
+            {
+              event: "FOMC",
+              start_utc: "2026-09-10T12:00:00Z",
+              end_utc: new Date(Date.UTC(2026, 8, 10, 12) + hours * 3_600_000).toISOString(),
+            },
+          ],
+        }),
+      ).calendar.windows.length;
+
+    assert.equal(base(NEWS_BLACKOUT_MAX_WINDOW_HOURS), 1, "exactly at the cap is allowed");
+    assert.equal(base(NEWS_BLACKOUT_MAX_WINDOW_HOURS + 0.01), 0, "just over is dropped");
+  });
+
+  it("keeps the ordinary 105-minute feed window well inside the cap", () => {
+    // The shape the gate actually exists for must never be near the limit.
+    assert.ok(1.75 < NEWS_BLACKOUT_MAX_WINDOW_HOURS);
+    const { calendar: cal } = parseNewsBlackoutFile(
+      JSON.stringify({
+        windows: [{ event: "CPI", start_utc: "2026-09-10T11:30:00Z", end_utc: "2026-09-10T13:15:00Z" }],
+      }),
+    );
+    assert.equal(cal.windows.length, 1);
+  });
+});
+
+describe("news blackout — labels from the file cannot forge a status message", () => {
+  /*
+   * `event` and `source` come from a file this repo does not write and are rendered
+   * into the Telegram `/status` reply. `markdownV2()` treats `**...**` as the bold
+   * spans it must not escape, so a label carrying `**` would open a span of its own
+   * inside an otherwise-escaped message — the "can't parse entities" failure, arriving
+   * through DATA rather than through static text.
+   */
+  it("strips asterisks and control characters from event and source", () => {
+    const { calendar: cal } = parseNewsBlackoutFile(
+      JSON.stringify({
+        windows: [
+          {
+            event: "CPI** INJECTED **tail",
+            start_utc: "2026-09-10T11:30:00Z",
+            end_utc: "2026-09-10T13:15:00Z",
+            source: "man**ual\nforged line",
+          },
+        ],
+      }),
+    );
+
+    const w = cal.windows[0]!;
+    assert.ok(!w.event.includes("*"), w.event);
+    assert.ok(!w.source!.includes("*"), w.source!);
+    assert.ok(!/[\n\r]/.test(w.event + w.source), "a newline could forge a status line");
+  });
+
+  it("bounds the label length, so one field cannot flood the report", () => {
+    const { calendar: cal } = parseNewsBlackoutFile(
+      JSON.stringify({
+        windows: [
+          { event: "X".repeat(500), start_utc: "2026-09-10T11:30:00Z", end_utc: "2026-09-10T13:15:00Z" },
+        ],
+      }),
+    );
+    assert.equal(cal.windows[0]!.event.length, 80);
+  });
+
+  it("falls back to the generic caption when a label is only asterisks", () => {
+    const { calendar: cal } = parseNewsBlackoutFile(
+      JSON.stringify({
+        windows: [{ event: "***", start_utc: "2026-09-10T11:30:00Z", end_utc: "2026-09-10T13:15:00Z" }],
+      }),
+    );
+    assert.equal(cal.windows[0]!.event, "scheduled release");
+  });
+});
+
 describe("news blackout — staleness fails OPEN", () => {
   const now = new Date("2026-09-10T12:00:00Z");
 
@@ -378,6 +482,27 @@ describe("news blackout — the read never throws and never blocks on a fault", 
     );
     assert.equal(active?.event, "PPI");
     assert.deepEqual(warnings, []);
+  });
+
+  it("does not claim a calendar 'has no generated_at' when it had an unreadable one", () => {
+    /*
+     * Two different faults with two different fixes, both of which leave the parsed
+     * value null. Reporting the second as the first sends an operator looking for a
+     * missing field that is sitting right there.
+     */
+    const { warnings } = readWith(
+      JSON.stringify({
+        generated_at: "the day before yesterday",
+        windows: [{ event: "NFP", start_utc: "2026-09-10T11:30:00Z", end_utc: "2026-09-10T13:15:00Z" }],
+      }),
+      now,
+    );
+
+    assert.ok(warnings.some((w) => /present but unreadable/.test(w)), warnings.join(" | "));
+    assert.ok(
+      !warnings.some((w) => /has no generated_at/.test(w)),
+      "the two warnings contradict each other: " + warnings.join(" | "),
+    );
   });
 
   it("honours an undated calendar's windows but warns that freshness is unverifiable", () => {
