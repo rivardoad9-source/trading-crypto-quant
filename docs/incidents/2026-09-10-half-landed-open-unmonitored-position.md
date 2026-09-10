@@ -203,6 +203,39 @@ Possible explanations, none confirmed without the pm2 log and the
 settles it. **Worth settling** — if a post-swap strike can fail to bench, that is the
 7 Sep repeat-loss mechanism still live, independently of everything above.
 
+### Partial answer — verified 10 Sep 2026, 14:25 WIB (DB + on-chain blockTime)
+
+Evidence, all primary:
+
+| Fact | Value |
+|---|---|
+| `pool_execution_failures` row (pool `nBXytBBf…`) | `consecutive_failures 1`, `total_failures 1`, `last_stage "open"`, `last_failure_at 2026-09-09 19:02:49 UTC` (**02:02:49 WIB**) |
+| `last_reason` | the WIDE error — `openPosition on position ENNpRNx6aotJH4hFtT7NMB6TdeAUm9QWBGX9pYUBkDLZ landed 2 of its transactions and then failed` |
+| attempt #1 balancing swap (77 bins, `38hfSJMv…`) | blockTime **02:01:55 WIB** (slot 445685556) |
+| attempt #2 balancing swap (27 bins, `4stmuaAS…`) | blockTime **02:32:08 WIB** (slot 445691275) |
+
+What this kills and what it leaves:
+
+- **Hypothesis 1 is DEAD.** The 02:01 failure was NOT a free pre-swap refusal — the swap
+  landed at 02:01:55, the position landed 2 of its transactions, and the strike WAS stored
+  (02:02:49 WIB, stage `open`).
+- **What survives is worse than the hypothesis.** The pool was benched at 02:02:49 WIB
+  ("one is enough to bench", 24 h), and a SECOND live attempt on KNOT-SOL still ran at
+  **02:32:08 WIB** — a different screener cycle, ~29 min after the strike — spent a swap,
+  and failed post-swap (`the swap confirmed but no token balance could be read`).
+- **That second post-swap failure recorded NO strike.** The row still reads
+  `consecutive_failures 1 / total_failures 1` with the WIDE reason as `last_reason`. So a
+  post-swap failure (money spent) can fail to increment the bench counter.
+- The guard itself works *later*: `[guard] skipped KNOTS-SOL: 1 on-chain execution failure
+  AFTER the balancing swap spent (one is enough to bench)` repeats in the engine error log
+  for subsequent cycles.
+- **Caveat, stated so it is not overclaimed:** both failing swaps are Jupiter routes, so
+  their account lists do **not** contain the DLMM pool address. This evidence cannot tell
+  whether the 02:32 attempt targeted pool `nBXytBBf…` itself or a sibling pool of the same
+  token (the known same-token multi-pool gap). That distinction decides the fix: "the bench
+  was not consulted at all" vs "the bench is keyed per pool, so a sibling pool walks around
+  it" — the second would mean the bench needs a token-level key.
+
 ## Verification
 
 Unit tests and the SDK's shipped source — **not** a partial open recovered on-chain.
