@@ -218,6 +218,105 @@ Also fixed: `liveExecution.ts` decided the narrow/wide boundary with a hand-writ
 discipline now covers rent: `DLMM_BIN_ARRAY_RENT_SOL` is exported and bound to the SDK's
 `BIN_ARRAY_FEE`. `src/tests/narrowOnly.test.ts`.
 
+## Money that leaves without a position (11 Sep 2026) — and the four guards
+
+Three live opens on KNOTS-SOL between 02:0x and 02:31. Each balancing swap CONFIRMED,
+each DLMM deposit leg died on `TransferChecked -> insufficient funds` (SPL `0x1`), each
+auto-unwind sold back to SOL. **-0.0639 SOL, zero positions opened.**
+
+**The worst part is what the database said: nothing.** No position row, realised PnL 0, a
+clean `daily_pnl_snapshots`. The rule that produced that hole is CORRECT and stays — no
+row is written until the open confirms, because a row describing a position that does not
+exist would be valued, accrued and eventually "closed", all of it about nothing. What was
+missing is that a failed attempt also had no OTHER row, so **money leaving without a
+position was invisible to every accounting surface the engine has**, and the pattern could
+repeat until the wallet was empty with nothing reporting a fault.
+
+The root cause was one uncompared pair of numbers. `LIVE_CAPITAL_SOL=3.05` against a
+wallet of 2.880994 SOL — the engine sized deposits as though it held **+0.169 SOL** it did
+not have. The pin was correct when it was set (wallet 2.944854) and was eroded by the
+ordinary cost of trading. **The engine already read that balance at every boot and printed
+it** (`runLivePreflight`, `measureWalletBalance`); the reading was simply never an input to
+anything.
+
+Four guards, and `docs/audits/2026-09-11-recurrence-proof.md` is the per-class proof:
+
+1. **`live_execution_attempts`** records every live entry attempt that could spend, failed
+   or not: balances either side, cost, mint, pool, stage, unwind outcome, signatures.
+   `cost_lamports` is NULL, never 0, when either read failed — an unmeasured cost counted
+   as free would deflate the budget below. A SUCCESSFUL open's `wallet_lamports_after` is
+   deliberately NULL: the position is still open, so there is no honest "after", and
+   writing the pre-open balance into both columns would manufacture a zero. It redefines
+   nothing — a failed attempt has no PnL, it has a COST, and this is where the cost lives.
+2. **`LIVE_MAX_FAILED_COST_SOL`** (default 0.05, `Infinity` disables, zero REFUSED at boot)
+   holds NEW ENTRIES when failed attempts have cost more than that in 24h.
+   **ENTRY-ONLY** — monitoring, fee claims and closes are untouched, because holding an
+   exit is how a stop-loss stops being enforced. Cleared by
+   `clearLiveExecutionAttempts`; a budget that can only be waited out is a timer, not a
+   breaker. Note honestly what it does NOT do: checked before an attempt, it would have
+   refused a FOURTH attempt that night, not the third. It is per-WALLET where the bench is
+   per-token, so it also sees a run spread across unrelated pools that no bench can.
+3. **`assessLiveSizing`** (`liveSizingGuard.ts`) refuses when
+   `LIVE_CAPITAL_SOL - LIVE_MIN_RESERVE_SOL` exceeds the real balance, and **fails closed**
+   on a balance it could not read — "the RPC timed out" is not evidence of solvency.
+   Checked at EVERY entry, not only at boot, because the balance moves and the pin does
+   not. Exact equality PASSES and there is a test named after that direction. A drained
+   wallet is a MEASUREMENT (`over-capital` with its real 0), never a read failure. It earns
+   NO execution strike: a wallet-level fact benching the universe one pool at a time is a
+   self-inflicted outage a top-up would not fix. `reportCapitalHealth` reports it at boot
+   and hourly (`CRON.CAPITAL_HEALTH`) and never throws — refusing to BOOT would hold the
+   exits too.
+4. **`assessWalletDrift`** compares the book (`STARTING_BALANCE_USD` + realised PnL)
+   against the wallet on two thresholds, `WALLET_DRIFT_MAX_PCT` (1) and
+   `WALLET_DRIFT_MAX_SOL` (0.02), **either** of which fires — a percentage alone never
+   fires on a large book that quietly lost real SOL, an absolute fires constantly on a
+   small one. It CORRECTS nothing and names both possible causes (a pin above what the
+   wallet ever held; real SOL spent on attempts that produced no rows). Unmeasured is
+   `unmeasured`, never a drift of 0. It is a DIFFERENT question from `reconcilePositions`
+   — that one is per closed trade, this one is the book's LEVEL — and they are not merged.
+
+### The bench, after 11 Sep: the window and the NULL key
+
+**Two things were wrong, and the second is the one that stings.**
+
+`EXECUTION_POST_SWAP_LOCKOUT_HOURS` (default **168**) is now a separate window from
+`EXECUTION_FAILURE_LOCKOUT_HOURS`. A refused simulation costs nothing and may be transient
+cluster state; a post-swap failure means SOL left and nothing came back. Sharing one window
+measured the expensive case against the cheap case's clock. **No zero-disable and a hard
+24h floor**, both enforced in `env.ts` — unlike every other lockout in that file — because
+this is the outcome the breaker exists to stop repeating. Omission falls back to `hours`,
+never to zero.
+
+**The token-level bench was fully implemented, fully tested, and propagating nothing.** It
+shipped 10 Sep and every failure writer passes `tokenMint`; on 11 Sep all six stored rows
+still had a NULL one, because **a row written before the column existed keeps its NULL
+until the pool fails AGAIN — the exact event the bench exists to prevent.** So the mint
+cannot only be learned from failures. `learnPoolExecutionToken` backfills it on the way IN,
+the first time `describePair` resolves a pair, from the SDK's own answer so the stored key
+cannot drift from the one the filter looks up; it never overwrites a learned key and never
+CREATES a row (that would put every pool the engine ever resolved into the breaker's table
+and make "has this pool ever failed" unanswerable from its own storage).
+`describeUnkeyedBenches` prints, every cycle, how many benches still cover one address
+only. **A gate that silently does nothing is the "all bin arrays exist" line again.**
+
+A pair name is still never used as an automatic key — memecoin tickers collide.
+`POOL_DENYLIST` may match names because a human chose them and can see what they cover.
+Its semantics are unchanged.
+
+### One pre-swap gate was charging the wrong number
+
+Found by the P1 sweep, not by a failure. The pre-swap per-transaction ceiling check
+charged the NOMINAL deposit while `dlmmExecutor.openPosition` charges
+`maxDepositLamports(amount, depositCeilingFactor)` — the SDK lets the program pull
+`amount x (100 + activeBinSlippagePct) / 100`. So a deposit sitting just under
+`ONCHAIN_MAX_LAMPORTS_PER_TX` passed the free pre-swap gate and was refused AFTER the
+balancing swap had spent. Advertised bound, larger enforced bound: the same defect class
+this file already records for bin-array rent and for the coverage gate, pointing the other
+way. Both sites now resolve the factor from the same `depositSlippage(auth, binStep)`.
+
+**Still unproven by a funded open.** Every one of these is verified by unit tests and by
+the source, not by a live entry that landed.
+
 ## Official baseline: FlowMetrix DLMM AI Agent V1.1
 
 **V1.1 is the only configuration the live engine runs.** There is no v1.0 code path, no legacy
