@@ -3,7 +3,12 @@ FlowMetrix engine — audit PRIORITAS (hemat kuota), report only. No code change
 Repo: ~/flowmetrix-ai-agent (main). Read the audited SHA and record it in your report.
 
 LANGKAH 0 — WAJIB, jangan diulang dari nol:
-Baca DULU `docs/audits/2026-09-10-evidence-pack.md`. Isinya sudah jadi (dibuat di server, terbukti):
+Baca DULU `docs/audits/2026-09-10-evidence-pack.md` **dan** `docs/audits/2026-09-10-leads-unverified.md`.
+File pertama = fakta server (sudah terverifikasi). File kedua = 4 LEAD dengan file:line dari sesi
+sebelumnya yang dihentikan di tengah (L1 race double-entry di dlmmTraderAgent.ts:2087-2096,
+L2 tidak ada scan orphan on-chain saat boot di index.ts:169, L3 GMGN gate fail-open+report-only,
+L4 partisi funding fail-safe) — VERIFIKASI lead itu lebih dulu, jangan mulai dari nol.
+Isi evidence pack (sudah jadi, dibuat di server, terbukti):
 env shadowing (.env vs proses pm2), dump DB (pool_execution_failures 6 baris, token_mint SEMUA NULL,
 simulated_positions 0 baris, integrity ok), pola log sepanjang umur, state wallet on-chain
 (2.944854 SOL + 1 USDC, 0 token orphan), git 12 commit terakhir, dan test baseline (729/722/7).
