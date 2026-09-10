@@ -8,9 +8,18 @@ import {
 import {
   getPoolExecutionRecord,
   getPoolExecutionRecords,
+  learnPoolExecutionToken,
+  recordLiveExecutionAttempt,
   recordPoolExecutionFailure,
   recordPoolExecutionSuccess,
+  sumFailedAttemptCost,
+  type LiveAttemptUnwind,
 } from "../database/repositories.js";
+import {
+  assessLiveSizing,
+  describeLiveSizing,
+  type SizingGuardVerdict,
+} from "./liveSizingGuard.js";
 import {
   assessExecutionBreaker,
   assessTokenBench,
@@ -29,6 +38,7 @@ import {
   binRangeFromPrices,
   depositSlippage,
   dlmmExecutor,
+  maxDepositLamports,
   executeJupiterSwap,
   getConnection,
   onchainConfig,
@@ -120,6 +130,18 @@ export class StrandedSwapError extends Error {
   readonly rescueError: string | null;
   /** What became of a position the failed open had already funded. */
   readonly orphan: OrphanRecovery | null;
+  /**
+   * What the attempt took out of the wallet, in lamports, or null when unmeasured.
+   *
+   * The alert said "the open failed" and named signatures for months, and said NOTHING
+   * about money. The 11 Sep 2026 incident's -0.0639 SOL had to be derived by hand from
+   * two balance snapshots taken hours apart — three alerts had already fired, none of
+   * them carrying a number, so nothing about the alerts distinguished a free refusal
+   * from a repeated real loss.
+   */
+  readonly costLamports: number | null;
+  /** clean | orphan | none | unknown — see `LiveAttemptUnwind`. */
+  readonly unwind: LiveAttemptUnwind;
   constructor(
     mint: string,
     amount: string,
@@ -128,6 +150,8 @@ export class StrandedSwapError extends Error {
     rescueSignature: string | null = null,
     rescueError: string | null = null,
     orphan: OrphanRecovery | null = null,
+    costLamports: number | null = null,
+    unwind: LiveAttemptUnwind = "unknown",
   ) {
     const rescue =
       rescueSignature !== null
@@ -138,6 +162,7 @@ export class StrandedSwapError extends Error {
     super(
       `[live] the balancing swap CONFIRMED but the position open failed. The wallet now ` +
         `holds ${amount} base units of ${mint} that nothing monitors (swap ${swapSignature}). ` +
+        `${describeUnwindVerdict(unwind)} ${describeAttemptCost(costLamports)} ` +
         `${rescue}${describeOrphan(cause, orphan)} ` +
         `Cause: ${cause instanceof Error ? cause.message : String(cause)}`,
     );
@@ -148,7 +173,63 @@ export class StrandedSwapError extends Error {
     this.rescueSignature = rescueSignature;
     this.rescueError = rescueError;
     this.orphan = orphan;
+    this.costLamports = costLamports;
+    this.unwind = unwind;
   }
+}
+
+/**
+ * The two words an operator needs first, before any signature.
+ *
+ * UNWOUND CLEAN means nothing of value is left on-chain: the swap was sold back and no
+ * position was funded. ORPHAN LEFT means the opposite and needs a human now. They are
+ * never collapsed, and an unverified rescue is reported as UNKNOWN rather than as
+ * clean — "the rescue was submitted" and "the rescue worked" are different facts, and
+ * only one of them lets the operator go back to sleep.
+ */
+function describeUnwindVerdict(unwind: LiveAttemptUnwind): string {
+  switch (unwind) {
+    case "clean":
+      return "UNWOUND CLEAN (nothing of value left on-chain).";
+    case "orphan":
+      return "ORPHAN LEFT — capital is STILL ON-CHAIN and needs a human.";
+    case "none":
+      return "NOTHING TO UNWIND (no balance had been swapped).";
+    case "unknown":
+      return "UNWIND OUTCOME UNKNOWN — verify on-chain before assuming it is clean.";
+  }
+}
+
+/** The cost line. Null renders as "not measured", never as zero. */
+function describeAttemptCost(costLamports: number | null): string {
+  if (costLamports === null) {
+    return "COST NOT MEASURED (a wallet balance read failed) — check the chain.";
+  }
+  return `COST ${(costLamports / LAMPORTS_PER_SOL).toFixed(6)} SOL taken out of the wallet.`;
+}
+
+/**
+ * Turns the two recovery reports into the single verdict above.
+ *
+ * A funded position that could not be closed, or a partial execution whose recovery
+ * never ran, is an ORPHAN regardless of how the token rescue went — the position holds
+ * more value than the leftover dust ever does. A rescue that FAILED, or one whose
+ * outcome nobody established, is UNKNOWN rather than clean, for the reason above.
+ */
+function classifyUnwind(
+  orphan: OrphanRecovery | null,
+  rescueSignature: string | null,
+  rescueError: string | null,
+): LiveAttemptUnwind {
+  if (orphan !== null && (orphan.state === "failed" || orphan.state === "empty")) return "orphan";
+  if (rescueError !== null) return "orphan";
+  if (rescueSignature !== null) return "clean";
+  /*
+   * No signature and no error means the re-read found no balance to sell. On a plain
+   * failed open that is genuinely nothing to unwind; where a position was recovered it
+   * is also clean, because the withdrawal's proceeds were swept in the same pass.
+   */
+  return orphan !== null && orphan.state === "closed" ? "clean" : "none";
 }
 
 /**
@@ -416,6 +497,79 @@ export class ExecutionBenchedError extends LiveEntryRefusedError {
 }
 
 /**
+ * The engine is sizing against SOL the wallet does not hold, or against a balance it
+ * could not read.
+ *
+ * NOT a fact about the pool, so it must never earn an execution strike:
+ * `countsAsExecutionFailure` stays false and this error is thrown before any
+ * `recordPoolExecutionFailure` call can run. Same reasoning as `isPoolAttributable`
+ * withholding a strike for a wallet-level simulation refusal — one wallet-level
+ * condition benching the universe a pool at a time is a self-inflicted outage that a
+ * top-up would otherwise not fix.
+ *
+ * It IS, however, a refusal to spend, and it fails closed on an unreadable balance.
+ * See `liveSizingGuard.ts`.
+ */
+export class LiveSizingError extends LiveEntryRefusedError {
+  readonly verdict: SizingGuardVerdict;
+  constructor(pairName: string, poolAddress: string, verdict: SizingGuardVerdict) {
+    super(
+      `[live] ${pairName} (pool ${poolAddress}) refused before any spend — ` +
+        `${verdict.reason ?? "the capital guard refused"}`,
+      pairName,
+      poolAddress,
+    );
+    this.name = "LiveSizingError";
+    this.verdict = verdict;
+  }
+}
+
+/**
+ * FAILED live attempts have cost more than the 24-hour budget allows.
+ *
+ * The gate the 11 Sep 2026 incident asked for by existing. Three attempts on one token
+ * spent 0.0639 SOL between 02:0x and 02:31 and produced no position, no row and no PnL;
+ * every accounting surface in the engine reported a healthy, idle book. This is the one
+ * number that can see that pattern, because it is summed from spends rather than from
+ * outcomes.
+ *
+ * ENTRY-ONLY. It is raised inside `openLivePosition` and nowhere else, so monitoring,
+ * fee accrual and closes are untouched — holding an exit is how a stop-loss stops being
+ * enforced, which is the failure this file already documents twice.
+ */
+export class FailedCostBreakerError extends LiveEntryRefusedError {
+  readonly spentSol: number;
+  readonly budgetSol: number;
+  constructor(
+    pairName: string,
+    poolAddress: string,
+    spentSol: number,
+    budgetSol: number,
+    attempts: number,
+    unmeasured: number,
+    windowHours: number,
+  ) {
+    super(
+      `[live] NEW ENTRIES ARE HELD: failed live attempts have cost ` +
+        `${spentSol.toFixed(6)} SOL in the last ${windowHours}h, over the ` +
+        `${budgetSol} SOL budget (LIVE_MAX_FAILED_COST_SOL). ` +
+        `${attempts} failed attempt${attempts === 1 ? "" : "s"} recorded` +
+        (unmeasured > 0
+          ? `, of which ${unmeasured} carr${unmeasured === 1 ? "ies" : "y"} no ` +
+            `measurement and are NOT in that total — the real spend is higher`
+          : ``) +
+        `. Monitoring, fee claims and closes continue. Clear the cause, then clear the ` +
+        `attempts, before re-arming entries. (${pairName} / ${poolAddress} was next.)`,
+      pairName,
+      poolAddress,
+    );
+    this.name = "FailedCostBreakerError";
+    this.spentSol = spentSol;
+    this.budgetSol = budgetSol;
+  }
+}
+
+/**
  * A SIBLING pool of the same token is benched.
  *
  * Its own class rather than an `ExecutionBenchedError` with different words, because
@@ -585,6 +739,34 @@ async function readTokenBalance(
  * Reads the PUBLIC address from the live profile rather than deriving a pubkey from the
  * signing key, so this path never touches secret material.
  */
+/**
+ * The wallet's balance in SOL for the SIZING GUARD, which is a different contract from
+ * `readWalletLamports` below even though both read the same account.
+ *
+ * That one is bookkeeping: it must never cost a trade, so a failure is null and the
+ * caller proceeds. This one GATES a spend, so a failure is null and the caller REFUSES
+ * — the null means the same thing, and the two callers are required to do opposite
+ * things with it. Kept as its own function so neither contract can be edited into the
+ * other by someone reading one call site.
+ *
+ * A wallet address that is not configured is `null` too, and therefore also a refusal:
+ * the live profile cannot verify capital it cannot see, and `runLivePreflight` already
+ * refuses to boot in that state.
+ */
+async function readWalletBalanceForGuard(): Promise<number | null> {
+  const address = liveMicroCapital.walletAddress;
+  if (!address) return null;
+  try {
+    return (await getWalletBalanceSol(address)).sol;
+  } catch (err) {
+    console.warn(
+      `[live] the capital guard could not read the wallet balance: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    );
+    return null;
+  }
+}
+
 async function readWalletLamports(): Promise<number | null> {
   const address = liveMicroCapital.walletAddress;
   if (!address) return null;
@@ -664,11 +846,94 @@ export async function openLivePosition(params: {
     );
   }
 
+  /*
+   * THE FAILED-COST BREAKER — the gate that makes "three failures in one night"
+   * structurally impossible, and the only one here that is not about this pool.
+   *
+   * Every other refusal above asks something about the candidate. This asks about the
+   * ENGINE: how much SOL has left the wallet recently on attempts that produced no
+   * position. On 11 Sep 2026 that number was 0.0639 SOL across three attempts inside
+   * thirty minutes, and nothing anywhere could answer the question, because a failed
+   * open writes no position row — correctly — and nothing else wrote anything at all.
+   * `live_execution_attempts` is where the spend is now recorded and this is what acts
+   * on it.
+   *
+   * Still free, still local, still before any network call. Infinity disables it.
+   */
+  if (Number.isFinite(env.LIVE_MAX_FAILED_COST_SOL)) {
+    const spent = sumFailedAttemptCost(env.LIVE_FAILED_COST_WINDOW_HOURS);
+    const spentSol = spent.lamports / LAMPORTS_PER_SOL;
+    if (spentSol > env.LIVE_MAX_FAILED_COST_SOL) {
+      throw new FailedCostBreakerError(
+        params.pairName,
+        params.poolAddress,
+        spentSol,
+        env.LIVE_MAX_FAILED_COST_SOL,
+        spent.attempts,
+        spent.unmeasured,
+        env.LIVE_FAILED_COST_WINDOW_HOURS,
+      );
+    }
+  }
+
+  /*
+   * DOES THE WALLET ACTUALLY HOLD THE CAPITAL THIS ENTRY IS SIZED AGAINST?
+   *
+   * `params.sizeSol` was produced by `sizeNextPositionSol` from `LIVE_CAPITAL_SOL`
+   * minus the reserve — a number in `.env`, which on 11 Sep 2026 was 3.05 while the
+   * wallet held 2.880994. The engine read that balance at every boot and printed it,
+   * and never once compared the two. The deposit leg then failed on
+   * `TransferChecked -> insufficient funds` three times, each time with the balancing
+   * swap already confirmed.
+   *
+   * Checked HERE rather than only at boot because the balance moves and the pin does
+   * not: fees, slippage and rent erode the margin between restarts, which is exactly
+   * how a pin that was correct when it was set became wrong. One RPC read per entry,
+   * against at most one entry per cycle.
+   *
+   * FAILS CLOSED on an unreadable balance, and never earns the pool a strike — see
+   * `LiveSizingError`. Inert when the live profile is off.
+   */
+  const sizing = assessLiveSizing({ balanceSol: await readWalletBalanceForGuard() });
+  if (!sizing.ok) {
+    console.error(describeLiveSizing(sizing));
+    await sendError(
+      "openLivePosition/sizingGuard",
+      new Error(describeLiveSizing(sizing)),
+    ).catch(() => undefined);
+    throw new LiveSizingError(params.pairName, params.poolAddress, sizing);
+  }
+
   const { pairedMint, pairedTokenProgram, binWidth } = await describePair(
     params.poolAddress,
     params.lowerBinPrice,
     params.upperBinPrice,
   );
+
+  /*
+   * BACKFILL THE BENCH'S TOKEN, on the way IN.
+   *
+   * Every failure writer below passes `tokenMint`, and that was still not enough: a row
+   * written before the column existed keeps its NULL until the pool fails AGAIN, and
+   * "fails again" is the event the bench exists to prevent. On 11 Sep 2026 all six
+   * stored rows were NULL, so the token-level bench — which is implemented, tested and
+   * correct — was propagating nothing at all while reading as armed.
+   *
+   * `pairedMint` is the SDK's own answer for the non-SOL side, the same value the
+   * strike would be recorded under, so the backfilled key cannot drift from the one the
+   * candidate filter looks it up by. It updates only rows that already exist and only
+   * where the key is NULL; a pool with no history stays with no history.
+   *
+   * Diagnostic, so it is wrapped: a bookkeeping failure must not refuse an entry.
+   */
+  try {
+    learnPoolExecutionToken(params.poolAddress, pairedMint.toBase58());
+  } catch (bookkeeping) {
+    console.warn(
+      `[live] could not backfill the bench token for ${params.pairName}:`,
+      bookkeeping,
+    );
+  }
 
   /*
    * THE SAME BENCH, ASKED ABOUT THE TOKEN.
@@ -835,7 +1100,24 @@ export async function openLivePosition(params: {
      * separate transactions, the narrow path sends one. Asserting the sum would refuse
      * wide positions the executor would have accepted.
      */
-    const depositLamports = totalLamports - swapLamports;
+    /*
+     * THE WIDENED DEPOSIT, not the nominal one.
+     *
+     * The executor charges `maxDepositLamports(amount, depositCeilingFactor)` to
+     * `assertWithinSpendLimit` (onchainExecutor.ts, both paths), because the SDK lets
+     * the program pull `amount x (100 + activeBinSlippagePct) / 100`. This gate charged
+     * the nominal figure, so a deposit sitting just under the ceiling passed HERE and
+     * was refused THERE — after the balancing swap had spent. Advertised bound, larger
+     * enforced bound: the same defect class this file has already fixed for bin-array
+     * rent and for the coverage gate, pointing the other way.
+     *
+     * `poolBinStep` is the same value the executor will resolve the tolerance against,
+     * so the two figures cannot disagree.
+     */
+    const depositLamports = maxDepositLamports(
+      totalLamports - swapLamports,
+      depositSlippage(auth, cost.binStep).depositCeilingFactor,
+    );
     const positionRentLamports = Math.ceil(cost.positionSol * LAMPORTS_PER_SOL);
     const binArrayRentLamports = Math.ceil(cost.binArraySol * LAMPORTS_PER_SOL);
     const narrowPathLamports = depositLamports + positionRentLamports + binArrayRentLamports;
@@ -863,7 +1145,8 @@ export async function openLivePosition(params: {
         `ONCHAIN_MAX_LAMPORTS_PER_TX (${(onchainConfig.maxLamportsPerTx / LAMPORTS_PER_SOL).toFixed(4)} ` +
           `SOL): opening it needs one transaction to move ` +
           `${(worstLamports / LAMPORTS_PER_SOL).toFixed(4)} SOL ` +
-          `(${(depositLamports / LAMPORTS_PER_SOL).toFixed(4)} deposit + ` +
+          `(${(depositLamports / LAMPORTS_PER_SOL).toFixed(4)} max deposit after the ` +
+          `active-bin slippage widening + ` +
           `${cost.positionSol.toFixed(4)} position rent + ${cost.binArraySol.toFixed(4)} bin arrays). ` +
           `Raise the ceiling; it bounds the transaction, not the position`,
       );
@@ -1208,6 +1491,36 @@ export async function openLivePosition(params: {
       console.warn(`[live] could not clear the execution breaker for ${params.pairName}:`, bookkeeping);
     }
 
+    /*
+     * The attempt ledger records SUCCESSES too, not only the failures it was built for.
+     *
+     * A budget summed only from failures cannot be sanity-checked against anything: an
+     * operator reading "0.04 SOL of failures" has no denominator. More importantly the
+     * successful row's `wallet_lamports_after` is deliberately LEFT NULL here — the
+     * open has confirmed but the position is still open, so there is no "after" yet and
+     * the honest cost is not measurable. Writing the pre-open balance into both columns
+     * would manufacture a zero cost, which is the "unmeasured counted as zero" mistake
+     * `est_gas_cost_usd` and `driftPctOfModel` both exist to avoid.
+     */
+    try {
+      recordLiveExecutionAttempt({
+        poolAddress: params.poolAddress,
+        pairName: params.pairName,
+        tokenMint: pairedMint.toBase58(),
+        outcome: "opened",
+        stage: null,
+        walletLamportsBefore,
+        walletLamportsAfter: null,
+        unwind: "none",
+        swapSignature: swap.signature,
+        rescueSignature: null,
+        positionAddress: opened.position,
+        reason: null,
+      });
+    } catch (bookkeeping) {
+      console.warn(`[live] could not record the open attempt for ${params.pairName}:`, bookkeeping);
+    }
+
     return {
       positionAddress: opened.position,
       openSignature,
@@ -1295,6 +1608,44 @@ export async function openLivePosition(params: {
       console.warn(`[live] could not record the execution failure for ${params.pairName}:`, bookkeeping);
     }
 
+    /*
+     * WHAT DID THIS COST, AND IS ANYTHING STILL ON-CHAIN?
+     *
+     * Read AFTER the recovery and the unwind, so the balance reflects everything that
+     * came back. This is the number the 11 Sep 2026 incident had to be reconstructed
+     * from two hand-taken snapshots because nothing in the engine recorded it: three
+     * attempts, -0.0639 SOL, zero rows, zero PnL, a clean snapshot table.
+     *
+     * Null when either read failed, never 0 — an unmeasured cost silently counted as
+     * free would deflate the budget `FailedCostBreakerError` enforces, which is the one
+     * gate standing between this failure and its fourth repetition.
+     */
+    const walletLamportsAfter = await readWalletLamports();
+    const costLamports =
+      walletLamportsBefore !== null && walletLamportsAfter !== null
+        ? walletLamportsBefore - walletLamportsAfter
+        : null;
+    const unwind = classifyUnwind(orphan, rescueSignature, rescueError);
+
+    try {
+      recordLiveExecutionAttempt({
+        poolAddress: params.poolAddress,
+        pairName: params.pairName,
+        tokenMint: pairedMint.toBase58(),
+        outcome: "failed",
+        stage: "open",
+        walletLamportsBefore,
+        walletLamportsAfter,
+        unwind,
+        swapSignature: swap.signature,
+        rescueSignature,
+        positionAddress: orphan?.position ?? null,
+        reason: err instanceof Error ? err.message : String(err),
+      });
+    } catch (bookkeeping) {
+      console.warn(`[live] could not record the failed attempt for ${params.pairName}:`, bookkeeping);
+    }
+
     const stranded = new StrandedSwapError(
       pairedMint.toBase58(),
       // Zero here means the balance never read back, not that the swap delivered
@@ -1305,6 +1656,8 @@ export async function openLivePosition(params: {
       rescueSignature,
       rescueError,
       orphan,
+      costLamports,
+      unwind,
     );
     console.error(stranded.message);
     // Best effort: a failed page must not swallow the original failure.
