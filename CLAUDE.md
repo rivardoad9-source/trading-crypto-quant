@@ -677,6 +677,13 @@ Four properties there are load-bearing:
 `onchainExecutor.test.ts`, which is the file allowed to import the signer — **the
 allowlist still has four entries**, and keeping it there is why the tests are split.
 
+The incident is `docs/incidents/2026-09-10-half-landed-open-unmonitored-position.md`,
+which also records the one thing this fix does NOT answer: a `stage: "open"` failure
+benches a pool immediately, so the second attempt 31 minutes later should not have been
+possible. If a post-swap strike can fail to bench, that is the 7 Sep repeat-loss
+mechanism still live, independently of everything above — the `pool_execution_failures`
+row settles it.
+
 **Still unproven by a funded open.** Verified by unit tests and by the SDK's shipped
 source, not by a partial open that was recovered on-chain.
 
