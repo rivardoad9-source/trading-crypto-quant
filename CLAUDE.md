@@ -274,6 +274,16 @@ Four guards, and `docs/audits/2026-09-11-recurrence-proof.md` is the per-class p
    wallet ever held; real SOL spent on attempts that produced no rows). Unmeasured is
    `unmeasured`, never a drift of 0. It is a DIFFERENT question from `reconcilePositions`
    — that one is per closed trade, this one is the book's LEVEL — and they are not merged.
+   **Measured in SOL since the same day's second false page.** It first compared the USD
+   book with `walletSol x spot`, so a 1.15% SOL/USD dip on an untouched 2.880994 SOL wallet
+   paged "-0.033474 SOL" — a USD gap divided by the price, not a SOL measurement, and a
+   "0.02 SOL" threshold that was really ~0.7% of price. Now
+   `bookSol = bookUsd / BASELINE_SOL_PRICE_USD` (operator-written, the price the book was
+   pinned at; unset = `unmeasured`), `driftSol = walletSol - bookSol`, both thresholds apply
+   to that, compared in lamports with equality passing. Spot is display only, and an `ok`
+   line says when the USD gap is just price. Both capital checks page through
+   `standingAlert.ts`: keyed on the hashed SET of violation classes, repeat held 6h, one
+   `✅ … normal lagi` on recovery, in-memory state (a restart re-pages once).
 
 ### The first successful exit left its proceeds in a memecoin (11 Sep 2026)
 

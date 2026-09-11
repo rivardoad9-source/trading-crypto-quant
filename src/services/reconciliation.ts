@@ -296,42 +296,86 @@ export function describeReconciliation(report: ReconciliationReport): string {
  * at all. Either way the number an operator reaches for first was wrong in a way that
  * did not announce itself.
  *
- * TWO UNITS, EITHER OF WHICH FIRES. A percentage alone never fires on a large book that
- * has quietly lost real SOL; an absolute alone fires constantly on a small one. Both are
- * reported whichever triggered, so the alert can be read without re-deriving the other.
+ * MEASURED IN SOL, AND THAT IS THE WHOLE POINT OF THE SECOND VERSION. The first compared
+ * the USD book against `walletSol x spot`, so the ENTIRE gap moved with SOL/USD. Later on
+ * 11 Sep the baseline was re-pinned at $288.27 (= 2.880994 SOL x $100.06); the wallet then
+ * stayed at exactly 2.880994 SOL, no attempt ran and no position existed, SOL/USD slipped
+ * ~1.15%, and the check paged "a drift of $-3.31 (-0.033474 SOL)". That SOL figure was not
+ * a measurement: it was the USD gap divided by the spot price, so a "0.02 SOL" threshold
+ * was really ~0.7% of SOL/USD — tighter than the percentage threshold beside it, and pure
+ * noise. It could not tell "the price moved" from "SOL left the wallet", which are the one
+ * distinction an operator needs from it.
  *
- * IT CORRECTS NOTHING, exactly like the reconciliation above. It measures and names.
- * Re-pinning the baseline is an operator decision recorded in `.env`, for the reason
- * `seedStartingBalanceFromWallet` already refuses to do it under existing trades:
- * rebasing re-scales every percentage already reported.
+ * So the book is converted ONCE, at the price it was pinned at —
+ * `bookSol = bookUsd / baselineSolPriceUsd` — and `driftSol = walletSol - bookSol` is the
+ * measurement. Both thresholds apply to it: `maxPct` relative to `bookSol`, `maxSol` as an
+ * absolute SOL difference. The spot price is used for DISPLAY only, to say in dollars what
+ * the SOL drift is worth and how much of the USD gap is just price.
  *
- * UNMEASURED IS NOT ZERO. A balance or a price that could not be read yields
- * `status: "unmeasured"` and no alert — never a drift of 0, which would render
- * identically to "compared, and they agree".
+ * What this cannot see, stated so it is not mistaken for more: realised PnL is booked in
+ * USD at each close's own prices and converted at the baseline price here, so a book whose
+ * PnL is large relative to its size carries a small conversion error. At micro capital
+ * that error is cents; the SOL that leaves on a failed attempt is not.
+ *
+ * EQUALITY PASSES, compared in whole LAMPORTS. A drift exactly at `maxSol` (or exactly
+ * `maxPct`) is within threshold — the same direction `assessLiveSizing` takes at
+ * `deployable === balance`: the bound is what the operator allowed, so reaching it is
+ * allowed. Lamports because balances are integers there, and floating-point residue in
+ * `walletSol - bookUsd / price` must not decide which side of the line a reading falls.
+ *
+ * IT CORRECTS NOTHING, exactly like the reconciliation above. Re-pinning the baseline is
+ * an operator decision recorded in `.env`.
+ *
+ * UNMEASURED IS NOT ZERO. No wallet balance, no book, or no usable baseline price yields
+ * `status: "unmeasured"` and no alert — never a drift of 0, which would render identically
+ * to "compared, and they agree". A missing SPOT price does not make the reading unmeasured,
+ * because nothing is decided from it; it only blanks the dollar figures.
  */
 export interface WalletDriftReading {
   status: "ok" | "drifted" | "unmeasured";
   /** The book: `STARTING_BALANCE_USD + realised PnL`. Null when unavailable. */
   bookUsd: number | null;
-  /** The chain, priced in USD. Null when the balance or the price could not be read. */
-  walletUsd: number | null;
+  /** The book in SOL at the price it was pinned at. Null when unmeasured. */
+  bookSol: number | null;
   walletSol: number | null;
-  /** `walletUsd - bookUsd`. Negative means the wallet is poorer than the book claims. */
-  driftUsd: number | null;
-  /** The same gap in SOL, which is the unit the thresholds and the losses are in. */
+  /** `BASELINE_SOL_PRICE_USD`, or null when not configured / not positive. */
+  baselineSolPriceUsd: number | null;
+  /** SOL/USD now. DISPLAY ONLY — no decision reads it. */
+  solPriceUsd: number | null;
+  /**
+   * `walletSol - bookSol`: THE measurement. Positive means the wallet holds MORE SOL than
+   * the book claims. Never derived from a USD difference.
+   */
   driftSol: number | null;
-  /** `|driftUsd| / bookUsd x 100`, or null when the book is zero or unmeasured. */
+  /** `|driftSol| / bookSol x 100`. Null when unmeasured or when `bookSol` is 0. */
   driftPct: number | null;
-  /** Which threshold(s) the reading breached. Empty when it breached none. */
+  /** `driftSol` valued at SPOT, for display. Null without a spot price. */
+  driftUsd: number | null;
+  /** The wallet valued at spot, for display. Null without a spot price. */
+  walletUsd: number | null;
+  /**
+   * `(spot - baseline) / baseline x 100`, for display: the part of any USD gap that is
+   * SOL/USD moving rather than SOL moving. Null without both prices.
+   */
+  priceMovePct: number | null;
+  /** Which threshold(s) the SOL drift breached. Empty when it breached none. */
   breached: ("pct" | "sol")[];
-  /** Operator-readable. Null when nothing is wrong or nothing could be measured. */
+  /** Operator-readable. Null unless `drifted`. */
   reason: string | null;
 }
 
 export interface WalletDriftThresholds {
+  /** Percent of `bookSol`. */
   maxPct: number;
+  /** Absolute SOL. */
   maxSol: number;
 }
+
+const LAMPORTS = 1_000_000_000;
+const toLamports = (sol: number): number => Math.round(sol * LAMPORTS);
+
+const positiveFinite = (v: number | null | undefined): v is number =>
+  typeof v === "number" && Number.isFinite(v) && v > 0;
 
 /**
  * Pure: no RPC, no database, no clock. Every input is passed in, so the whole rule is
@@ -342,96 +386,128 @@ export function assessWalletDrift(input: {
   bookUsd: number | null;
   /** The chain's balance in SOL, or null when the read failed. */
   walletSol: number | null;
+  /** SOL/USD now. Display only; may be null. */
   solPriceUsd: number | null;
+  /** SOL/USD at which `STARTING_BALANCE_USD` was pinned (`BASELINE_SOL_PRICE_USD`). */
+  baselineSolPriceUsd: number | null;
   thresholds: WalletDriftThresholds;
 }): WalletDriftReading {
-  const { bookUsd, walletSol, solPriceUsd, thresholds } = input;
+  const { bookUsd, walletSol, thresholds } = input;
+  const baselineSolPriceUsd = positiveFinite(input.baselineSolPriceUsd)
+    ? input.baselineSolPriceUsd
+    : null;
+  const solPriceUsd = positiveFinite(input.solPriceUsd) ? input.solPriceUsd : null;
 
   const measurable =
     bookUsd !== null &&
     Number.isFinite(bookUsd) &&
     walletSol !== null &&
     Number.isFinite(walletSol) &&
-    solPriceUsd !== null &&
-    Number.isFinite(solPriceUsd) &&
-    solPriceUsd > 0;
+    baselineSolPriceUsd !== null;
 
   if (!measurable) {
     return {
       status: "unmeasured",
-      bookUsd: bookUsd ?? null,
-      walletUsd: null,
-      walletSol: walletSol ?? null,
-      driftUsd: null,
+      bookUsd: bookUsd !== null && Number.isFinite(bookUsd) ? bookUsd : null,
+      bookSol: null,
+      walletSol: walletSol !== null && Number.isFinite(walletSol) ? walletSol : null,
+      baselineSolPriceUsd,
+      solPriceUsd,
       driftSol: null,
       driftPct: null,
+      driftUsd: null,
+      walletUsd: null,
+      priceMovePct: null,
       breached: [],
       reason: null,
     };
   }
 
-  const walletUsd = walletSol * solPriceUsd;
-  const driftUsd = walletUsd - bookUsd;
-  const driftSol = driftUsd / solPriceUsd;
+  const bookSol = bookUsd / baselineSolPriceUsd;
+  const driftLamports = toLamports(walletSol) - toLamports(bookSol);
+  const driftSol = driftLamports / LAMPORTS;
   // Null rather than Infinity on a zero book: an undefined ratio must not render as a
   // real measurement. Same rule `profitFactor` follows.
-  const driftPct = bookUsd === 0 ? null : (Math.abs(driftUsd) / Math.abs(bookUsd)) * 100;
+  const bookLamports = toLamports(bookSol);
+  const driftPct = bookLamports === 0 ? null : (Math.abs(driftLamports) / Math.abs(bookLamports)) * 100;
 
   const breached: ("pct" | "sol")[] = [];
   if (driftPct !== null && driftPct > thresholds.maxPct) breached.push("pct");
-  if (Math.abs(driftSol) > thresholds.maxSol) breached.push("sol");
+  if (Math.abs(driftLamports) > toLamports(thresholds.maxSol)) breached.push("sol");
 
-  if (breached.length === 0) {
-    return {
-      status: "ok",
-      bookUsd,
-      walletUsd,
-      walletSol,
-      driftUsd,
-      driftSol,
-      driftPct,
-      breached,
-      reason: null,
-    };
-  }
-
-  return {
-    status: "drifted",
+  const reading: WalletDriftReading = {
+    status: breached.length === 0 ? "ok" : "drifted",
     bookUsd,
-    walletUsd,
+    bookSol,
     walletSol,
-    driftUsd,
+    baselineSolPriceUsd,
+    solPriceUsd,
     driftSol,
     driftPct,
+    driftUsd: solPriceUsd === null ? null : driftSol * solPriceUsd,
+    walletUsd: solPriceUsd === null ? null : walletSol * solPriceUsd,
+    priceMovePct:
+      solPriceUsd === null ? null : ((solPriceUsd - baselineSolPriceUsd) / baselineSolPriceUsd) * 100,
     breached,
-    reason:
-      `the book says $${bookUsd.toFixed(2)} and the wallet holds ` +
-      `${walletSol.toFixed(6)} SOL (~$${walletUsd.toFixed(2)}) — a drift of ` +
-      `$${driftUsd.toFixed(2)} (${driftSol.toFixed(6)} SOL` +
-      (driftPct === null ? `` : `, ${driftPct.toFixed(2)}% of the book`) + `), over the ` +
+    reason: null,
+  };
+
+  if (reading.status === "drifted") {
+    const direction =
+      driftSol < 0
+        ? `${Math.abs(driftSol).toFixed(6)} SOL LESS than the book claims — SOL has LEFT the wallet`
+        : `${driftSol.toFixed(6)} SOL MORE than the book claims — SOL has ARRIVED in the wallet`;
+    reading.reason =
+      `the wallet holds ${walletSol.toFixed(6)} SOL against a book of ${bookSol.toFixed(6)} SOL ` +
+      `($${bookUsd.toFixed(2)} at the pinned BASELINE_SOL_PRICE_USD=${baselineSolPriceUsd}): ` +
+      `${direction}` +
+      (driftPct === null ? `` : ` (${driftPct.toFixed(2)}% of the book)`) +
+      `, over the ` +
       `${breached.includes("pct") ? `${thresholds.maxPct}% ` : ``}` +
       `${breached.length === 2 ? `and ` : ``}` +
       `${breached.includes("sol") ? `${thresholds.maxSol} SOL ` : ``}threshold. ` +
-      `Nothing has been corrected: STARTING_BALANCE_USD keeps its value and ` +
-      `realized_pnl_usd keeps its definition. Two causes look identical here and both ` +
-      `need a human — a baseline pinned above what the wallet ever held (see the ` +
-      `preflight's suggested STARTING_BALANCE_USD line), and real SOL spent on live ` +
-      `attempts that produced no position (see live_execution_attempts).`,
-  };
+      `Measured in SOL, so this is NOT a SOL/USD move` +
+      (reading.driftUsd === null
+        ? `.`
+        : ` (worth ~$${reading.driftUsd.toFixed(2)} at spot $${solPriceUsd}).`) +
+      ` Nothing has been corrected. ` +
+      (driftSol < 0
+        ? `Look in live_execution_attempts for attempts that spent it; if there are none, ` +
+          `STARTING_BALANCE_USD or BASELINE_SOL_PRICE_USD is pinned above what the wallet held.`
+        : `A deposit or a manual trade would do this; otherwise STARTING_BALANCE_USD or ` +
+          `BASELINE_SOL_PRICE_USD is pinned below what the wallet held.`);
+  }
+
+  return reading;
 }
 
 /** One line for the boot log and the periodic check. Always says which way it went. */
 export function describeWalletDrift(reading: WalletDriftReading): string {
   switch (reading.status) {
     case "unmeasured":
-      return "[drift] wallet vs book NOT MEASURED (balance or SOL/USD unavailable)";
-    case "ok":
+      return reading.baselineSolPriceUsd === null
+        ? "[drift] wallet vs book NOT MEASURED (BASELINE_SOL_PRICE_USD is not set: the " +
+            "book cannot be put in SOL without the price it was pinned at)"
+        : "[drift] wallet vs book NOT MEASURED (wallet balance or book unavailable)";
+    case "ok": {
+      const sol =
+        `[drift] wallet vs book: ${(reading.driftSol ?? 0).toFixed(6)} SOL` +
+        (reading.driftPct === null ? `` : ` (${reading.driftPct.toFixed(2)}%)`) +
+        ` — within thresholds`;
+      /*
+       * The case that paged an operator on 11 Sep for nothing: the SOL balance agrees and
+       * only the dollar value moved. Said in so many words, and never as a SOL drift.
+       */
+      if (reading.priceMovePct === null || reading.walletUsd === null || reading.bookUsd === null) {
+        return sol;
+      }
       return (
-        `[drift] wallet vs book: $${(reading.driftUsd ?? 0).toFixed(2)} ` +
-        `(${(reading.driftSol ?? 0).toFixed(6)} SOL` +
-        (reading.driftPct === null ? `` : `, ${reading.driftPct.toFixed(2)}%`) +
-        `) — within thresholds`
+        `${sol}; the USD value differs by $${(reading.walletUsd - reading.bookUsd).toFixed(2)} ` +
+        `because SOL/USD moved ${reading.priceMovePct >= 0 ? "+" : ""}` +
+        `${reading.priceMovePct.toFixed(2)}% (baseline $${reading.baselineSolPriceUsd} -> ` +
+        `now $${reading.solPriceUsd}) — that is PRICE; the SOL balance agrees with the book`
       );
+    }
     case "drifted":
       return `[drift] WALLET/BOOK DRIFT: ${reading.reason}`;
   }
