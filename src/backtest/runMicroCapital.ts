@@ -1,9 +1,10 @@
 /**
- * Micro-capital ($100) survivorship- and lookahead-controlled backtest of the LIVE
- * V1.1 formula and guardrails.
+ * Micro-capital survivorship- and lookahead-controlled backtest of the LIVE V1.1 formula
+ * and guardrails, on the LIVE account profile (see `liveProfile.ts`).
  *
  *   npm run backtest:micro
- *   npm run backtest:micro -- --days=91 --capital=100 --refresh
+ *   npm run backtest:micro -- --days=91 --refresh
+ *   npm run backtest:micro -- --capital=100 --sizepct=27.5 --concurrent=3   # a different account, flagged
  *
  * Distinct from `npm run backtest`, which sweeps a generic configuration. This runner
  * pins every entry gate, exit rule and friction parameter to the value the live engine
@@ -32,6 +33,13 @@ import {
 import { BACKTEST_CAVEATS, loadHistoricalData } from "./historicalData.js";
 import { calibrateTvlModel, describeTvlModel, type TvlModel } from "./tvlModel.js";
 import { renderTable } from "./report.js";
+import {
+  describeBacktestProfile,
+  readProfileOverrides,
+  resolveBacktestProfile,
+  type BacktestAccountOptions,
+  type ProfileOverrides,
+} from "./liveProfile.js";
 import type { DlmmPool } from "../services/meteora.js";
 
 const CACHE_PATH = ".cache/historical_data_micro.json";
@@ -52,20 +60,19 @@ const pf = (v: number | null): string => (v === null ? "undefined" : num(v));
 /* Configuration — mirrors the LIVE V1.1 engine                        */
 /* ------------------------------------------------------------------ */
 
-export interface MicroCapitalOptions {
-  capitalUsd: number;
-  /** Share of equity per position, as a percentage. */
-  positionSizePct: number;
-  maxConcurrentPositions: number;
-  gasSolPerTransaction: number;
-}
+/** The simulated account. Defaults come from the LIVE profile — see `liveProfile.ts`. */
+export type MicroCapitalOptions = BacktestAccountOptions;
 
 /**
  * Builds the backtest configuration from the live environment.
  *
- * Every value here is read from `env` rather than hard-coded, so the backtest cannot
- * silently drift from the engine it claims to be measuring. The two deliberate
- * differences are documented inline.
+ * Every GATE here is read from `env` rather than hard-coded, so the backtest cannot
+ * silently drift from the engine it claims to be measuring. The same now holds for the
+ * INPUTS: the account `options` every runner passes in is resolved by
+ * `resolveBacktestProfile` from LIVE_CAPITAL_SOL / LIVE_MAX_POSITION_SOL, not from the
+ * $100 x 27.5% x 3 demo account the runners used to default to — which made a report
+ * describe an account live never runs. A flag can still override it, and the header then
+ * says so. The two deliberate differences in the gates are documented inline.
  */
 export function liveV11Config(options: MicroCapitalOptions): BacktestConfig {
   return {
@@ -267,7 +274,7 @@ function parseArgs(argv: string[]): {
   pools: number;
   deadPools: number;
   refresh: boolean;
-  options: MicroCapitalOptions;
+  overrides: ProfileOverrides;
 } {
   const flags = new Map<string, string>();
   for (const arg of argv) {
@@ -281,34 +288,24 @@ function parseArgs(argv: string[]): {
     return Number.isFinite(parsed) ? parsed : fallback;
   };
 
-  const capitalUsd = n("capital", 100);
-  const maxConcurrent = n("concurrent", env.MAX_CONCURRENT_POSITIONS);
-
   return {
     days: n("days", 91),
     pools: n("pools", 10),
     deadPools: n("deadpools", 12),
     refresh: flags.has("refresh"),
-    options: {
-      capitalUsd,
-      // Default sizing: $27.50 of a $100 account, so three concurrent positions
-      // deploy 82.5% and leave headroom rather than running the account flat out.
-      positionSizePct: n("sizepct", 27.5),
-      maxConcurrentPositions: maxConcurrent,
-      gasSolPerTransaction: n("gas", 0.0035),
-    },
+    // Account inputs are NOT defaulted here: absent flags mean "the live profile",
+    // resolved once the SOL/USD at the window start is known.
+    overrides: readProfileOverrides(flags),
   };
 }
 
+/** The runner's gas assumption per transaction when `--gas` is not given. */
+const DEFAULT_GAS_SOL_PER_TX = 0.0035;
+
 async function main(): Promise<void> {
-  const { days, pools, deadPools, refresh, options } = parseArgs(process.argv.slice(2));
+  const { days, pools, deadPools, refresh, overrides } = parseArgs(process.argv.slice(2));
 
-  const config = liveV11Config(options);
-
-  console.log(
-    `\n[micro] ${days}-day window · $${options.capitalUsd} account · ` +
-      `${options.positionSizePct}% per position · max ${options.maxConcurrentPositions} concurrent`,
-  );
+  console.log(`\n[micro] ${days}-day window · account from the live profile unless overridden`);
 
   const dataset = await loadHistoricalData({
     poolCount: pools,
@@ -324,6 +321,15 @@ async function main(): Promise<void> {
      */
     survivorTvlBand: { minUsd: env.MIN_TVL_USD, maxUsd: env.MAX_TVL_USD },
   });
+
+  const profile = resolveBacktestProfile({
+    overrides,
+    windowStartSolUsd: dataset.solUsdBars[0]?.c ?? null,
+    defaultGasSolPerTransaction: DEFAULT_GAS_SOL_PER_TX,
+  });
+  const options = profile.options;
+  const config = liveV11Config(options);
+  for (const line of describeBacktestProfile(profile)) console.log(`[micro] ${line}`);
 
   const survivors = dataset.pools.filter((p) => p.cohort === "survivor");
   const dead = dataset.pools.filter((p) => p.cohort === "dead-or-dormant");
@@ -410,8 +416,12 @@ async function main(): Promise<void> {
   // The account size follows the flag. A hard-coded $100 in the header of a report run
   // with --capital=300 is the same defect class as a paper label over a live trade: the
   // number below it is right and the sentence above it is not.
-  h(`MICRO-CAPITAL BACKTEST — LIVE V1.1 FORMULA, ${usd(options.capitalUsd, 0)} ACCOUNT`);
+  h(
+    `MICRO-CAPITAL BACKTEST — LIVE V1.1 FORMULA, ${usd(options.capitalUsd, 0)} ACCOUNT` +
+      (profile.matchesLive ? " (LIVE PROFILE)" : " — NOT THE LIVE PROFILE"),
+  );
   out.push(
+    ...describeBacktestProfile(profile),
     `Window          : ${unbiased.windowStart.slice(0, 16)} → ${unbiased.windowEnd.slice(0, 16)} ` +
       `(${unbiased.barsSimulated} hourly bars)`,
     `Universe        : ${dataset.pools.length} pools — ${survivors.length} survivors + ${dead.length} dead/dormant`,
@@ -611,6 +621,7 @@ async function main(): Promise<void> {
         dataFetchedAt: dataset.fetchedAt,
         windowDays: days,
         caveats: BACKTEST_CAVEATS,
+        profile,
         config,
         tvlModel: {
           medianK: tvlModel.medianK,

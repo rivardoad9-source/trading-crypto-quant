@@ -30,6 +30,12 @@ import {
 import { loadHistoricalData } from "../backtest/historicalData.js";
 import { calibrateTvlModel, describeTvlModel, type TvlModel } from "../backtest/tvlModel.js";
 import { liveV11Config, type MicroCapitalOptions } from "../backtest/runMicroCapital.js";
+import {
+  describeBacktestProfile,
+  readProfileOverrides,
+  resolveBacktestProfile,
+  type ProfileOverrides,
+} from "../backtest/liveProfile.js";
 import { renderTable } from "../backtest/report.js";
 import { splitWindow, scoreConfig, survivedOutOfSample } from "../backtest/sweepHarness.js";
 import type { DlmmPool } from "../services/meteora.js";
@@ -250,7 +256,7 @@ function parseArgs(argv: string[]): {
   variant: string;
   out: string | null;
   flags: Map<string, string>;
-  options: MicroCapitalOptions;
+  overrides: ProfileOverrides;
 } {
   const flags = new Map<string, string>();
   for (const arg of argv) {
@@ -272,19 +278,16 @@ function parseArgs(argv: string[]): {
     variant: flags.get("variant") ?? "all",
     out: flags.get("out") ?? null,
     flags,
-    options: {
-      capitalUsd: n("capital", 100),
-      positionSizePct: n("sizepct", 27.5),
-      maxConcurrentPositions: n("concurrent", env.MAX_CONCURRENT_POSITIONS),
-      /* The merged 3-month run's friction assumption. */
-      gasSolPerTransaction: n("gas", 0.0005),
-    },
+    // The account comes from the live profile unless a flag overrides it; see liveProfile.ts.
+    overrides: readProfileOverrides(flags),
   };
 }
 
+/* The merged 3-month run's friction assumption. */
+const DEFAULT_GAS_SOL_PER_TX = 0.0005;
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  const base = liveV11Config(args.options);
 
   const grid = gridVariants(args.flags);
   const catalogue = grid ?? VARIANTS;
@@ -305,6 +308,14 @@ async function main(): Promise<void> {
     force: args.refresh,
     survivorTvlBand: { minUsd: env.MIN_TVL_USD, maxUsd: env.MAX_TVL_USD },
   });
+
+  const profile = resolveBacktestProfile({
+    overrides: args.overrides,
+    windowStartSolUsd: dataset.solUsdBars[0]?.c ?? null,
+    defaultGasSolPerTransaction: DEFAULT_GAS_SOL_PER_TX,
+  });
+  const options: MicroCapitalOptions = profile.options;
+  const base = liveV11Config(options);
 
   const survivors = dataset.pools.filter((p) => p.cohort === "survivor");
   const calibrationSet: DlmmPool[] = survivors.map(
@@ -379,7 +390,8 @@ async function main(): Promise<void> {
     window: { days: args.days, solBars: dataset.solUsdBars.length },
     universe: { survivors: survivors.length, dead: dataset.pools.length - survivors.length },
     tvlModel: { medianK: tvlModel.medianK, p25K: tvlModel.p25K, p75K: tvlModel.p75K },
-    options: args.options,
+    options,
+    profile,
     splitAt: new Date(split.mid * 1000).toISOString(),
     variants: rows,
   };
@@ -392,14 +404,16 @@ async function main(): Promise<void> {
   out.push(
     "",
     "=".repeat(110),
-    "RISK-TO-REWARD SWEEP - LIVE V1.1 EXIT RULES, $100 ACCOUNT",
+    `RISK-TO-REWARD SWEEP - LIVE V1.1 EXIT RULES, $${options.capitalUsd.toFixed(0)} ACCOUNT` +
+      (profile.matchesLive ? " (LIVE PROFILE)" : " - NOT THE LIVE PROFILE"),
     "=".repeat(110),
     "",
+    ...describeBacktestProfile(profile),
     `Window     : ${args.days} days, ${dataset.pools.length} pools ` +
       `(${survivors.length} survivors + ${payload.universe.dead} dead)`,
     `TVL model  : ${describeTvlModel(tvlModel)}`,
-    `Fixed      : $${args.options.capitalUsd} capital, ${args.options.positionSizePct}% per position, ` +
-      `max ${args.options.maxConcurrentPositions} concurrent, ${args.options.gasSolPerTransaction} SOL/tx, ` +
+    `Fixed      : $${options.capitalUsd.toFixed(2)} capital, ${options.positionSizePct.toFixed(2)}% per position, ` +
+      `max ${options.maxConcurrentPositions} concurrent, ${options.gasSolPerTransaction} SOL/tx, ` +
       `${base.forcedExitSlippagePct}% forced-exit slippage, ${base.maxDurationHours}h timeout, ` +
       `range -${base.downsideCoverPct}%/+${base.upsideCoverPct}%`,
     "",

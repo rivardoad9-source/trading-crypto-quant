@@ -33,6 +33,12 @@ import {
 import { calibrateTvlModel, describeTvlModel, type TvlModel } from "./tvlModel.js";
 import { renderTable } from "./report.js";
 import { liveV11Config, withoutAntiChurn, type MicroCapitalOptions } from "./runMicroCapital.js";
+import {
+  describeBacktestProfile,
+  readProfileOverrides,
+  resolveBacktestProfile,
+  type ProfileOverrides,
+} from "./liveProfile.js";
 import { activeDays, buildDailyCurve, curveToCsv, type DailyPoint } from "./annualCurve.js";
 import type { DlmmPool } from "../services/meteora.js";
 
@@ -255,7 +261,7 @@ function parseArgs(argv: string[]): {
   pools: number;
   deadPools: number;
   refresh: boolean;
-  options: MicroCapitalOptions;
+  overrides: ProfileOverrides;
 } {
   const flags = new Map<string, string>();
   for (const arg of argv) {
@@ -274,23 +280,15 @@ function parseArgs(argv: string[]): {
     pools: n("pools", 14),
     deadPools: n("deadpools", 20),
     refresh: flags.has("refresh"),
-    options: {
-      capitalUsd: n("capital", 100),
-      positionSizePct: n("sizepct", 27.5),
-      maxConcurrentPositions: n("concurrent", env.MAX_CONCURRENT_POSITIONS),
-      gasSolPerTransaction: n("gas", 0.0035),
-    },
+    // The account comes from the live profile unless a flag overrides it; see liveProfile.ts.
+    overrides: readProfileOverrides(flags),
   };
 }
 
 async function main(): Promise<void> {
-  const { days, pools, deadPools, refresh, options } = parseArgs(process.argv.slice(2));
-  const config = liveV11Config(options);
+  const { days, pools, deadPools, refresh, overrides } = parseArgs(process.argv.slice(2));
 
-  console.log(
-    `\n[annual] ${days}-day window · $${options.capitalUsd} account · ` +
-      `${options.positionSizePct}% per position · max ${options.maxConcurrentPositions} concurrent`,
-  );
+  console.log(`\n[annual] ${days}-day window · account from the live profile unless overridden`);
   console.log(
     `[annual] a cold fetch of ${pools + deadPools} pools x ${days * 24} hourly bars takes ` +
       `15-30 minutes against GeckoTerminal's free tier; results are cached at ${CACHE_PATH}.`,
@@ -308,6 +306,15 @@ async function main(): Promise<void> {
     // trades, and the survivorship comparison degenerates into "one side never traded".
     survivorTvlBand: { minUsd: env.MIN_TVL_USD, maxUsd: env.MAX_TVL_USD },
   });
+
+  const profile = resolveBacktestProfile({
+    overrides,
+    windowStartSolUsd: dataset.solUsdBars[0]?.c ?? null,
+    defaultGasSolPerTransaction: 0.0035,
+  });
+  const options: MicroCapitalOptions = profile.options;
+  const config = liveV11Config(options);
+  for (const line of describeBacktestProfile(profile)) console.log(`[annual] ${line}`);
 
   const survivors = dataset.pools.filter((p) => p.cohort === "survivor");
   const dead = dataset.pools.filter((p) => p.cohort === "dead-or-dormant");
@@ -417,8 +424,12 @@ async function main(): Promise<void> {
     out.push("", "═".repeat(78), title, "═".repeat(78), "");
   };
 
-  h(`ANNUAL BACKTEST — LIVE V1.1 FORMULA, $${options.capitalUsd} ACCOUNT`);
+  h(
+    `ANNUAL BACKTEST — LIVE V1.1 FORMULA, $${options.capitalUsd.toFixed(0)} ACCOUNT` +
+      (profile.matchesLive ? " (LIVE PROFILE)" : " — NOT THE LIVE PROFILE"),
+  );
   out.push(
+    ...describeBacktestProfile(profile),
     `Window          : ${unbiased.windowStart.slice(0, 10)} → ${unbiased.windowEnd.slice(0, 10)} ` +
       `(${unbiased.barsSimulated} hourly bars, ${curve.length} calendar days)`,
     `Data coverage   : ${achievedDays} of ${days} days requested` +

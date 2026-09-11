@@ -47,6 +47,12 @@ import {
 import { calibrateTvlModel, describeTvlModel, type TvlModel } from "./tvlModel.js";
 import { renderTable } from "./report.js";
 import { liveV11Config, type MicroCapitalOptions } from "./runMicroCapital.js";
+import {
+  describeBacktestProfile,
+  readProfileOverrides,
+  resolveBacktestProfile,
+  type ProfileOverrides,
+} from "./liveProfile.js";
 import type { DlmmPool } from "../services/meteora.js";
 import type { UniversePool } from "./universe.js";
 
@@ -394,7 +400,8 @@ interface Args {
   swapSlippagePct: number;
   /** Gas for one balancing-swap transaction, in SOL. */
   swapGasSolPerLeg: number;
-  options: MicroCapitalOptions;
+  /** Account flags. Absent = the live profile, resolved once SOL/USD is known. */
+  overrides: ProfileOverrides;
 }
 
 /**
@@ -444,31 +451,13 @@ export function parseArgs(argv: string[]): Args {
     // Half the on-chain hard cap: the central estimate, with the band around it.
     swapSlippagePct: n("swapslip", 0.25),
     swapGasSolPerLeg: n("swapgas", n("gas", 0.0035)),
-    options: {
-      capitalUsd: n("capital", 100),
-      positionSizePct: n("sizepct", 27.5),
-      maxConcurrentPositions: n("concurrent", env.MAX_CONCURRENT_POSITIONS),
-      gasSolPerTransaction: n("gas", 0.0035),
-    },
+    overrides: readProfileOverrides(values),
   };
 }
 
 async function main(): Promise<void> {
-  const { days, poolsPerArm, deadPoolsPerArm, refresh, ingestOnly, swapSlippagePct, swapGasSolPerLeg, options } =
+  const { days, poolsPerArm, deadPoolsPerArm, refresh, ingestOnly, swapSlippagePct, swapGasSolPerLeg, overrides } =
     parseArgs(process.argv.slice(2));
-
-  /*
-   * The live V1.1 config, PLUS the balancing swap that the harness has never charged
-   * for. It is set here rather than in `liveV11Config` because turning it on inside
-   * the shared config would change `npm run backtest:micro` too, and every figure
-   * quoted from a previous micro run would stop reconciling with the code that
-   * produced it.
-   */
-  const config: BacktestConfig = {
-    ...liveV11Config(options),
-    swapSlippagePct,
-    swapGasSolPerLeg,
-  };
 
   const ingestArm = (arm: "sol" | "usdc") =>
     loadHistoricalData({
@@ -492,10 +481,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  console.log(
-    `\n[quote] ${days}-day window · $${options.capitalUsd} account · ` +
-      `${options.positionSizePct}% per position · max ${options.maxConcurrentPositions} concurrent`,
-  );
+  console.log(`\n[quote] ${days}-day window · account from the live profile unless overridden`);
   console.log("[quote] arm 1/2: SOL-quoted (pools with a wSOL leg)…");
 
   const solData = await ingestArm("sol");
@@ -512,6 +498,27 @@ async function main(): Promise<void> {
     solData.solUsdBars.length >= usdData.solUsdBars.length
       ? solData.solUsdBars
       : usdData.solUsdBars;
+
+  const profile = resolveBacktestProfile({
+    overrides,
+    windowStartSolUsd: solUsdBars[0]?.c ?? null,
+    defaultGasSolPerTransaction: 0.0035,
+  });
+  const options: MicroCapitalOptions = profile.options;
+  for (const line of describeBacktestProfile(profile)) console.log(`[quote] ${line}`);
+
+  /*
+   * The live V1.1 config, PLUS the balancing swap that the harness has never charged
+   * for. It is set here rather than in `liveV11Config` because turning it on inside
+   * the shared config would change `npm run backtest:micro` too, and every figure
+   * quoted from a previous micro run would stop reconciling with the code that
+   * produced it.
+   */
+  const config: BacktestConfig = {
+    ...liveV11Config(options),
+    swapSlippagePct,
+    swapGasSolPerLeg,
+  };
 
   const solPools = solData.pools;
   const usdPools = usdData.pools;
@@ -604,7 +611,8 @@ async function main(): Promise<void> {
     `SOL/USD         : ${usd(solStart)} → ${usd(solEnd)} (${pct(solMovePct)} over the window)`,
     `Universe        : ${solPools.length} SOL-quoted + ${usdPools.length} USDC-quoted pools`,
     `TVL model       : ${describeTvlModel(tvlModel)} (calibrated on BOTH arms)`,
-    `Account         : ${usd(options.capitalUsd, 0)}, ${options.positionSizePct}% per position, ` +
+    ...describeBacktestProfile(profile),
+    `Account         : ${usd(options.capitalUsd, 0)}, ${options.positionSizePct.toFixed(2)}% per position, ` +
       `max ${options.maxConcurrentPositions} concurrent — identical in every arm`,
     `Gates           : age>=${config.minPoolAgeHours}h · surge1h<=${config.maxPriceSurge1hPct}% · ` +
       `TVL $${(config.minTvlUsd / 1000).toFixed(0)}k-$${(config.maxTvlUsd / 1000).toFixed(0)}k · ` +
