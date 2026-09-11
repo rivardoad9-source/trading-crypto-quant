@@ -1,0 +1,105 @@
+FlowMetrix — 2 perbaikan KODE dari trade live PERTAMA yang sukses (11 Sep 2026). Branch: main.
+Baca dulu, jangan riset ulang. JANGAN sentuh `.env`, jangan restart pm2, jangan deploy.
+
+====================================================================
+KONTEKS: trade pertama engine, dan ada satu langkah yang dikerjakan MANUSIA
+====================================================================
+11 Sep 2026 12:03 WIB engine membuka posisi live pertamanya yang benar-benar jadi:
+MANLET-SOL, posisi `EDUquTp5ypXH7bY5BSMmNWsWmW1hFtMXJDcwcfw8uLhr`, notional $179.41
+(0.9 SOL deploy + 0.9 SOL swap), row DB `id 4`.
+
+15:21 WIB monitor menutupnya sendiri: `CLOSED_PROFIT — net $9.49 (5.29%)`, satu-dua tx
+DLMM (`removeLiquidity`), signature akhir
+`5jh9u2ZsGyxwf5sFp2rsrMVvzVoSVWCYut2p3LH6CdGAzrE6xZFRapBTy5jLR4DpTzec66mynoAnqYksizYxRLTb`.
+Sampai sini semuanya benar — itu lifecycle live pertama yang lengkap
+(open → monitor → exit on-chain → row).
+
+**Yang TIDAK benar: sisa token-nya tidak dijual oleh engine.**
+Rekonstruksi on-chain (script `~/.hermes/scripts/diag/fm_wallet_flow.mjs`, wallet
+`FaVHg7bThap7wcF9G7kjSjrDsMbVrgUkpG6twzi1yQKi`):
+- 05:01-05:02Z keluar 1.920379 SOL (swap + deposit + rent)
+- 08:18:01Z masuk **+0.739724** SOL — `removeLiquidity` pada posisi (tx engine)
+- 08:21:00Z masuk **+0.415963** SOL — `removeLiquidity` + claim + close (tx engine, = signature close di DB)
+- 08:58:25Z masuk **+0.844718** SOL — **SWAP, dan ini BUKAN engine**, pelakunya operator
+  lewat UI/agregator: tidak ada program `JUP6LkbZ…` (jalur swap engine) dan tidak ada
+  program DLMM sama sekali, cuma `proVF4…` + Token program
+- net hari itu **+0.080026 SOL** (wallet 2.880994 → 2.961020)
+
+Jadi: `closePosition` mengembalikan SOL **dan** token paired, token-nya ditinggal di
+wallet, dan nilainya (~0.84 SOL, mayoritas dari posisi ini) baru jadi SOL karena
+**operator menjualnya manual 37 menit kemudian**. Kalau operator tidak kebetulan
+melakukannya, hasil trade ini akan duduk sebagai token yang tidak dimonitor siapa pun —
+kelas blind-spot yang sama dengan orphan KNOTS, dan modalnya tidak bisa dipakai entry.
+
+====================================================================
+TASK 1 — Setelah exit, jual sisa token paired kembali ke SOL (otomatis)
+====================================================================
+Masalah: `closePosition` (src/services/onchainExecutor.ts ~3141) = `withdrawClaimAndClose`
+(remove liquidity + claim + close). TIDAK ada langkah menukar sisa token ke SOL. Di jalur
+GAGAL, `openLivePosition` sudah punya auto-unwind (`executeJupiterSwap`); di jalur
+SUKSES justru tidak ada.
+
+Yang diminta:
+1. Setelah close on-chain KONFIRMASI (bukan sebelumnya), baca saldo token paired milik
+   wallet (`readTokenBalance` sudah ada di src/services/liveExecution.ts) dan kalau di
+   atas dust, tukar ke SOL lewat jalur swap yang sudah dipakai engine
+   (`executeJupiterSwap`) — JANGAN bikin jalur swap baru.
+2. Terapkan di SEMUA jalur exit yang memanggil close: TP, SL, out-of-range, timeout,
+   dan sekalian CLI/tool yang memakai `closePosition` yang sama (lihat pemakaiannya).
+3. Kalau penukaran GAGAL: JANGAN lempar error yang membatalkan status close. Posisi
+   sudah tertutup di chain — yang benar adalah (a) tetap tandai CLOSED, (b) catat sisa
+   token + signature di log, dan (c) KIRIM ALERT operator yang menyebut jumlah token +
+   mint + perkiraan nilai, karena ini butuh manusia. Pola "kegagalan di sela" ini sudah
+   ada presedennya: `StrandedSwapError` + `classifyUnwind` (clean/orphan/none/unknown).
+4. Sweep harus IDEMPOTEN: kalau dijalankan lagi dan saldo token sudah dust, tidak
+   mengirim tx apa pun.
+
+TEST yang wajib ada (offline, tanpa network — mock saldo + mock swap):
+- exit sukses → saldo token di atas dust → swap dipanggil SEKALI, dengan mint yang benar.
+- saldo token sudah dust/0 → TIDAK ada swap (idempoten).
+- swap gagal → status tetap CLOSED, alert berisi jumlah token, TIDAK melempar.
+- jalur GAGAL (StrandedSwapError) tetap berperilaku persis seperti sekarang.
+
+====================================================================
+TASK 2 — `wallet_lamports_after` harus dibaca SETELAH posisi benar-benar settle
+====================================================================
+Masalah terukur: karena sisa token belum ditukar saat close, kolom
+`wallet_lamports_after` (diisi `closeLivePosition` ~line 1709 liveExecution.ts) menyimpan
+saldo wallet yang **belum final** — 1.700338862 SOL, padahal nilai sesungguhnya masih
+tersimpan sebagai token. Akibatnya modul reconciliation yang ditulis kemarin melaporkan
+kebohongan besar untuk trade yang justru untung. Dijalankan barusan di server:
+
+```
+[reconcile] 1 live position(s): database says $9.49, wallet says $-117.68, drift $-127.16 (-1340.1% of model)
+   MANLET-SOL model $9.49 | chain -1.180654818 SOL = $-117.68 | drift $-127.16
+```
+
+$127 "drift" itu 100% artefak: `before` diambil sebelum entry (benar), `after` diambil
+sebelum sisa token dijual (salah). Dan kolom yang sama dipakai `live_execution_attempts`
+(`cost_lamports` = before − after) di jalur gagal, jadi kesalahannya menular.
+
+Yang diminta:
+1. Baca `wallet_lamports_after` SETELAH sweep Task 1 selesai (jadi setelah semua yang
+   bisa dikembalikan sudah kembali ke SOL). Kalau sweep gagal, tulis NULL — jangan angka
+   yang belum final. Aturan "tidak terukur ≠ nol" sudah jadi konvensi file ini.
+2. `reconcilePositions` (src/services/reconciliation.ts) JANGAN diubah diam-diam untuk
+   membetulkan angkanya. Kalau kamu mau menandai baris lama yang belum settle, pakai
+   penanda eksplisit (mis. baris dengan token sisa yang belum ditukar) dan nyatakan di
+   output bahwa angka itu belum settle — jangan mengarang koreksi.
+3. Baris MANLET-SOL (`id 4`) yang sudah ada: JANGAN diubah dari kode. Kalau perlu
+   perbaikan data, tulis script manual sekali-pakai yang dijalankan OPERATOR, sebutkan
+   di ringkasanmu, jangan jalankan sendiri (kamu tidak punya akses DB produksi).
+
+TEST (offline): after diambil setelah sweep; sweep gagal → after NULL; reconcile atas
+baris yang belum settle tidak menghasilkan angka seolah sudah settle.
+
+====================================================================
+BATASAN
+====================================================================
+- Jangan sentuh `.env`, jangan restart/deploy, jangan jalankan engine, jangan sentuh DB produksi.
+- Jangan mengubah arti `realized_pnl_usd`, jangan sentuh gate friction 2.5x, anti-rug,
+  `LIVE_MAX_POSITION_BINS`, `POOL_DENYLIST`, `LIVE_CAPITAL_SOL`, atau allowlist literal
+  `SOLANA_PRIVATE_KEY` (5 file itu tetap 5).
+- Jangan taruh helper sekali-pakai di `src/scripts/` (melanggar import-graph test).
+- Jalankan `npm run typecheck` DAN `npm test`. Di mesin yang armed, 7 subtest gagal dengan
+  NAMA tetap (profil inert) — itu bukan regresi; bandingkan NAMA, bukan jumlah.
