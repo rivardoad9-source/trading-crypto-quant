@@ -247,6 +247,27 @@ YANG DIMINTA:
      dari backtest 2 pool.
 
 = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+TASK 9 — Temuan audit Task 5 (P2/P3). Perbaiki yang P2, jangan diamkan yang P3.
+= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+Audit Task 5 (`docs/audits/2026-09-11-exit-path-audit.md`) menyimpulkan NO P0 — klaim
+"setiap exit lewat closeLivePosition" TERBUKTI. Ini tindak lanjut temuan bawahnya.
+  1. P2 — `scripts/forceClosePosition.cjs` menandatangani di luar jalur standar: memuat key dan
+     langsung mengirim saat dipanggil, dengan `maxRetries: 2` sendiri (bukan aturan rebroadcast
+     `sendAndConfirm`), TANPA penolakan likuiditas seperti `closeOrphanPosition.cjs`, dan TANPA
+     dry-run default. Samakan dengan template repo untuk script yang menandatangani: dry-run
+     default + `--execute` eksplisit, lewat jalur executor/`sendAndConfirm`, dan tolak akun yang
+     masih memegang likuiditas. Ini satu-satunya jalur close yang menyimpang dari template.
+  2. P3 — `/claim` menaruh fee token di wallet tanpa monitoring sampai close. Jangan diam:
+     balasan `/claim` harus menyebut secara eksplisit bahwa token fee itu BELUM dijual dan baru
+     di-sweep saat posisi ditutup (dan berapa perkiraan nilainya).
+  3. P3 — `isLivePosition` mensyaratkan `position_address` tidak kosong; baris LIVE tanpa address
+     akan jatuh ke jalur PAPER dan "ditutup" hanya di database. Tambah guard keras di titik
+     penulisan baris LIVE supaya bentuk itu tidak pernah bisa ada (gagalkan, jangan cuma diam).
+  4. Note — `scripts/controlledWideOpen.ts` membuka posisi tanpa menulis row, jadi close-nya
+     manual dan TIDAK dapat sweep. Tulis peringatan itu di output script-nya.
+  5. JANGAN ubah gate. JANGAN deploy.
+
+= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
 BATASAN (berlaku semua task)
 = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
 - JANGAN sentuh `.env`. JANGAN restart pm2. JANGAN deploy. JANGAN ubah gate yang tidak
