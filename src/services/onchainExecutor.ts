@@ -1258,6 +1258,84 @@ export async function executeJupiterSwap(
 }
 
 /* ------------------------------------------------------------------ */
+/* Token account housekeeping                                          */
+/* ------------------------------------------------------------------ */
+
+export type CloseTokenAccountOutcome =
+  /** The empty account was closed and its rent returned to the wallet. */
+  | { state: "closed"; signature: string; ata: string }
+  /** No such account — already closed, or never created. A success, not an error. */
+  | { state: "absent"; ata: string }
+  /** The account still holds tokens, so it was NOT touched. */
+  | { state: "not-empty"; ata: string; amount: string };
+
+/**
+ * Closes the wallet's EMPTY associated token account for `mint` and returns its rent.
+ *
+ * An ATA is rent-exempt (~0.00204 SOL on SPL Token, similar on Token-2022), and every mint
+ * the engine trades leaves one behind once the residual is sold: on 11 Sep 2026 the live
+ * wallet held two empty ones with their rent locked for good. Against a ~$9 take-profit that
+ * is ~2% of the trade, per mint, forever.
+ *
+ * Narrow on purpose:
+ *  - it refuses an account that still holds ANY tokens (`not-empty`) — closing is only
+ *    legal on a zero balance, and value in the account is the operator's to decide about;
+ *  - it refuses wSOL, whose account the swap path wraps and unwraps itself;
+ *  - an account that is not there is `absent`, a success, so a second call sends nothing;
+ *  - the token program is the CALLER's, from the pool the SDK read — Token-2022 accounts
+ *    are closed by Token-2022, and a hand-written `Tokenkeg…` would fail on those.
+ *
+ * It moves only rent, back to the signer, so there is no spend to charge to the ceiling.
+ */
+export async function closeEmptyTokenAccount(
+  auth: ExecutionAuthorization,
+  params: { mint: string; tokenProgram: string },
+): Promise<CloseTokenAccountOutcome> {
+  if (params.mint === WSOL_MINT) {
+    throw new ExecutionLimitError("closeEmptyTokenAccount refuses wSOL; the swap path owns it");
+  }
+  const { getAssociatedTokenAddressSync, createCloseAccountInstruction } = await import(
+    "@solana/spl-token"
+  );
+  const tokenProgram = new PublicKey(params.tokenProgram);
+  const ata = getAssociatedTokenAddressSync(
+    new PublicKey(params.mint),
+    auth.wallet,
+    true,
+    tokenProgram,
+  );
+  const ataAddress = ata.toBase58();
+  const connection = getConnection();
+
+  if ((await connection.getAccountInfo(ata, "confirmed")) === null) {
+    return { state: "absent", ata: ataAddress };
+  }
+
+  const balance = await connection.getTokenAccountBalance(ata, "confirmed");
+  if (balance.value.amount !== "0") {
+    return { state: "not-empty", ata: ataAddress, amount: balance.value.amount };
+  }
+
+  const closeIx = createCloseAccountInstruction(ata, auth.wallet, auth.wallet, [], tokenProgram);
+
+  try {
+    const sent = await sendAndConfirm(
+      auth,
+      async ({ blockhash, plan }) =>
+        asVersionedTransaction(new Transaction().add(closeIx), blockhash, plan, auth.wallet, []),
+      { label: `close empty token account ${ataAddress}` },
+    );
+    return { state: "closed", signature: sent.signature, ata: ataAddress };
+  } catch (err) {
+    // Closed underneath us (or by an earlier, ambiguous attempt that did land): the goal
+    // — no account, rent back — is met either way.
+    const still = await connection.getAccountInfo(ata, "confirmed").catch(() => undefined);
+    if (still === null) return { state: "absent", ata: ataAddress };
+    throw err;
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* Meteora DLMM adapter (STAGE 2 — implemented, still unreachable)     */
 /* ------------------------------------------------------------------ */
 

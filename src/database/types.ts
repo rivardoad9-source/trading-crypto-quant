@@ -18,6 +18,7 @@ export interface SimulatedPositionRow {
    */
   residual_sweep?: string | null;
   sweep_signature?: string | null;
+  ata_close_signature?: string | null;
   position_id: string;
   pool_address: string;
   pair_name: string;
@@ -174,4 +175,6 @@ export interface ClosePositionInput {
    */
   residualSweep?: string | null;
   sweepSignature?: string | null;
+  /** The close of the emptied paired-token account (rent back). Never the sweep's. */
+  ataCloseSignature?: string | null;
 }

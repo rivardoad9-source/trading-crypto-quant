@@ -858,7 +858,7 @@ async function settleLiveCloses(
        * reaches the catch below — which would leave ACTIVE a position that no longer
        * exists. `walletLamportsAfter` is null whenever that sweep did not settle.
        */
-      const { closeSignature, walletLamportsAfter, residual } = await closeLive({
+      const { closeSignature, walletLamportsAfter, residual, tokenAccount } = await closeLive({
         poolAddress: row.pool_address,
         positionAddress: row.position_address ?? "",
         pairName: row.pair_name,
@@ -880,6 +880,7 @@ async function settleLiveCloses(
           walletLamportsAfter,
           residualSweep: residual.state,
           sweepSignature: residual.signature,
+          ataCloseSignature: tokenAccount.signature,
         });
       });
 

@@ -126,6 +126,13 @@ export function initDatabase(): void {
    */
   addColumnIfMissing("simulated_positions", "residual_sweep", "TEXT");
   addColumnIfMissing("simulated_positions", "sweep_signature", "TEXT");
+  /*
+   * The transaction that closed the paired token's EMPTY account after the sweep (or the
+   * failed-open unwind) and returned its rent. Its own column: `sweep_signature` is the
+   * evidence the token was SOLD and must not be overwritten by the housekeeping after it.
+   */
+  addColumnIfMissing("simulated_positions", "ata_close_signature", "TEXT");
+  addColumnIfMissing("live_execution_attempts", "ata_close_signature", "TEXT");
 
   /*
    * Candidates dropped by the execution guard (operator denylist, or the execution
