@@ -167,6 +167,11 @@ export interface CloseAlertPayload {
   heldHours: number;
   /** Whether this describes a real on-chain position. See TradeAlertPayload.live. */
   live: boolean;
+  /**
+   * Token balances the close left behind that the sweep does not sell (live only), already
+   * rendered by `describeNonPairedResiduals`. Absent or null when there were none.
+   */
+  residualNote?: string | null;
 }
 
 export async function sendPositionClosed(p: CloseAlertPayload): Promise<void> {
@@ -182,6 +187,7 @@ export async function sendPositionClosed(p: CloseAlertPayload): Promise<void> {
     `Fees earned: ${usd(p.feeUsd)}`,
     `Position value change: ${usd(p.positionValueChangeUsd)}`,
     `Net PnL: ${usd(p.netPnlUsd)} (${p.netPnlPct.toFixed(2)}%)`,
+    ...(p.residualNote ? [``, `⚠️ ${p.residualNote}`] : []),
   ].join("\n");
 
   await sendMessage(sanitize(body));
