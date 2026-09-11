@@ -213,6 +213,40 @@ YANG DIMINTA:
      sudah bisa dan apa yang belum — jangan diamkan.
 
 = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+TASK 8 — Headline backtest dibangun dari 2 POOL. Itu harus kelihatan di laporan.
+= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+BUKTI (run profil live 11 Sep 2026, skenario `unbiased`, nominal $185/posisi = nominal live):
+  - 18 trade SELURUHNYA dari 2 pool:
+      XST-USDC     10 entry, net +$148.65  (75% dari seluruh profit run)
+      OPENAI-USDC   8 entry, net  +$49.64
+  - XST-USDC ada di universe sebagai cohort `dead-or-dormant` dengan tvlTodayUsd = $0.51.
+    Di LIVE pool ini tidak mungkin terpilih: MIN_TVL_USD=$50000 diukur dari TVL nyata.
+  - 10 round-trip beruntun tanpa SATU pun STOP_LOSS di pool sekarat itu adalah tanda
+    artefak model TVL (fee = feeRate x volume x posisi/TVL-dimodelkan): TVL yang dimodelkan
+    kecil -> share posisi atas TVL membengkak -> fee income membengkak. Caveat laporan
+    sendiri sudah menyebut TVL sebagai "the load-bearing assumption".
+  - Skenario `unbiasedNoChurn` (cooldown/lockout OFF): 35 trade, tetap 2 pool yang sama
+    (XST 20 entry, OPENAI 15). Jadi "tanpa cooldown lebih untung" sebenarnya berarti
+    "masuk berulang kali ke 2 pool yang sama", bukan bukti bahwa cooldown merugikan.
+  - Akibatnya: PF 4.37, +67.4%, dan maxDD 10.68% dari run itu TIDAK boleh dipakai sebagai
+    headline, dan perbandingan cooldown ON vs OFF dari run ini tidak bisa dipakai untuk
+    memutuskan apa pun soal cooldown.
+YANG DIMINTA:
+  1. Cetak distribusi trade per pool + share profit per pool di bagian ATAS laporan
+     (mis. "XST-USDC 10/18 trade, 75% of net PnL"), bukan cuma di section cohort.
+  2. Kalau headline (PF/return/DD) berdiri di atas <=2 pool, atau satu pool menyumbang
+     >50% net PnL, cetak PERINGATAN EKSPLISIT di baris headline-nya. Jangan disamarkan
+     di section bawah.
+  3. Pisahkan subtotal PnL untuk trade yang masuk ke pool dengan tvlToday di bawah
+     MIN_TVL_USD atau cohort `dead-or-dormant`, dan laporkan terpisah dari headline.
+  4. JANGAN mengubah gate apa pun supaya angkanya jadi lebih bagus. Yang diminta cuma
+     supaya artefaknya kelihatan sebelum angkanya dipakai buat keputusan uang beneran.
+  5. LIVE: tambah counter agregat untuk block cooldown & lockout (sekarang cuma ada log
+     per-kejadian `[cooldown] <pair> locked out for Xh`) dan expose di /status atau
+     /health. Keputusan "cooldown mahal atau nggak" harus diukur dari data live, bukan
+     dari backtest 2 pool.
+
+= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
 BATASAN (berlaku semua task)
 = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
 - JANGAN sentuh `.env`. JANGAN restart pm2. JANGAN deploy. JANGAN ubah gate yang tidak
