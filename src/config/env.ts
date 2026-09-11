@@ -36,7 +36,22 @@ function loadDotEnv(file = ".env"): void {
   }
 }
 
-loadDotEnv();
+/*
+ * NEVER UNDER THE TEST RUNNER. The operator's `.env` is the machine's POSTURE — armed or
+ * not, the width cap, the pinned balance — and a test that reads it asserts that machine
+ * rather than the code. On the live host (DRY_RUN=false, LIVE_MAX_POSITION_BINS=1400,
+ * STARTING_BALANCE_USD pinned) seven tests were permanently red for exactly that reason, all
+ * of them in the arming/guard/width area, where a real regression would then sink among
+ * failures everyone had learned to skip.
+ *
+ * `node --test` runs every test file in a child process with `NODE_TEST_CONTEXT` set, however
+ * the runner was invoked (`npm test` or a single file), so inside it nothing is read from disk
+ * and a test gets the code defaults plus exactly the `process.env` it sets itself. The armed
+ * AND the disarmed posture are both tested that way, by injection (`liveConfig.test.ts`), and
+ * a test fails loudly if the runner ever stops setting the variable. This changes how TESTS
+ * read configuration, not any rule: the engine, the API and every script still load `.env`.
+ */
+if (process.env.NODE_TEST_CONTEXT === undefined) loadDotEnv();
 
 /** Coerces "true"/"1"/"yes" to boolean. Anything unrecognised falls back to the default. */
 const booleanish = (defaultValue: boolean) =>

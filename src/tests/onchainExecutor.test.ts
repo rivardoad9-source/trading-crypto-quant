@@ -202,8 +202,10 @@ describe("onchain executor — the engine cannot reach it", () => {
       "isLiveTradingEnabled no longer requires both DRY_RUN=false and the executor armed",
     );
 
-    // On this machine DRY_RUN is true, so the flag must be false whatever else is set.
-    assert.equal(isLiveTradingEnabled, false, "this machine has live trading armed");
+    // At the CODE defaults DRY_RUN is true, so the flag must be false whatever else is set.
+    // No .env is read under the test runner, so a live host cannot turn this red; the armed
+    // posture is proven by injection in liveConfig.test.ts "hermetic posture".
+    assert.equal(isLiveTradingEnabled, false, "live trading is armed by default");
 
     const executorSource = readFileSync(join(srcDir, "services", "onchainExecutor.ts"), "utf8");
     assert.ok(

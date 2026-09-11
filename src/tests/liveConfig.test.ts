@@ -102,7 +102,9 @@ describe("live micro-capital — shipped defaults", () => {
 
   it("is OFF by default — arming live sizing takes an explicit opt-in", () => {
     assert.equal(ok(parseLiveConfig({})).enabled, false);
-    assert.equal(liveMicroCapital.enabled, false, "this machine has the live profile armed");
+    // The CODE default: no .env is read under the test runner, so a live host's own posture
+    // cannot turn this red. The armed posture is proven by injection, "hermetic posture".
+    assert.equal(liveMicroCapital.enabled, false, "the live profile is armed by default");
   });
 
   it("derives 1.00 SOL deployable and 0.80 SOL of maximum exposure", () => {
@@ -692,5 +694,152 @@ describe("live micro-capital — secrets stay in the environment", () => {
       !/return\s+env\.SOLANA_PRIVATE_KEY/.test(text),
       "liveConfig hands out the signing key; nothing here can sign, so nothing should read it",
     );
+  });
+});
+
+/*
+ * HERMETIC POSTURE. The posture tests elsewhere (width cap 70, profile off, live trading off,
+ * a $1000 book) assert the CODE DEFAULTS, and were permanently red on the live host because
+ * they were reading its `.env`. Under the test runner `env.ts` now reads no `.env` at all, and
+ * both postures are proven here the only honest way: by INJECTING each one into a fresh
+ * process, from a working directory that holds a hostile, live-armed `.env`.
+ *
+ * In this file because the armed posture needs a signing key, and this is one of the two test
+ * files the key allowlist above already admits. The key is generated at run time, never a
+ * literal, and exists only in the child's environment.
+ */
+describe("hermetic posture — tests never read the operator's .env", () => {
+  const POSTURE_KEYS = [
+    "DRY_RUN",
+    "ONCHAIN_EXECUTION_ARMED",
+    "SOLANA_PRIVATE_KEY",
+    "SOLANA_WALLET_ADDRESS",
+    "LIVE_MICRO_CAPITAL",
+    "LIVE_MAX_POSITION_BINS",
+    "LIVE_CAPITAL_SOL",
+    "LIVE_MAX_POSITION_SOL",
+    "ONCHAIN_MAX_LAMPORTS_PER_TX",
+    "STARTING_BALANCE_USD",
+  ];
+
+  interface Posture {
+    isLiveTradingEnabled: boolean;
+    liveProfileEnabled: boolean;
+    widthCap: number;
+    guardLine: string;
+    startingBalanceUsd: number;
+  }
+
+  async function readPosture(opts: {
+    inject: Record<string, string>;
+    hostileDotEnv: string;
+    underTestRunner: boolean;
+  }): Promise<Posture> {
+    const { spawnSync } = await import("node:child_process");
+    const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { pathToFileURL } = await import("node:url");
+
+    const cwd = mkdtempSync(join(tmpdir(), "flowmetrix-posture-"));
+    try {
+      writeFileSync(join(cwd, ".env"), opts.hostileDotEnv);
+      const url = (rel: string) => pathToFileURL(join(srcDir, rel)).href;
+      const script = [
+        `const e = await import(${JSON.stringify(url("config/env.ts"))});`,
+        `const l = await import(${JSON.stringify(url("config/liveConfig.ts"))});`,
+        `const g = await import(${JSON.stringify(url("services/executionGuard.ts"))});`,
+        `const s = await import(${JSON.stringify(url("config/startingBalance.ts"))});`,
+        `console.log("POSTURE" + JSON.stringify({`,
+        `  isLiveTradingEnabled: e.isLiveTradingEnabled,`,
+        `  liveProfileEnabled: l.liveMicroCapital.enabled,`,
+        `  widthCap: e.env.LIVE_MAX_POSITION_BINS,`,
+        `  guardLine: g.describeExecutionGuard(),`,
+        `  startingBalanceUsd: s.getStartingBalanceUsd(),`,
+        `}));`,
+      ].join("\n");
+
+      const childEnv: Record<string, string> = {};
+      for (const [k, v] of Object.entries(process.env)) {
+        if (v !== undefined && !POSTURE_KEYS.includes(k) && k !== "NODE_TEST_CONTEXT") childEnv[k] = v;
+      }
+      if (opts.underTestRunner) childEnv.NODE_TEST_CONTEXT = "child-v8";
+      childEnv.DATABASE_PATH = join(cwd, "t.db");
+      Object.assign(childEnv, opts.inject);
+
+      const run = spawnSync(
+        process.execPath,
+        ["--import", import.meta.resolve("tsx"), "--input-type=module", "-e", script],
+        { cwd, env: childEnv, encoding: "utf8", timeout: 120_000 },
+      );
+      const line = (run.stdout ?? "").split(/\r?\n/).find((l) => l.startsWith("POSTURE"));
+      assert.ok(line, `the posture probe produced no output:\n${run.stderr}`);
+      return JSON.parse(line.slice("POSTURE".length)) as Posture;
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }
+
+  async function armedEnv(): Promise<Record<string, string>> {
+    const { Keypair } = await import("@solana/web3.js");
+    const bs58 = (await import("bs58")).default;
+    const key = Keypair.generate();
+    return {
+      DRY_RUN: "false",
+      ONCHAIN_EXECUTION_ARMED: "true",
+      SOLANA_PRIVATE_KEY: bs58.encode(key.secretKey),
+      SOLANA_WALLET_ADDRESS: key.publicKey.toBase58(),
+      LIVE_MICRO_CAPITAL: "true",
+      LIVE_MAX_POSITION_BINS: "1400",
+      LIVE_CAPITAL_SOL: "2.85",
+      LIVE_MAX_POSITION_SOL: "1.8",
+      ONCHAIN_MAX_LAMPORTS_PER_TX: "3000000000",
+      STARTING_BALANCE_USD: "288.27",
+    };
+  }
+
+  const toDotEnv = (vars: Record<string, string>) =>
+    Object.entries(vars)
+      .map(([k, v]) => `${k}=${v}`)
+      .join("\n");
+
+  it("this process runs under the test runner, which is what switches .env off", () => {
+    // If Node ever stops setting it, every posture test silently starts reading .env again.
+    assert.ok(process.env.NODE_TEST_CONTEXT, "NODE_TEST_CONTEXT is not set inside node --test");
+  });
+
+  it("DISARMED, injected: a live-armed .env on disk is ignored and the code defaults hold", async () => {
+    const posture = await readPosture({
+      inject: { DRY_RUN: "true" },
+      hostileDotEnv: toDotEnv(await armedEnv()),
+      underTestRunner: true,
+    });
+    assert.equal(posture.isLiveTradingEnabled, false);
+    assert.equal(posture.liveProfileEnabled, false);
+    assert.equal(posture.widthCap, 70);
+    assert.match(posture.guardLine, /live width cap: 70 bins \(NARROW ONLY/);
+    assert.equal(posture.startingBalanceUsd, 1000);
+  });
+
+  it("ARMED, injected: the same code reports the armed posture when it is handed one", async () => {
+    const posture = await readPosture({
+      inject: await armedEnv(),
+      hostileDotEnv: "DRY_RUN=true\nLIVE_MAX_POSITION_BINS=70\n",
+      underTestRunner: true,
+    });
+    assert.equal(posture.isLiveTradingEnabled, true);
+    assert.equal(posture.liveProfileEnabled, true);
+    assert.equal(posture.widthCap, 1400);
+    assert.match(posture.guardLine, /live width cap: 1400 bins \(the DLMM maximum/);
+    assert.equal(posture.startingBalanceUsd, 288.27);
+  });
+
+  it("outside the test runner the engine still loads .env — only tests stopped reading it", async () => {
+    const posture = await readPosture({
+      inject: {},
+      hostileDotEnv: toDotEnv(await armedEnv()),
+      underTestRunner: false,
+    });
+    assert.equal(posture.isLiveTradingEnabled, true, "the engine no longer reads its .env");
+    assert.equal(posture.widthCap, 1400);
   });
 });
