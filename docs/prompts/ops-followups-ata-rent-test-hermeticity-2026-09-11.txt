@@ -180,6 +180,39 @@ YANG DIMINTA:
   5. JANGAN ubah gate apa pun demi membuat angka cocok.
 
 = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+TASK 7 — Universe backtest di-discover ulang tiap run: angkanya TIDAK BISA dibandingkan.
+= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+BUKTI (dua run, sama-sama 91 hari, sama-sama 10 survivor + 12 dead, gate identik):
+  - 8 Sep universe survivor: SOL-USDC, xBTC-USDC, xSOL-SOL, ANSEM-USDC, SOL-HYPE,
+    MUSK-USDC, JLP-USDC, OPENAI-USDC, ANSEM-SOL, cbBTC-SOL -> 42 trade, PF 2.09
+  - 11 Sep universe survivor: SOL-USDC, MET-SOL, SOL-HYPE, cbBTC-SOL, OPENAI-USDC,
+    SILV-SOL, MUSK-USDC, JLP-USDC, ANSEM-SOL, ETH-SOL -> 18 trade, PF 3.22/4.37
+    7 dari 10 pool BEDA (MET-SOL, SILV-SOL, ETH-SOL masuk; xBTC-USDC, xSOL-SOL,
+    ANSEM-USDC keluar). barsWithNoCandidate 1681 -> 2047 dari 2184 bar.
+  - Jumlah trade jatuh 42 -> 18 dengan gate yang identik: itu murni karena sampel pool-nya
+    beda, BUKAN karena friksi/gate/formula. Menyimpulkan "PF 2.09 -> 4.37 = formula makin
+    bagus" dari dua run ini adalah kesalahan baca yang serius.
+  - Akar masalahnya: "survivor" dipilih dari keadaan HARI INI (pool yang masih punya TVL
+    sekarang). Itu survivorship bias bawaan sekaligus bikin run tidak reproducible — bukti
+    kenapa skenario `biased` (PF 1.79 di profil live) ada dan harus dibaca sebagai patokan
+    yang jujur, bukan sebagai pelengkap.
+YANG DIMINTA:
+  1. Universe harus DETERMINISTIK dan bisa di-replay: persist pilihan pool (pair + address +
+     cohort + kolom alasan pemilihan) ke file (mis. `data/backtest_universe.json`) saat
+     di-discover, dan pakai ulang file itu di run berikutnya. Hanya `--refresh` yang boleh
+     memilih ulang.
+  2. Cetak hash universe (mis. sha256 dari daftar address yang terurut) di header laporan.
+     Dua run baru boleh dibandingkan kalau hash-nya sama. Tanpa itu, angka antar-run tidak
+     punya arti apa pun.
+  3. Seleksi pool jangan pakai keadaan akhir window: minimal, ambil pool yang memenuhi
+     kriteria likuiditas/umur PADA AWAL window (atau pada tiap titik masuk), bukan TVL hari
+     ini. Kalau cohort "dead-or-dormant" sudah sebagian mengatasi ini, tulis di komentar
+     sejauh mana — dan kalau masih ada look-ahead, TULIS TERANG-TERANG di caveat laporan.
+  4. Jangan mengubah gate atau angka apa pun demi membuat hasil antar-run terlihat konsisten.
+  5. Kalau reproducibility ini tidak bisa dicapai dalam satu langkah, laporkan apa yang
+     sudah bisa dan apa yang belum — jangan diamkan.
+
+= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
 BATASAN (berlaku semua task)
 = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
 - JANGAN sentuh `.env`. JANGAN restart pm2. JANGAN deploy. JANGAN ubah gate yang tidak
