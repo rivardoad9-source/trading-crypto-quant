@@ -64,6 +64,10 @@ function harness(over: {
   mintFails?: Error;
   /** How the empty-account close answers: default "closed". */
   accountClose?: "closed" | "absent" | "not-empty" | Error;
+  /** Token balances the wallet lists after the sweep (besides what the harness sold). */
+  walletTokens?: Array<{ mint: string; amount: string; uiAmount: number | null }> | Error;
+  /** Per-mint SOL quotes in lamports for non-paired tokens; missing = the quote fails. */
+  otherQuotes?: Record<string, number>;
 } = {}) {
   const calls: string[] = [];
   const accountCloses: string[] = [];
@@ -91,8 +95,13 @@ function harness(over: {
         assert.equal(mint, MINT);
         return wallet.token;
       },
-      async quoteToSol() {
+      async quoteToSol(mint: string) {
         calls.push("quote");
+        if (mint !== MINT) {
+          const q = over.otherQuotes?.[mint];
+          if (q === undefined) throw new Error("no route");
+          return q;
+        }
         if (over.quoteFails) throw over.quoteFails;
         return over.quoteLamports ?? 844_718_000;
       },
@@ -120,6 +129,11 @@ function harness(over: {
       }
       if (mode === "absent") return { state: "absent" as const, ata: "ATA111" };
       return { state: "not-empty" as const, ata: "ATA111", amount: "12345" };
+    },
+    async listTokenBalances() {
+      calls.push("list");
+      if (over.walletTokens instanceof Error) throw over.walletTokens;
+      return over.walletTokens ?? [];
     },
     async readWalletLamports() {
       calls.push("wallet");
@@ -432,6 +446,105 @@ describe("token account rent — the emptied account is closed once the sweep se
     assert.match(guard, /rescueError === null/);
     assert.match(guard, /orphan\?\.state !== "failed"/);
     assert.ok(source.includes("ataCloseSignature: tokenAccount.signature"));
+  });
+});
+
+describe("non-paired residuals — named, never sold", () => {
+  const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+  const WSOL = "So11111111111111111111111111111111111111112";
+
+  it("11 Sep: 1.062727 USDC a route left behind is logged and put in the alert, not sold, not paged", async () => {
+    const h = harness({
+      walletTokens: [
+        { mint: USDC, amount: "1062727", uiAmount: 1.062727 },
+        { mint: WSOL, amount: "5000", uiAmount: 0.000005 },
+        { mint: MINT, amount: "7", uiAmount: 0.0000007 },
+      ],
+      otherQuotes: { [USDC]: 10_300_000 },
+    });
+    const out = await live.closeLivePosition(params, h.deps);
+
+    assert.equal(out.nonPaired.balances.length, 1, "wSOL or the paired mint was reported as non-paired");
+    assert.equal(out.nonPaired.balances[0]?.mint, USDC);
+    assert.equal(out.nonPaired.paged, false);
+    assert.equal(h.alerts.length, 0, "a ~0.01 SOL crumb paged the operator");
+    assert.deepEqual(h.swaps.map((s) => s.mint), [MINT], "a token the engine did not choose was sold");
+
+    const note = live.describeNonPairedResiduals(out.nonPaired) ?? "";
+    assert.match(note, /1 non-paired token balance\(s\) left after the close/);
+    assert.match(note, /EPjFWdd5…: 1\.062727/);
+    // The trade's SOL figure keeps its definition: the crumb neither unsettles nor enters it.
+    assert.equal(out.residual.state, "swept");
+    assert.equal(typeof out.walletLamportsAfter, "number");
+  });
+
+  it("pages once the priced total crosses 0.05 SOL, and still sells nothing", async () => {
+    const h = harness({
+      walletTokens: [{ mint: USDC, amount: "9000000", uiAmount: 9 }],
+      otherQuotes: { [USDC]: live.NON_PAIRED_PAGE_LAMPORTS },
+    });
+    const out = await live.closeLivePosition(params, h.deps);
+    assert.equal(out.nonPaired.paged, true);
+    assert.equal(h.alerts.length, 1);
+    assert.match(h.alerts[0] ?? "", /does NOT sell/);
+    assert.deepEqual(h.swaps.map((s) => s.mint), [MINT]);
+  });
+
+  it("an unpriceable token is listed as unpriced, counted, and never guessed into the total", async () => {
+    const h = harness({ walletTokens: [{ mint: "Spam1111", amount: "1000", uiAmount: 1 }] });
+    const out = await live.closeLivePosition(params, h.deps);
+    assert.equal(out.nonPaired.unpriced, 1);
+    assert.equal(out.nonPaired.pricedLamports, 0);
+    assert.match(live.describeNonPairedResiduals(out.nonPaired) ?? "", /unpriced/);
+  });
+
+  it("a listing that cannot be read is UNKNOWN, not clean, and never throws", async () => {
+    const h = harness({ walletTokens: new Error("getParsedTokenAccountsByOwner 429") });
+    const out = await live.closeLivePosition(params, h.deps);
+    assert.match(out.nonPaired.readError ?? "", /429/);
+    assert.match(live.describeNonPairedResiduals(out.nonPaired) ?? "", /UNKNOWN/);
+    assert.equal(out.residual.state, "swept");
+  });
+
+  it("a clean wallet adds nothing to the alert", async () => {
+    const out = await live.closeLivePosition(params, harness().deps);
+    assert.equal(live.describeNonPairedResiduals(out.nonPaired), null);
+  });
+
+  it("END TO END: the close alert carries the residual line", async () => {
+    repos.insertPosition({
+      positionId: "manlet-usdc",
+      poolAddress: `${params.poolAddress}4`,
+      pairName: params.pairName,
+      strategyType: "SPOT",
+      entryPrice: 100,
+      lowerBinPrice: 90,
+      upperBinPrice: 110,
+      virtualSolAmount: 0.9,
+      entryTvl: 50_000,
+      entry24hVolume: 500_000,
+      confidenceScore: 70,
+      reasoningLog: "t",
+      entrySolPriceUsd: 100,
+      executionMode: "LIVE",
+      positionAddress: params.positionAddress,
+      openSignature: "sig-open",
+    });
+    const h = harness({
+      walletTokens: [{ mint: USDC, amount: "1062727", uiAmount: 1.062727 }],
+      otherQuotes: { [USDC]: 10_300_000 },
+    });
+    const notes: Array<string | null | undefined> = [];
+    await agent.forceCloseAllPositions({
+      fetchPool: async () => ({ currentPrice: 105, feeTvlRatio24h: 0.01 }),
+      reflect: async () => null,
+      notify: async (p) => {
+        notes.push(p.residualNote);
+      },
+      closeLive: (p) => live.closeLivePosition(p, h.deps),
+    });
+    assert.equal(notes.length, 1);
+    assert.match(notes[0] ?? "", /EPjFWdd5…: 1\.062727/);
   });
 });
 

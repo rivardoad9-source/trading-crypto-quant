@@ -1982,6 +1982,16 @@ export interface LiveCloseOutcome {
   residual: ResidualSweep;
   /** What became of the emptied paired-token account. */
   tokenAccount: TokenAccountReclaim;
+  /**
+   * Token balances OTHER than the paired token and wSOL, reported and not sold.
+   *
+   * `walletLamportsAfter` keeps its definition regardless: it is the wallet's SOL once the
+   * trade's own token was dealt with, and it stays the final SOL figure for THIS trade.
+   * Whatever these balances are worth is NOT in it, which is exactly why they are reported
+   * next to it rather than folded in or used to null it — a USDC crumb a route left behind
+   * weeks ago would otherwise unsettle every trade that follows.
+   */
+  nonPaired: NonPairedResiduals;
 }
 
 /** Everything `closeLivePosition` does to the outside world, injected for offline tests. */
@@ -1991,6 +2001,8 @@ export interface LiveCloseDeps {
   sweep: ResidualSweepDeps;
   /** Closes the wallet's EMPTY account for `mint`; see `closeEmptyTokenAccount`. */
   closeTokenAccount(mint: string): Promise<CloseTokenAccountOutcome>;
+  /** Every non-zero token balance the wallet holds, SPL Token AND Token-2022. Throws on failure. */
+  listTokenBalances(): Promise<TokenBalanceReading[]>;
   readWalletLamports(): Promise<number | null>;
 }
 
@@ -2011,8 +2023,41 @@ function defaultLiveCloseDeps(poolAddress: string): LiveCloseDeps {
       }
       return closeEmptyTokenAccount(auth, { mint, tokenProgram: shared.tokenProgram.toBase58() });
     },
+    listTokenBalances: () => listWalletTokenBalances(auth.wallet),
     readWalletLamports,
   };
+}
+
+/**
+ * Every non-zero token balance `owner` holds, across BOTH token programs.
+ *
+ * Token-2022 is not optional: a large share of new memecoins are minted under it, and a
+ * listing of the classic program alone would report a clean wallet while one sat there.
+ * Throws when either listing fails — a half listing is not "nothing left".
+ */
+async function listWalletTokenBalances(owner: PublicKey): Promise<TokenBalanceReading[]> {
+  const { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } = await import("@solana/spl-token");
+  const connection = getConnection();
+  const out: TokenBalanceReading[] = [];
+  for (const programId of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
+    const { value } = await connection.getParsedTokenAccountsByOwner(
+      owner,
+      { programId },
+      "confirmed",
+    );
+    for (const { account } of value) {
+      const info = (account.data as { parsed?: { info?: Record<string, unknown> } }).parsed?.info;
+      const tokenAmount = info?.tokenAmount as { amount?: string; uiAmount?: number | null } | undefined;
+      if (typeof info?.mint !== "string" || typeof tokenAmount?.amount !== "string") continue;
+      if (tokenAmount.amount === "0") continue;
+      out.push({
+        mint: info.mint,
+        amount: tokenAmount.amount,
+        uiAmount: typeof tokenAmount.uiAmount === "number" ? tokenAmount.uiAmount : null,
+      });
+    }
+  }
+  return out;
 }
 
 /* ------------------------------------------------------------------ */
@@ -2033,6 +2078,145 @@ export interface TokenAccountReclaim {
   state: "closed" | "absent" | "not-empty" | "skipped" | "failed";
   signature: string | null;
   error: string | null;
+}
+
+/* ------------------------------------------------------------------ */
+/* Non-paired residuals — reported, never sold                         */
+/* ------------------------------------------------------------------ */
+
+/** One non-zero token balance the wallet holds. */
+export interface TokenBalanceReading {
+  mint: string;
+  /** Base units, as a string: it can exceed 2^53. */
+  amount: string;
+  /** The RPC's human amount, for the log line. Null when it did not supply one. */
+  uiAmount: number | null;
+}
+
+export interface NonPairedResiduals {
+  /** Every non-zero balance that is neither wSOL nor the pool's paired token. */
+  balances: Array<TokenBalanceReading & { estimatedLamports: number | null }>;
+  /** Sum of the balances that COULD be priced. Unpriced ones are counted, not guessed. */
+  pricedLamports: number;
+  unpriced: number;
+  /** Why the listing could not be read, when it could not. Null otherwise. */
+  readError: string | null;
+  /** Whether the priced total crossed `NON_PAIRED_PAGE_LAMPORTS` and a page was sent. */
+  paged: boolean;
+}
+
+/**
+ * Above this much estimated SOL, unsold non-paired tokens earn a page of their own.
+ *
+ * 0.05 SOL: the same figure `LIVE_MAX_FAILED_COST_SOL` defaults to — the amount this engine
+ * already treats as worth a human's attention when it leaves the wallet in a day. Below it
+ * (the 1.06 USDC a Jupiter route left behind on 11 Sep is ~0.01 SOL) the balances are named
+ * in the log line and in the close alert, and nobody is woken up for them.
+ */
+export const NON_PAIRED_PAGE_LAMPORTS = 50_000_000;
+
+/** At most this many balances are quoted per close, so a wallet full of airdrops cannot
+ * turn an exit into dozens of HTTP calls. The rest are listed as unpriced. */
+const NON_PAIRED_MAX_QUOTES = 5;
+
+/**
+ * Names every token balance the close left behind that the sweep did not touch.
+ *
+ * The sweep sells exactly one mint — the pool's paired token. Anything else in the wallet is
+ * invisible to it: on 11 Sep 2026 the live wallet held 1.062727 USDC that a Jupiter route had
+ * left behind, and nothing in the engine could see it. That is the defect the sweep was
+ * written for — value sitting in a token while the book reads "done" — at a smaller size.
+ *
+ * It REPORTS and it NEVER SELLS. Deciding to sell an asset the engine did not choose to hold
+ * (an airdrop, a scam token, an operator's own position) is a separate decision with its own
+ * risks, not a default to be slipped into an exit.
+ *
+ * NEVER THROWS: it runs after the position has closed. An unreadable listing is reported as
+ * such (`readError`), never as "nothing left".
+ */
+export async function reportNonPairedResiduals(
+  context: { pairName: string; pairedMint: string | null },
+  deps: {
+    listTokenBalances(): Promise<TokenBalanceReading[]>;
+    quoteToSol(mint: string, amount: bigint): Promise<number>;
+    alert(message: string): Promise<unknown>;
+  },
+): Promise<NonPairedResiduals> {
+  const result: NonPairedResiduals = {
+    balances: [],
+    pricedLamports: 0,
+    unpriced: 0,
+    readError: null,
+    paged: false,
+  };
+
+  let listed: TokenBalanceReading[];
+  try {
+    listed = await deps.listTokenBalances();
+  } catch (err) {
+    result.readError = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[live] ${context.pairName}: could not list the wallet's token balances, so any ` +
+        `non-paired residual is UNKNOWN: ${result.readError}`,
+    );
+    return result;
+  }
+
+  const others = listed.filter(
+    (b) => b.mint !== WSOL_MINT && b.mint !== context.pairedMint && b.amount !== "0",
+  );
+
+  for (const [i, balance] of others.entries()) {
+    let estimatedLamports: number | null = null;
+    if (i < NON_PAIRED_MAX_QUOTES) {
+      try {
+        estimatedLamports = await deps.quoteToSol(balance.mint, BigInt(balance.amount));
+      } catch {
+        estimatedLamports = null;
+      }
+    }
+    if (estimatedLamports === null) result.unpriced += 1;
+    else result.pricedLamports += estimatedLamports;
+    result.balances.push({ ...balance, estimatedLamports });
+  }
+
+  if (result.balances.length === 0) return result;
+
+  const line = describeNonPairedResiduals(result);
+  console.warn(`[live] ${context.pairName}: ${line}`);
+
+  if (result.pricedLamports >= NON_PAIRED_PAGE_LAMPORTS) {
+    result.paged = true;
+    try {
+      await deps.alert(
+        `[live] ${context.pairName}: ${line}. Over the ` +
+          `${NON_PAIRED_PAGE_LAMPORTS / LAMPORTS_PER_SOL} SOL line. The engine does NOT sell ` +
+          `tokens it did not choose to hold — decide by hand.`,
+      );
+    } catch {
+      // A failed page must not turn a closed position into a thrown close.
+    }
+  }
+  return result;
+}
+
+/** The one line: count, then each mint with its human amount and estimated SOL. */
+export function describeNonPairedResiduals(r: NonPairedResiduals): string | null {
+  if (r.readError !== null) return `residual: non-paired token balances UNKNOWN (${r.readError})`;
+  if (r.balances.length === 0) return null;
+  const items = r.balances
+    .map(
+      (b) =>
+        `${b.mint.slice(0, 8)}…: ${b.uiAmount ?? `${b.amount} base units`}` +
+        (b.estimatedLamports === null
+          ? ` (unpriced)`
+          : ` (~${(b.estimatedLamports / LAMPORTS_PER_SOL).toFixed(6)} SOL)`),
+    )
+    .join(", ");
+  return (
+    `residual: ${r.balances.length} non-paired token balance(s) left after the close ` +
+    `(${items}); not sold, and NOT in wallet_lamports_after`
+  );
 }
 
 export const TOKEN_ACCOUNT_SKIPPED: TokenAccountReclaim = {
@@ -2143,6 +2327,20 @@ export async function closeLivePosition(
       : TOKEN_ACCOUNT_SKIPPED;
 
   /*
+   * Then everything the sweep cannot see: balances of OTHER tokens, e.g. what a Jupiter route
+   * left behind. Listed and priced where possible, never sold, and paged only above
+   * `NON_PAIRED_PAGE_LAMPORTS`. Never throws.
+   */
+  const nonPaired = await reportNonPairedResiduals(
+    { pairName: params.pairName, pairedMint: residual.mint },
+    {
+      listTokenBalances: () => deps.listTokenBalances(),
+      quoteToSol: (m, amount) => deps.sweep.quoteToSol(m, amount),
+      alert: (message) => deps.sweep.alert(message),
+    },
+  );
+
+  /*
    * After the sweep, and only if it settled. Read at `confirmed`, so the withdrawal, the
    * reclaimed position rent and the sweep's proceeds are all in the balance. An unsettled
    * sweep leaves this NULL: "not measured" is honest, a balance with value still parked in
@@ -2157,7 +2355,7 @@ export async function closeLivePosition(
     }
   }
 
-  return { closeSignature, signatures, walletLamportsAfter, residual, tokenAccount };
+  return { closeSignature, signatures, walletLamportsAfter, residual, tokenAccount, nonPaired };
 }
 
 /**

@@ -10,6 +10,7 @@ import {
 import {
   LiveEntryRefusedError,
   closeLivePosition,
+  describeNonPairedResiduals,
   isLiveExecutionActive,
   isLivePositionBinCapActive,
   maxLivePositionBins,
@@ -858,7 +859,7 @@ async function settleLiveCloses(
        * reaches the catch below — which would leave ACTIVE a position that no longer
        * exists. `walletLamportsAfter` is null whenever that sweep did not settle.
        */
-      const { closeSignature, walletLamportsAfter, residual, tokenAccount } = await closeLive({
+      const { closeSignature, walletLamportsAfter, residual, tokenAccount, nonPaired } = await closeLive({
         poolAddress: row.pool_address,
         positionAddress: row.position_address ?? "",
         pairName: row.pair_name,
@@ -885,7 +886,11 @@ async function settleLiveCloses(
       });
 
       closed++;
-      deferred.push({ positionId: row.position_id, notify: item.notify });
+      // The close alert names what the sweep could not sell, so it is not only in a log.
+      deferred.push({
+        positionId: row.position_id,
+        notify: { ...item.notify, residualNote: describeNonPairedResiduals(nonPaired) },
+      });
       console.log(
         `[dlmm] closed ${row.pair_name} — ${item.status} — ` +
           `net $${item.realizedPnlUsd.toFixed(2)} (${item.realizedPnlPct.toFixed(2)}%) ` +
