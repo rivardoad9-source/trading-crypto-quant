@@ -387,11 +387,18 @@ export interface ReconciliationReport {
     chainDeltaUsd: number | null;
     driftUsd: number | null;
     overlapping: boolean;
+    /** Anything but "settled" carries no chain figure: its after-balance is not final. */
+    settlement?: "settled" | "unsettled" | "pre-sweep";
   }>;
   /** Closed live positions carrying BOTH balance reads. Only these are in the totals. */
   measured: number;
   /** Closed live positions that could not be measured, and are excluded from the totals. */
   unmeasured: number;
+  /**
+   * Closed live positions whose after-balance was read before the paired token was sold
+   * back to SOL. Excluded from the totals. Optional: an older engine does not send it.
+   */
+  unsettled?: number;
   modelPnlUsd: number;
   chainPnlUsd: number;
   /** chainPnlUsd - modelPnlUsd. Negative = the book is optimistic, the expected sign. */

@@ -43,6 +43,8 @@ function liveRow(over: Partial<SimulatedPositionRow> = {}): SimulatedPositionRow
     opened_at: "2026-09-01 10:00:00",
     closed_at: "2026-09-01 18:00:00",
     realized_pnl_usd: 2.0,
+    // A row closed by a build with the residual sweep, whose after-balance is final.
+    residual_sweep: "swept",
     ...over,
   } as SimulatedPositionRow;
 }
@@ -137,6 +139,84 @@ describe("wallet reconciliation — the drift is measured, not assumed", () => {
   it("ignores a live position that is still open", () => {
     const report = reconcilePositions([liveRow({ status: "ACTIVE", closed_at: null })]);
     assert.equal(report.positions.length, 0);
+  });
+});
+
+describe("wallet reconciliation — an after-balance read before the token was sold is not a result", () => {
+  /*
+   * 11 Sep 2026, MANLET-SOL, the engine's first successful live trade. Model +$9.49. The
+   * close returned SOL and ~0.84 SOL worth of MANLET; nothing sold the token, the after
+   * read happened with it still in the wallet, and this module printed
+   * "wallet says $-117.68, drift $-127.16". The row below is that row's shape: before
+   * 2.880993680 SOL, after 1.700338862 SOL, closed before the sweep existed.
+   */
+  const manlet = (over: Partial<SimulatedPositionRow> = {}) =>
+    liveRow({
+      pair_name: "MANLET-SOL",
+      realized_pnl_usd: 9.49,
+      entry_sol_price_usd: 99.67,
+      wallet_lamports_before: 2_880_993_680,
+      wallet_lamports_after: 1_700_338_862,
+      residual_sweep: null,
+      ...over,
+    });
+
+  it("reports a pre-sweep row as NOT SETTLED, with no chain figure and no drift", () => {
+    const report = reconcilePositions([manlet()]);
+
+    assert.equal(report.measured, 0);
+    assert.equal(report.unsettled, 1);
+    assert.equal(report.unmeasured, 0, "an unsettled row was filed as a missing read");
+    assert.equal(report.positions[0]?.settlement, "pre-sweep");
+    // Not a corrected number — no number.
+    assert.equal(report.positions[0]?.chainDeltaSol, null);
+    assert.equal(report.positions[0]?.chainDeltaUsd, null);
+    assert.equal(report.positions[0]?.driftUsd, null);
+    assert.equal(report.chainPnlUsd, 0);
+    assert.equal(report.driftPctOfModel, null, "an unsettled book was given a drift percentage");
+
+    const line = describeReconciliation(report);
+    assert.match(line, /NOT SETTLED/);
+    assert.doesNotMatch(line, /-117|-127|wallet says/, "the unsettled figure leaked into the report");
+  });
+
+  it("treats a failed or unmeasured sweep as unsettled even if an after-balance is present", () => {
+    for (const state of ["failed", "unmeasured"]) {
+      const report = reconcilePositions([manlet({ residual_sweep: state })]);
+      assert.equal(report.positions[0]?.settlement, "unsettled", state);
+      assert.equal(report.positions[0]?.driftUsd, null, state);
+      assert.equal(report.measured, 0, state);
+    }
+  });
+
+  it("keeps an unsettled row out of the totals of the settled rows beside it", () => {
+    const report = reconcilePositions([
+      manlet({ opened_at: "2026-09-01 00:00:00", closed_at: "2026-09-01 02:00:00" }),
+      liveRow({
+        opened_at: "2026-09-02 00:00:00",
+        closed_at: "2026-09-02 02:00:00",
+        realized_pnl_usd: 1.0,
+        wallet_lamports_before: 3 * LAMPORTS,
+        wallet_lamports_after: 3.01 * LAMPORTS,
+        residual_sweep: "dust",
+      }),
+    ]);
+
+    assert.equal(report.measured, 1);
+    assert.equal(report.unsettled, 1);
+    assert.ok(Math.abs(report.modelPnlUsd - 1.0) < 1e-9, "the unsettled row's $9.49 was summed");
+    assert.ok(Math.abs(report.chainPnlUsd - 1.0) < 1e-6, `chain ${report.chainPnlUsd}`);
+    assert.match(describeReconciliation(report), /1 NOT SETTLED and excluded/);
+  });
+
+  it("reconciles a row an operator settled by hand, as settled", () => {
+    // The hand-settled MANLET row: after = the balance once the operator's sell landed.
+    const report = reconcilePositions([
+      manlet({ residual_sweep: "operator", wallet_lamports_after: 2_961_019_706 }),
+    ]);
+    assert.equal(report.positions[0]?.settlement, "settled");
+    assert.equal(report.measured, 1);
+    assert.ok((report.positions[0]?.chainDeltaSol ?? 0) > 0, "a profitable trade read as a loss");
   });
 });
 

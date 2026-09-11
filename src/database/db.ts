@@ -117,6 +117,15 @@ export function initDatabase(): void {
   addColumnIfMissing("simulated_positions", "wallet_lamports_before", "INTEGER");
   addColumnIfMissing("simulated_positions", "wallet_lamports_after", "INTEGER");
   addColumnIfMissing("simulated_positions", "rent_paid_lamports", "INTEGER");
+  /*
+   * What became of the paired token a LIVE close returned to the wallet:
+   * swept | dust | failed | unmeasured, or `operator` when a human settled it by hand.
+   * NULL on every row closed before the sweep existed — and those rows' after-balances
+   * were read with the token still unsold, which `reconcilePositions` says out loud
+   * instead of reconciling them as if they were final.
+   */
+  addColumnIfMissing("simulated_positions", "residual_sweep", "TEXT");
+  addColumnIfMissing("simulated_positions", "sweep_signature", "TEXT");
 
   /*
    * Candidates dropped by the execution guard (operator denylist, or the execution

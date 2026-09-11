@@ -45,9 +45,10 @@ export default function Reconciliation() {
   );
 
   if (failed || !report) return null;
+  const unsettled = report.unsettled ?? 0;
   // Nothing has closed on-chain yet. An empty card claiming "$0.00 drift" would assert a
-  // check that never ran.
-  if (report.measured === 0 && report.unmeasured === 0) return null;
+  // check that never ran. An UNSETTLED close is not "nothing" and keeps the card up.
+  if (report.measured === 0 && report.unmeasured === 0 && unsettled === 0) return null;
 
   const drifted = report.measured > 0;
 
@@ -75,15 +76,27 @@ export default function Reconciliation() {
         <span className="font-mono text-[10px] text-zinc-600">
           {report.measured} measured
           {report.unmeasured > 0 && ` · ${report.unmeasured} unmeasured`}
+          {unsettled > 0 && ` · ${unsettled} not settled`}
         </span>
       </div>
 
+      {unsettled > 0 && (
+        <p className="mx-4 mt-3 rounded border border-amber-900/40 bg-amber-950/20 px-2 py-1.5 text-[10px] leading-relaxed text-amber-500/80">
+          {unsettled} closed position{unsettled === 1 ? " is" : "s are"} NOT SETTLED: the
+          wallet was read before the paired token the close returned was sold back to SOL,
+          so that balance is not the trade&apos;s result. Excluded from both figures — not
+          corrected, excluded.
+        </p>
+      )}
+
       {!drifted ? (
         <p className="px-4 py-6 text-[11px] leading-relaxed text-zinc-500">
-          {report.unmeasured} closed live position
-          {report.unmeasured === 1 ? "" : "s"}, none measurable — the wallet balance was
-          not read at open or at close, so the book cannot be checked against the chain.
-          Positions opened from here on carry both readings.
+          {report.unmeasured + unsettled} closed live position
+          {report.unmeasured + unsettled === 1 ? "" : "s"}, none measurable
+          {report.unmeasured > 0
+            ? " — the wallet balance was not read at open or at close"
+            : ""}
+          , so the book cannot be checked against the chain yet.
         </p>
       ) : (
         <div className="space-y-3 px-4 py-4">

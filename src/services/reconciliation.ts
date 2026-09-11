@@ -39,6 +39,19 @@ import type { SimulatedPositionRow } from "../database/types.js";
  * per-position figures overlap and only the aggregate is meaningful. `overlapping` says
  * which case a reading is in, so a caller can never quote an attribution the data does
  * not support.
+ *
+ * AND A SECOND ONE, learned from the first live trade that worked. A close returns SOL
+ * AND the paired token, so a balance read before that token is sold back is not the
+ * trade's result — it is the trade's result minus whatever is still parked in a memecoin.
+ * On 11 Sep 2026 MANLET-SOL booked +$9.49 and this module reported "wallet says
+ * $-117.68, drift $-127.16", because its after-balance was read with ~0.84 SOL of value
+ * still unsold (and at `finalized`, ~0.42 SOL behind its own final close transaction).
+ * Nothing in that row was CORRECTED here, and nothing will be: `residual_sweep` says
+ * whether a row's after-balance is final, and a row where it is not — including every row
+ * closed before the sweep existed — is reported as NOT SETTLED and kept out of both totals,
+ * exactly like a row with a missing read. Settled means `swept` or `dust` (the engine sold
+ * it, or there was nothing worth selling) or `operator` (a human sold it and wrote the
+ * measured balance, via `scripts/settleResidualByHand.cjs`).
  */
 
 /** One closed LIVE position, model against chain. */
@@ -62,6 +75,25 @@ export interface PositionReconciliation {
    * delta a property of the wallet rather than of this trade.
    */
   overlapping: boolean;
+  /**
+   * Whether the after-balance is the trade's FINAL effect (see the module note).
+   *
+   *  - `settled`    the residual token was swept, was dust, or was settled by an operator.
+   *  - `unsettled`  the sweep failed or could not measure the balance.
+   *  - `pre-sweep`  closed by a build that never sold the residual, so its after-balance
+   *                 was read with the paired token still in the wallet.
+   *
+   * Anything but `settled` gets NO chain figure and NO drift — not a corrected one, none.
+   */
+  settlement: "settled" | "unsettled" | "pre-sweep";
+}
+
+const SETTLED_SWEEPS = new Set(["swept", "dust", "operator"]);
+
+function settlementOf(row: SimulatedPositionRow): PositionReconciliation["settlement"] {
+  const sweep = row.residual_sweep ?? null;
+  if (sweep === null) return "pre-sweep";
+  return SETTLED_SWEEPS.has(sweep) ? "settled" : "unsettled";
 }
 
 export interface ReconciliationReport {
@@ -69,8 +101,15 @@ export interface ReconciliationReport {
   positions: PositionReconciliation[];
   /** How many of them carry both balance reads. */
   measured: number;
-  /** How many could not be measured, and so are excluded from every total below. */
+  /** How many are settled but miss a balance read, and so are excluded from every total. */
   unmeasured: number;
+  /**
+   * How many have an after-balance that is NOT FINAL (residual token unsold, or closed
+   * before the sweep existed). Excluded from every total, and counted apart from
+   * `unmeasured` because the remedy differs: a missing read is gone for good, an unsold
+   * token needs a human to sell it and record the balance.
+   */
+  unsettled: number;
   /** Sum of `modelPnlUsd` over MEASURED positions only, so the two totals compare. */
   modelPnlUsd: number;
   /** Sum of `chainDeltaUsd` over the same positions. */
@@ -126,8 +165,10 @@ export function reconcilePositions(
   const results: PositionReconciliation[] = closed.map((row) => {
     const before = row.wallet_lamports_before;
     const after = row.wallet_lamports_after;
+    const settlement = settlementOf(row);
 
     const measurable =
+      settlement === "settled" &&
       typeof before === "number" &&
       Number.isFinite(before) &&
       typeof after === "number" &&
@@ -160,10 +201,12 @@ export function reconcilePositions(
       chainDeltaUsd,
       driftUsd: chainDeltaUsd === null ? null : chainDeltaUsd - modelPnlUsd,
       overlapping: live.some((other) => other.id !== row.id && overlaps(row, other)),
+      settlement,
     };
   });
 
   const measured = results.filter((r) => r.chainDeltaUsd !== null);
+  const unsettled = results.filter((r) => r.settlement !== "settled").length;
 
   const modelPnlUsd = measured.reduce((sum, r) => sum + r.modelPnlUsd, 0);
   const chainPnlUsd = measured.reduce((sum, r) => sum + (r.chainDeltaUsd ?? 0), 0);
@@ -172,7 +215,8 @@ export function reconcilePositions(
   return {
     positions: results,
     measured: measured.length,
-    unmeasured: results.length - measured.length,
+    unmeasured: results.length - measured.length - unsettled,
+    unsettled,
     modelPnlUsd,
     chainPnlUsd,
     driftUsd,
@@ -195,11 +239,24 @@ export function reconcilePositions(
  * claim as an unlabelled rebased equity figure.
  */
 export function describeReconciliation(report: ReconciliationReport): string {
+  const unsettledNote =
+    report.unsettled > 0
+      ? `${report.unsettled} NOT SETTLED and excluded (the after-balance was read before ` +
+        `the paired token was sold back to SOL, so it is not the trade's result)`
+      : "";
+
   if (report.measured === 0) {
-    return report.unmeasured === 0
-      ? `[reconcile] no closed live positions yet — nothing to reconcile`
-      : `[reconcile] ${report.unmeasured} closed live position(s), NONE measurable ` +
-          `(missing a wallet balance read at open or close); model PnL cannot be checked`;
+    if (report.unmeasured === 0 && report.unsettled === 0) {
+      return `[reconcile] no closed live positions yet — nothing to reconcile`;
+    }
+    return (
+      `[reconcile] ${report.unmeasured + report.unsettled} closed live position(s), NONE ` +
+      `measurable; model PnL cannot be checked` +
+      (report.unmeasured > 0
+        ? `; ${report.unmeasured} missing a wallet balance read at open or close`
+        : "") +
+      (unsettledNote ? `; ${unsettledNote}` : "")
+    );
   }
 
   const pct =
@@ -210,6 +267,7 @@ export function describeReconciliation(report: ReconciliationReport): string {
     `$${report.modelPnlUsd.toFixed(2)}, wallet says $${report.chainPnlUsd.toFixed(2)}, ` +
     `drift $${report.driftUsd.toFixed(2)} (${pct} of model)` +
     (report.unmeasured > 0 ? `; ${report.unmeasured} unmeasured and excluded` : "") +
+    (unsettledNote ? `; ${unsettledNote}` : "") +
     (report.anyOverlap
       ? `; positions OVERLAPPED, so per-position attribution is not meaningful — read ` +
         `the total only`

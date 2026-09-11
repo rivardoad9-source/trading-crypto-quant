@@ -553,6 +553,13 @@ interface PendingLiveClose {
   notify: Parameters<typeof sendPositionClosed>[0];
 }
 
+/** The on-chain closer `settleLiveCloses` calls — the bridge's, except under test. */
+type LiveCloser = (params: {
+  poolAddress: string;
+  positionAddress: string;
+  pairName: string;
+}) => ReturnType<typeof closeLivePosition>;
+
 /**
  * Positions with an on-chain close in flight.
  *
@@ -830,6 +837,8 @@ function isLivePosition(row: SimulatedPositionRow): boolean {
  */
 async function settleLiveCloses(
   pending: PendingLiveClose[],
+  /** Injectable for tests only; production always closes through the bridge. */
+  closeLive: LiveCloser = closeLivePosition,
 ): Promise<{
   closed: number;
   deferred: DeferredCloseWork[];
@@ -843,7 +852,13 @@ async function settleLiveCloses(
   for (const item of pending) {
     const { row } = item;
     try {
-      const { closeSignature, walletLamportsAfter } = await closeLivePosition({
+      /*
+       * Returns once the close CONFIRMED, whatever became of the residual token sweep:
+       * a failed sweep is reported inside the outcome and has already paged, and never
+       * reaches the catch below — which would leave ACTIVE a position that no longer
+       * exists. `walletLamportsAfter` is null whenever that sweep did not settle.
+       */
+      const { closeSignature, walletLamportsAfter, residual } = await closeLive({
         poolAddress: row.pool_address,
         positionAddress: row.position_address ?? "",
         pairName: row.pair_name,
@@ -863,6 +878,8 @@ async function settleLiveCloses(
           closeReason: item.closeReason,
           closeSignature,
           walletLamportsAfter,
+          residualSweep: residual.state,
+          sweepSignature: residual.signature,
         });
       });
 
@@ -898,12 +915,16 @@ async function settleLiveCloses(
  * must not surface as a monitoring failure. `runPostMortemSweep` retries any reflection
  * that does not land here.
  */
-async function settleClosedPositions(deferred: DeferredCloseWork[]): Promise<number> {
+async function settleClosedPositions(
+  deferred: DeferredCloseWork[],
+  reflect: (row: SimulatedPositionRow) => Promise<string | null> = reflectOnPosition,
+  notify: typeof sendPositionClosed = sendPositionClosed,
+): Promise<number> {
   let reflected = 0;
 
   for (const item of deferred) {
     try {
-      await sendPositionClosed(item.notify);
+      await notify(item.notify);
     } catch (err) {
       console.error("[dlmm] close notification failed:", err);
     }
@@ -912,7 +933,7 @@ async function settleClosedPositions(deferred: DeferredCloseWork[]): Promise<num
       // Re-read so the analysis sees the persisted close values, not pre-close state.
       const closedRow = getPositionById(item.positionId);
       if (closedRow) {
-        const text = await reflectOnPosition(closedRow);
+        const text = await reflect(closedRow);
         if (text) reflected++;
       }
     } catch (err) {
@@ -1047,6 +1068,10 @@ export async function forceCloseAllPositions(options: {
   reason?: string;
   fetchPool?: ManualClosePoolSource;
   reflect?: (row: SimulatedPositionRow) => Promise<string | null>;
+  /** Tests only: the on-chain closer. Production always uses `closeLivePosition`. */
+  closeLive?: LiveCloser;
+  /** Tests only: the live-close notification. Production always uses Telegram. */
+  notify?: typeof sendPositionClosed;
 } = {}): Promise<ManualCloseResult> {
   /*
    * Queued on the position lock rather than skipped: an operator asking for a flat book
@@ -1060,7 +1085,7 @@ export async function forceCloseAllPositions(options: {
 
   if (pendingLiveCloses.length === 0) return result;
 
-  const settled = await settleLiveCloses(pendingLiveCloses);
+  const settled = await settleLiveCloses(pendingLiveCloses, options.closeLive);
   result.closed += settled.closed;
   for (const item of pendingLiveCloses) {
     if (settled.failed.some((f) => f.positionId === item.row.position_id)) continue;
@@ -1075,8 +1100,13 @@ export async function forceCloseAllPositions(options: {
     });
   }
 
-  // Alerts and post-mortems, outside the lock like every other close path.
-  await settleClosedPositions(settled.deferred);
+  // Alerts and post-mortems, outside the lock like every other close path. The injected
+  // `reflect` reaches the live rows too — it used to stop at the paper ones.
+  await settleClosedPositions(
+    settled.deferred,
+    options.reflect ?? reflectOnPosition,
+    options.notify ?? sendPositionClosed,
+  );
 
   return result;
 }
