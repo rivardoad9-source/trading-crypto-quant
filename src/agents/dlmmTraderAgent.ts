@@ -91,6 +91,7 @@ import {
   getPoolExitRecord,
   getRecentFailurePostMortems,
   getPositionById,
+  settleOpenedLiveAttempt,
   hasActivePositionForPool,
   insertPosition,
   recordScanFunnel,
@@ -883,6 +884,17 @@ async function settleLiveCloses(
           sweepSignature: residual.signature,
           ataCloseSignature: tokenAccount.signature,
         });
+        /*
+         * And the attempt ledger's `opened` row, which was written with no "after" at open.
+         * Only a SETTLED balance is written there; bookkeeping must never fail a close.
+         */
+        if (walletLamportsAfter !== null && row.position_address) {
+          try {
+            settleOpenedLiveAttempt(row.position_address, walletLamportsAfter);
+          } catch (bookkeeping) {
+            console.warn(`[live] could not settle the attempt row for ${row.pair_name}:`, bookkeeping);
+          }
+        }
       });
 
       closed++;
