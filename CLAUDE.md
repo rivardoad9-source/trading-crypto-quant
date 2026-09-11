@@ -275,6 +275,48 @@ Four guards, and `docs/audits/2026-09-11-recurrence-proof.md` is the per-class p
    `unmeasured`, never a drift of 0. It is a DIFFERENT question from `reconcilePositions`
    — that one is per closed trade, this one is the book's LEVEL — and they are not merged.
 
+### The first successful exit left its proceeds in a memecoin (11 Sep 2026)
+
+MANLET-SOL, row `id 4`: the engine's first live trade to open, be monitored and close
+itself (`CLOSED_PROFIT`, +$9.49 booked). `closePosition` is withdraw + claim + close, so it
+returns SOL **and the paired token** — and nothing sold the token. ~0.84 SOL of value sat
+unmonitored until an operator sold it by hand 37 minutes later. The failed-open path had an
+auto-unwind; the path every exit takes had none.
+
+The reconciliation then printed `wallet says $-117.68, drift $-127.16` for that trade, and
+**the brief's explanation was only two-thirds of it.** The stored `wallet_lamports_after`
+(1.700338862 SOL) is exactly the balance BEFORE the final close transaction: `getBalance`
+was called with no commitment, i.e. the provider's `finalized`, ~13 s behind a transaction
+the executor had just seen confirm. So −0.84 SOL was the unsold token and −0.42 SOL was
+commitment lag.
+
+- **`closeLivePosition` sweeps after the close confirms**: `sweepResidualPairedToken`
+  re-reads the paired balance, quotes it, and sells anything over `RESIDUAL_DUST_LAMPORTS`
+  (0.001 SOL) through `executeJupiterSwap` — no second swap path. Every live exit (TP, SL,
+  out-of-range, timeout, `/close_all`) goes through `settleLiveCloses` → here. The CLI
+  scripts call the SDK's `closePosition` on EMPTY positions only, which return no token.
+- **It NEVER throws.** The position is already gone; a thrown sweep would leave an ACTIVE
+  row for a position that no longer exists. A failure is returned, logged and paged with
+  amount, mint and estimated value first (`sendError` truncates at 500).
+- **Idempotent**: it sells what the chain holds now, so a re-run finds dust and sends nothing.
+- **`wallet_lamports_after` is read only when the sweep SETTLED** (`swept` / `dust`), and at
+  `confirmed`. Otherwise NULL. An unreadable balance is `unmeasured`, never dust —
+  `readTokenBalanceOrNull` exists because `readTokenBalance` collapses both to 0n, which is
+  right for a deposit and wrong here.
+- **`residual_sweep` / `sweep_signature`** record the outcome. `reconcilePositions` treats
+  anything but `swept` / `dust` / `operator` as NOT SETTLED — including NULL, i.e. every row
+  closed before this — and gives it no chain figure and no drift, excluded from both totals
+  and counted as `unsettled`. Nothing is corrected. `scripts/settleResidualByHand.cjs` is the
+  one-off, dry-run-by-default, operator-run way to record a hand sale as `operator`.
+- **Known limit**: the sweep sells the mint's WHOLE balance. At
+  `LIVE_MAX_CONCURRENT_POSITIONS=1` that is exactly the residual (the closing row still fills
+  the book, so no entry can be mid-flight). Above 1, an open on another pool with the SAME
+  mint could be caught between its swap and its deposit; that open would then fail into the
+  ordinary unwind.
+- The failed-open unwind is unchanged, except that its balance reads now also use `confirmed`.
+
+`src/tests/residualSweep.test.ts`. **Still unproven by a funded exit.**
+
 ### The bench, after 11 Sep: the window and the NULL key
 
 **Two things were wrong, and the second is the one that stings.**

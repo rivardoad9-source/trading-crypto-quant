@@ -520,9 +520,24 @@ export interface WalletBalance {
  * balance that could not be read is not a balance of zero, nor of "enough": the
  * three-state rule this codebase applies to authority flags and gas estimates applies
  * here too. `runLivePreflight` turns the throw into a refusal to start.
+ *
+ * `commitment` defaults to the PROVIDER's default, which on every mainstream RPC is
+ * `finalized` — ~13 seconds behind a transaction the engine has just seen confirm. That
+ * is harmless for the dashboard and the boot gate and wrong for a balance read taken
+ * immediately after a confirmation: on 11 Sep 2026 the MANLET-SOL close recorded a
+ * `wallet_lamports_after` of 1.700338862 SOL, which is exactly the balance BEFORE the
+ * final close transaction (+0.415963 SOL) had finalized. Callers measuring the effect of
+ * a transaction they just confirmed pass `"confirmed"`, the same level the executor
+ * confirms at and `readTokenBalance` already reads at.
  */
-export async function getWalletBalanceSol(address: string): Promise<WalletBalance> {
-  const result = await rpc<{ value: number } | number>("getBalance", [address]);
+export async function getWalletBalanceSol(
+  address: string,
+  options: { commitment?: "processed" | "confirmed" | "finalized" } = {},
+): Promise<WalletBalance> {
+  const result = await rpc<{ value: number } | number>(
+    "getBalance",
+    options.commitment ? [address, { commitment: options.commitment }] : [address],
+  );
 
   // Every mainstream provider returns the RpcResponse envelope { context, value }.
   // A bare number is tolerated so an unusual provider degrades to working, not to

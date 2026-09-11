@@ -303,6 +303,8 @@ export function closePosition(input: ClosePositionInput): void {
             close_reason = @closeReason,
             close_signature = @closeSignature,
             wallet_lamports_after = @walletLamportsAfter,
+            residual_sweep = @residualSweep,
+            sweep_signature = @sweepSignature,
             closed_at = CURRENT_TIMESTAMP,
             last_checked_at = CURRENT_TIMESTAMP
       WHERE position_id = @positionId`,
@@ -310,6 +312,8 @@ export function closePosition(input: ClosePositionInput): void {
     ...input,
     closeSignature: input.closeSignature ?? null,
     walletLamportsAfter: input.walletLamportsAfter ?? null,
+    residualSweep: input.residualSweep ?? null,
+    sweepSignature: input.sweepSignature ?? null,
   });
 }
 

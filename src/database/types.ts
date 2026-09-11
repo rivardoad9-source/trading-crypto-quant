@@ -12,6 +12,12 @@ export interface SimulatedPositionRow {
   /** Chain-measured wallet lamports either side of a LIVE trade. NULL = not measured. */
   wallet_lamports_before?: number | null;
   wallet_lamports_after?: number | null;
+  /**
+   * swept | dust | failed | unmeasured | operator — what became of the paired token the
+   * close returned. NULL on rows closed before the residual sweep existed.
+   */
+  residual_sweep?: string | null;
+  sweep_signature?: string | null;
   position_id: string;
   pool_address: string;
   pair_name: string;
@@ -162,4 +168,10 @@ export interface ClosePositionInput {
    * `realizedPnlUsd` — a model output — can finally be checked. Null when unmeasured.
    */
   walletLamportsAfter?: number | null;
+  /**
+   * The residual sweep's state for a LIVE close. Absent for paper closes. Recorded even
+   * when it failed: "the token was never sold" is the fact the reconciliation needs.
+   */
+  residualSweep?: string | null;
+  sweepSignature?: string | null;
 }

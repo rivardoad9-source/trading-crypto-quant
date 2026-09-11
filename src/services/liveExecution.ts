@@ -41,6 +41,8 @@ import {
   maxDepositLamports,
   executeJupiterSwap,
   getConnection,
+  getJupiterQuote,
+  resolveSlippageBps,
   onchainConfig,
   quoteOpenCost,
   rehearseOpenPosition,
@@ -715,16 +717,44 @@ async function readTokenBalance(
   mint: PublicKey,
   tokenProgramId: PublicKey,
 ): Promise<bigint> {
+  // No account, or an unreadable one. Zero is the safe reading HERE: it deposits nothing
+  // on that side rather than asserting a balance we could not confirm.
+  return (await readTokenBalanceOrNull(owner, mint, tokenProgramId)) ?? 0n;
+}
+
+/**
+ * The same read, with "could not read" kept apart from "holds nothing".
+ *
+ * `readTokenBalance` collapses both to 0n, which is right for a DEPOSIT (deposit nothing
+ * you cannot confirm) and wrong for the residual sweep after an exit: there, a zero means
+ * "settled, nothing left to sell" and licenses recording the wallet balance as the trade's
+ * final effect. An RPC hiccup must not earn that. A token account that does not exist is a
+ * genuine zero — the SDK closes nothing here, but a wallet that never held the mint has no
+ * ATA — and is reported as one.
+ */
+async function readTokenBalanceOrNull(
+  owner: PublicKey,
+  mint: PublicKey,
+  tokenProgramId: PublicKey,
+): Promise<bigint | null> {
   const { getAssociatedTokenAddressSync } = await import("@solana/spl-token");
   const ata = getAssociatedTokenAddressSync(mint, owner, true, tokenProgramId);
 
   try {
     const balance = await getConnection().getTokenAccountBalance(ata, "confirmed");
     return BigInt(balance.value.amount);
-  } catch {
-    // No account, or an unreadable one. Zero is the safe reading: it deposits nothing
-    // on that side rather than asserting a balance we could not confirm.
-    return 0n;
+  } catch (err) {
+    try {
+      const info = await getConnection().getAccountInfo(ata, "confirmed");
+      if (info === null) return 0n;
+    } catch {
+      // Fall through: neither read answered, so the balance is unknown.
+    }
+    console.warn(
+      `[live] could not read the ${mint.toBase58()} balance: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    );
+    return null;
   }
 }
 
@@ -771,7 +801,9 @@ async function readWalletLamports(): Promise<number | null> {
   const address = liveMicroCapital.walletAddress;
   if (!address) return null;
   try {
-    return (await getWalletBalanceSol(address)).lamports;
+    // `confirmed`, not the provider default: every read here measures the effect of a
+    // transaction the executor has just seen CONFIRM. See `getWalletBalanceSol`.
+    return (await getWalletBalanceSol(address, { commitment: "confirmed" })).lamports;
   } catch (err) {
     console.warn(
       `[live] could not read the wallet balance for reconciliation: ` +
@@ -1666,49 +1698,342 @@ export async function openLivePosition(params: {
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* Residual sweep — the exit's second half                             */
+/* ------------------------------------------------------------------ */
+
 /**
- * Closes a real position: withdraws every bin, claims the fees and reclaims the rent,
- * atomically per transaction via `shouldClaimAndClose`.
+ * Below this many lamports of estimated SOL out, a residual balance is DUST: left where it
+ * is, and the exit counts as settled.
  *
- * Returns the LAST signature, which is the one that actually closed the account. A
- * partial run raises `DlmmPartialExecutionError` from the executor and is deliberately
- * NOT caught here — the caller must not mark a half-closed position as closed.
+ * 0.001 SOL. A Jupiter sell costs a base fee plus a priority fee that `sendAndConfirm`
+ * escalates on a rebuild, so selling much less than this can spend more than it recovers,
+ * and a route for a crumb is the likeliest quote to fail and page a human over nothing.
+ * Against the positions this engine opens (~0.8-1.8 SOL) it is well under a tenth of a
+ * percent, which is below what the reconciliation can meaningfully resolve anyway.
  */
-export async function closeLivePosition(params: {
-  poolAddress: string;
-  positionAddress: string;
-  pairName: string;
-}): Promise<{
+export const RESIDUAL_DUST_LAMPORTS = 1_000_000;
+
+/**
+ * What became of the paired token a close returned to the wallet.
+ *
+ *  - `swept`      a sell back to SOL CONFIRMED.
+ *  - `dust`       nothing worth selling was there (zero, or quoted under the dust line).
+ *  - `failed`     there was something to sell and the sell (or its quote) did not land.
+ *  - `unmeasured` the balance or the pool's paired mint could not be read, so nobody
+ *                 knows whether value is still sitting in the token.
+ *
+ * Only the first two are SETTLED — the state in which the wallet's SOL balance is the
+ * trade's final effect and may be recorded as `wallet_lamports_after`.
+ *
+ * The `residual_sweep` column can hold one more value the engine never writes, `operator`
+ * (see `scripts/settleResidualByHand.cjs` and `reconciliation.ts`).
+ */
+export type ResidualSweepState = "swept" | "dust" | "failed" | "unmeasured";
+
+export interface ResidualSweep {
+  state: ResidualSweepState;
+  /** The paired mint, or null when it could not be resolved. */
+  mint: string | null;
+  /** Base units found in the wallet. String: it can exceed 2^53. Null when unread. */
+  amount: string | null;
+  /** Jupiter's quoted SOL out for `amount`, in lamports, or null when never quoted. */
+  estimatedLamports: number | null;
+  /** The confirmed sell, when there was one. */
+  signature: string | null;
+  error: string | null;
+}
+
+/** Whether the wallet balance after this sweep is the trade's final effect. */
+export function isSettledSweep(sweep: Pick<ResidualSweep, "state">): boolean {
+  return sweep.state === "swept" || sweep.state === "dust";
+}
+
+/**
+ * Everything the sweep touches, injected so the whole decision is testable offline.
+ * The production implementation is `defaultResidualSweepDeps`, which reaches the chain
+ * only through `executeJupiterSwap` — the swap path every entry and every failed-open
+ * unwind already uses. There is deliberately no second swap path.
+ */
+export interface ResidualSweepDeps {
+  resolvePairedMint(): Promise<string>;
+  /** Null when the balance could not be READ; 0n only when it is genuinely zero. */
+  readBalance(mint: string): Promise<bigint | null>;
+  /** Estimated SOL out, in lamports. Read-only. */
+  quoteToSol(mint: string, amount: bigint): Promise<number>;
+  /** Sells `amount` to SOL and returns the CONFIRMED signature, or throws. */
+  swapToSol(mint: string, amount: bigint): Promise<string>;
+  /** Pages the operator. Its own failure is swallowed by the caller. */
+  alert(message: string): Promise<unknown>;
+}
+
+/**
+ * Sells the paired token a confirmed close returned to the wallet back to SOL.
+ *
+ * WHY. `closePosition` is withdraw + claim + close: it returns SOL AND the paired token,
+ * and until 11 Sep 2026 nothing sold the token. The engine's first successful live trade
+ * (MANLET-SOL, +$9.49 booked) left ~0.84 SOL of value sitting as a memecoin that nothing
+ * monitored and no entry could size against, and it became SOL only because an operator
+ * happened to sell it by hand 37 minutes later. The failed-open path had an auto-unwind
+ * for months; the successful path — the one that runs on every exit — had none.
+ *
+ * NEVER THROWS. The position is already closed on-chain when this runs, so no outcome of
+ * the sweep may stop the row being marked closed: a thrown sweep would leave an ACTIVE row
+ * describing a position that no longer exists, and the monitor would retry a close the
+ * program must refuse. A failure is RETURNED, logged, and paged — with the amount, the
+ * mint and the estimated value first, because `sendError` truncates and those are what a
+ * human needs to act.
+ *
+ * IDEMPOTENT. It sells what the wallet holds NOW, re-read from the chain, never an amount
+ * carried in from the close. Run again on a wallet already swept it finds dust and sends
+ * nothing.
+ *
+ * WHAT IT SELLS IS THE WHOLE BALANCE OF THE MINT, which is exactly the residual at the
+ * shipped `LIVE_MAX_CONCURRENT_POSITIONS=1`: the row is still ACTIVE while this runs, so
+ * the book is full and no entry can be mid-flight holding the same token. Above 1, an open
+ * on ANOTHER pool paired with the SAME mint could in principle be between its swap and its
+ * deposit; its deposit would then fail and take the ordinary failed-open unwind. Rare, and
+ * bounded, but it is a real limit of the per-mint balance and is stated rather than hidden.
+ */
+export async function sweepResidualPairedToken(
+  context: { pairName: string; positionAddress: string },
+  deps: ResidualSweepDeps,
+  dustLamports: number = RESIDUAL_DUST_LAMPORTS,
+): Promise<ResidualSweep> {
+  const result: ResidualSweep = {
+    state: "unmeasured",
+    mint: null,
+    amount: null,
+    estimatedLamports: null,
+    signature: null,
+    error: null,
+  };
+
+  const page = async (headline: string): Promise<void> => {
+    const message =
+      `[live] ${context.pairName}: ${headline} ` +
+      `Position ${context.positionAddress} IS CLOSED on-chain and its row is marked ` +
+      `closed; only the residual token is at stake. Sell it back to SOL by hand. ` +
+      `wallet_lamports_after was left NULL for this trade, because the balance is not final.`;
+    console.error(message);
+    try {
+      await deps.alert(message);
+    } catch {
+      // A failed page must not turn a closed position into a thrown close.
+    }
+  };
+
+  try {
+    result.mint = await deps.resolvePairedMint();
+  } catch (err) {
+    result.error = err instanceof Error ? err.message : String(err);
+    await page(
+      `RESIDUAL TOKEN NOT SWEPT — could not resolve the pool's paired mint ` +
+        `(${result.error}), so any token the close returned is still in the wallet, ` +
+        `amount and value UNKNOWN.`,
+    );
+    return result;
+  }
+  const mint = result.mint;
+
+  let balance: bigint | null;
+  try {
+    balance = await deps.readBalance(mint);
+  } catch (err) {
+    result.error = err instanceof Error ? err.message : String(err);
+    balance = null;
+  }
+  if (balance === null) {
+    result.error ??= "the token balance could not be read";
+    await page(
+      `RESIDUAL TOKEN NOT SWEPT — the ${mint} balance could not be read ` +
+        `(${result.error}); amount and value UNKNOWN.`,
+    );
+    return result;
+  }
+  result.amount = balance.toString();
+
+  if (balance === 0n) {
+    result.state = "dust";
+    return result;
+  }
+
+  try {
+    result.estimatedLamports = await deps.quoteToSol(mint, balance);
+  } catch (err) {
+    result.state = "failed";
+    result.error = err instanceof Error ? err.message : String(err);
+    await page(
+      `RESIDUAL TOKEN NOT SWEPT — ${result.amount} base units of ${mint} left in the ` +
+        `wallet, estimated value UNKNOWN (the quote failed: ${result.error}).`,
+    );
+    return result;
+  }
+
+  if (result.estimatedLamports < dustLamports) {
+    result.state = "dust";
+    console.log(
+      `[live] ${context.pairName}: ${result.amount} base units of ${mint} left after the ` +
+        `close quote at ${(result.estimatedLamports / LAMPORTS_PER_SOL).toFixed(6)} SOL — ` +
+        `dust, not sold`,
+    );
+    return result;
+  }
+
+  try {
+    result.signature = await deps.swapToSol(mint, balance);
+    result.state = "swept";
+    console.log(
+      `[live] ${context.pairName}: swept ${result.amount} base units of ${mint} back to SOL ` +
+        `(~${(result.estimatedLamports / LAMPORTS_PER_SOL).toFixed(6)} SOL, ${result.signature})`,
+    );
+  } catch (err) {
+    result.state = "failed";
+    result.error = err instanceof Error ? err.message : String(err);
+    await page(
+      `RESIDUAL TOKEN NOT SWEPT — ${result.amount} base units of ${mint} ` +
+        `(~${(result.estimatedLamports / LAMPORTS_PER_SOL).toFixed(6)} SOL) left in the ` +
+        `wallet; the sell back to SOL failed: ${result.error}. Check the chain before ` +
+        `selling: the swap's outcome may be ambiguous.`,
+    );
+  }
+
+  return result;
+}
+
+/** The production sweep: the SDK for the mint, the chain for the balance, Jupiter to sell. */
+function defaultResidualSweepDeps(
+  auth: ExecutionAuthorization,
+  poolAddress: string,
+): ResidualSweepDeps {
+  let tokenProgram: PublicKey | null = null;
+  return {
+    async resolvePairedMint() {
+      const side = pairedSideOf(await loadDlmmPool(poolAddress), poolAddress);
+      tokenProgram = side.pairedTokenProgram;
+      return side.pairedMint.toBase58();
+    },
+    async readBalance(mint) {
+      if (tokenProgram === null) return null;
+      return readTokenBalanceOrNull(auth.wallet, new PublicKey(mint), tokenProgram);
+    },
+    async quoteToSol(mint, amount) {
+      const quote = await getJupiterQuote({
+        inputMint: mint,
+        outputMint: WSOL_MINT,
+        amountLamports: Number(amount),
+        slippageBps: resolveSlippageBps(auth),
+      });
+      return Number(quote.outAmount);
+    },
+    async swapToSol(mint, amount) {
+      const sold = await executeJupiterSwap(auth, {
+        inputMint: mint,
+        outputMint: WSOL_MINT,
+        amountLamports: Number(amount),
+      });
+      return sold.result.signature;
+    },
+    alert: (message) => sendError("closeLivePosition/residual", new Error(message)),
+  };
+}
+
+export interface LiveCloseOutcome {
   closeSignature: string;
   signatures: string[];
   /**
-   * Wallet lamports read AFTER the close confirmed, or null when the read failed.
+   * Wallet lamports read AFTER the close confirmed AND the residual sweep settled, or null.
    *
-   * With the balance recorded at open, this is the only measurement the engine has of
-   * what a live trade actually did to the wallet. Every other number attached to a live
-   * position is the paper model's opinion.
+   * With the balance recorded at open, this is the only measurement the engine has of what
+   * a live trade actually did to the wallet. It is NULL — never the balance of the moment —
+   * whenever the sweep did not settle: a balance read while value still sits in the paired
+   * token is not the trade's result, and recording it is what made the reconciliation report
+   * a $127 "drift" on a trade that made money.
    */
   walletLamportsAfter: number | null;
-}> {
-  const auth = authorizeExecution();
+  residual: ResidualSweep;
+}
 
-  const closed = await dlmmExecutor.closePosition(auth, {
+/** Everything `closeLivePosition` does to the outside world, injected for offline tests. */
+export interface LiveCloseDeps {
+  /** Withdraw + claim + close. Returns the confirmed signatures, or throws. */
+  closeOnChain(params: { poolAddress: string; positionAddress: string }): Promise<string[]>;
+  sweep: ResidualSweepDeps;
+  readWalletLamports(): Promise<number | null>;
+}
+
+function defaultLiveCloseDeps(poolAddress: string): LiveCloseDeps {
+  // Evaluated when a close is REQUESTED, so an unarmed engine still refuses before any
+  // network call — the behaviour `/close_all`'s tests depend on.
+  const auth = authorizeExecution();
+  return {
+    async closeOnChain(p) {
+      const closed = await dlmmExecutor.closePosition(auth, p);
+      return closed.sent.map((s) => s.signature);
+    },
+    sweep: defaultResidualSweepDeps(auth, poolAddress),
+    readWalletLamports,
+  };
+}
+
+/**
+ * Closes a real position: withdraws every bin, claims the fees and reclaims the rent,
+ * atomically per transaction via `shouldClaimAndClose` — then sells the paired token that
+ * came back to SOL, and only then reads the wallet.
+ *
+ * Returns the LAST close signature, which is the one that actually closed the account. A
+ * partial run raises `DlmmPartialExecutionError` from the executor and is deliberately
+ * NOT caught here — the caller must not mark a half-closed position as closed. Nothing
+ * AFTER the close may throw: from that point the position is gone, and the row must follow.
+ *
+ * Every live exit reaches the chain through here — take-profit, stop-loss, out-of-range and
+ * timeout from the monitor, and `/close_all` — via `settleLiveCloses`, so the sweep covers
+ * them all by construction.
+ */
+export async function closeLivePosition(
+  params: {
+    poolAddress: string;
+    positionAddress: string;
+    pairName: string;
+  },
+  deps: LiveCloseDeps = defaultLiveCloseDeps(params.poolAddress),
+): Promise<LiveCloseOutcome> {
+  const signatures = await deps.closeOnChain({
     poolAddress: params.poolAddress,
     positionAddress: params.positionAddress,
   });
 
-  const signatures = closed.sent.map((s) => s.signature);
   const closeSignature = signatures.at(-1);
   if (!closeSignature) throw new Error("closePosition returned no signature");
 
   console.log(`[live] ${params.pairName}: position ${params.positionAddress} closed ` +
     `(${signatures.length} tx, final ${closeSignature})`);
 
-  // After the close CONFIRMED, so the withdrawal and the reclaimed position rent are
-  // both already in the balance. Best effort; see readWalletLamports.
-  const walletLamportsAfter = await readWalletLamports();
+  /*
+   * THE CLOSE HAS CONFIRMED. The sweep runs only now — selling before the withdrawal landed
+   * would sell a balance the position was still holding — and it never throws.
+   */
+  const residual = await sweepResidualPairedToken(
+    { pairName: params.pairName, positionAddress: params.positionAddress },
+    deps.sweep,
+  );
 
-  return { closeSignature, signatures, walletLamportsAfter };
+  /*
+   * After the sweep, and only if it settled. Read at `confirmed`, so the withdrawal, the
+   * reclaimed position rent and the sweep's proceeds are all in the balance. An unsettled
+   * sweep leaves this NULL: "not measured" is honest, a balance with value still parked in
+   * a memecoin is not. Best effort either way; see readWalletLamports.
+   */
+  let walletLamportsAfter: number | null = null;
+  if (isSettledSweep(residual)) {
+    try {
+      walletLamportsAfter = await deps.readWalletLamports();
+    } catch {
+      walletLamportsAfter = null;
+    }
+  }
+
+  return { closeSignature, signatures, walletLamportsAfter, residual };
 }
 
 /**
@@ -1742,6 +2067,12 @@ async function describePair(
   lowerBinPrice: number,
   upperBinPrice: number,
 ): Promise<{ pairedMint: PublicKey; pairedTokenProgram: PublicKey; binWidth: number }> {
+  const pool = await loadDlmmPool(poolAddress);
+  const { minBinId, maxBinId } = binRangeFromPrices(pool, lowerBinPrice, upperBinPrice);
+  return { ...pairedSideOf(pool, poolAddress), binWidth: maxBinId - minBinId + 1 };
+}
+
+async function loadDlmmPool(poolAddress: string) {
   // Load the SDK via its CJS build: the ESM build (`dist/index.mjs`) imports an
   // Anchor CJS directory (`@coral-xyz/anchor/dist/cjs/utils/bytes`), which Node's
   // ESM resolver rejects — every live entry then dies in seekNewEntry. CJS
@@ -1751,23 +2082,21 @@ async function describePair(
   const require = createRequire(import.meta.url);
   const dlmmModule = require("@meteora-ag/dlmm") as { default?: unknown };
   const DLMM = (dlmmModule.default ?? dlmmModule) as typeof import("@meteora-ag/dlmm")["default"];
-  const pool = await DLMM.create(getConnection(), new PublicKey(poolAddress));
-  const { minBinId, maxBinId } = binRangeFromPrices(pool, lowerBinPrice, upperBinPrice);
+  return DLMM.create(getConnection(), new PublicKey(poolAddress));
+}
+
+/** The non-wSOL side of a pool, from the SDK's own reading of it. */
+function pairedSideOf(
+  pool: Awaited<ReturnType<typeof loadDlmmPool>>,
+  poolAddress: string,
+): { pairedMint: PublicKey; pairedTokenProgram: PublicKey } {
   const wsol = new PublicKey(WSOL_MINT);
 
   if (pool.tokenX.publicKey.equals(wsol)) {
-    return {
-      pairedMint: pool.tokenY.publicKey,
-      pairedTokenProgram: pool.tokenY.owner,
-      binWidth: maxBinId - minBinId + 1,
-    };
+    return { pairedMint: pool.tokenY.publicKey, pairedTokenProgram: pool.tokenY.owner };
   }
   if (pool.tokenY.publicKey.equals(wsol)) {
-    return {
-      pairedMint: pool.tokenX.publicKey,
-      pairedTokenProgram: pool.tokenX.owner,
-      binWidth: maxBinId - minBinId + 1,
-    };
+    return { pairedMint: pool.tokenX.publicKey, pairedTokenProgram: pool.tokenX.owner };
   }
   throw new Error(
     `[live] pool ${poolAddress} has no wSOL side; the engine sizes in SOL and cannot ` +
