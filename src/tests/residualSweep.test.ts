@@ -62,8 +62,11 @@ function harness(over: {
   quoteFails?: Error;
   closeFails?: Error;
   mintFails?: Error;
+  /** How the empty-account close answers: default "closed". */
+  accountClose?: "closed" | "absent" | "not-empty" | Error;
 } = {}) {
   const calls: string[] = [];
+  const accountCloses: string[] = [];
   const swaps: Array<{ mint: string; amount: bigint }> = [];
   const alerts: string[] = [];
   const wallet = {
@@ -106,13 +109,25 @@ function harness(over: {
         alerts.push(message);
       },
     },
+    async closeTokenAccount(mint: string) {
+      calls.push("account");
+      accountCloses.push(mint);
+      const mode = over.accountClose ?? "closed";
+      if (mode instanceof Error) throw mode;
+      if (mode === "closed") {
+        wallet.lamports += 2_039_280;
+        return { state: "closed" as const, signature: "ata-close-sig", ata: "ATA111" };
+      }
+      if (mode === "absent") return { state: "absent" as const, ata: "ATA111" };
+      return { state: "not-empty" as const, ata: "ATA111", amount: "12345" };
+    },
     async readWalletLamports() {
       calls.push("wallet");
       return wallet.lamports;
     },
   };
 
-  return { deps, calls, swaps, alerts, wallet };
+  return { deps, calls, swaps, alerts, wallet, accountCloses };
 }
 
 const params = {
@@ -146,7 +161,8 @@ describe("residual sweep — a successful exit sells what came back", () => {
     assert.ok(wallet > swap, `the wallet was read before the sale: ${h.calls.join(",")}`);
     assert.equal(h.calls.filter((c) => c === "wallet").length, 1);
     // The balance includes the proceeds, which is the whole point of reading it last.
-    assert.equal(out.walletLamportsAfter, 2.116302 * LAMPORTS + 844_718_000);
+    // Proceeds, plus the emptied account's rent (see the token-account tests below).
+    assert.equal(out.walletLamportsAfter, 2.116302 * LAMPORTS + 844_718_000 + 2_039_280);
   });
 
   it("never sells when the close itself fails — the position is still holding the token", async () => {
@@ -307,7 +323,115 @@ describe("residual sweep — a failed sale never un-closes a closed position", (
     const row = repos.getPositionById("manlet-e2e-ok");
     assert.equal(row?.residual_sweep, "swept");
     assert.equal(row?.sweep_signature, "sweep-sig");
-    assert.equal(row?.wallet_lamports_after, 2.116302 * LAMPORTS + 844_718_000);
+    assert.equal(row?.wallet_lamports_after, 2.116302 * LAMPORTS + 844_718_000 + 2_039_280);
+  });
+});
+
+describe("token account rent — the emptied account is closed once the sweep settled", () => {
+  it("closes the paired-token account after a confirmed sale, BEFORE the wallet read", async () => {
+    const h = harness();
+    const out = await live.closeLivePosition(params, h.deps);
+
+    assert.deepEqual(h.accountCloses, [MINT], "the account was not closed exactly once, for the paired mint");
+    assert.equal(out.tokenAccount.state, "closed");
+    assert.equal(out.tokenAccount.signature, "ata-close-sig");
+    // The sweep's own evidence is untouched.
+    assert.equal(out.residual.signature, "sweep-sig");
+    const account = h.calls.indexOf("account");
+    assert.ok(account > h.calls.indexOf("swap") && account < h.calls.indexOf("wallet"), h.calls.join(","));
+    // The rent that came back is part of the measured result.
+    assert.equal(out.walletLamportsAfter, 2.116302 * LAMPORTS + 844_718_000 + 2_039_280);
+  });
+
+  it("closes it on a zero balance too, but NOT on a dust balance (not empty)", async () => {
+    const zero = harness({ tokenBalance: 0n });
+    assert.equal((await live.closeLivePosition(params, zero.deps)).tokenAccount.state, "closed");
+
+    const dust = harness({ tokenBalance: 12_345n, quoteLamports: 1 });
+    const out = await live.closeLivePosition(params, dust.deps);
+    assert.equal(out.residual.state, "dust");
+    assert.equal(out.tokenAccount.state, "skipped");
+    assert.equal(dust.accountCloses.length, 0);
+  });
+
+  it("does NOT touch the account when the sweep failed or could not measure — value may be in it", async () => {
+    for (const h of [
+      harness({ swapFails: new Error("route not found") }),
+      harness({ tokenBalance: null }),
+      harness({ quoteFails: new Error("HTTP 429") }),
+      harness({ mintFails: new Error("pool fetch failed") }),
+    ]) {
+      const out = await live.closeLivePosition(params, h.deps);
+      assert.equal(out.tokenAccount.state, "skipped", out.residual.state);
+      assert.equal(h.accountCloses.length, 0, `closed an account after a ${out.residual.state} sweep`);
+    }
+  });
+
+  it("an account that is already gone is a SUCCESS, and sends nothing", async () => {
+    const h = harness({ accountClose: "absent" });
+    const out = await live.closeLivePosition(params, h.deps);
+    assert.equal(out.tokenAccount.state, "absent");
+    assert.equal(out.tokenAccount.error, null);
+  });
+
+  it("a failed account close does not fail the close, does not page, and keeps the after-balance", async () => {
+    const h = harness({ accountClose: new Error("blockhash expired") });
+    const out = await live.closeLivePosition(params, h.deps);
+    assert.equal(out.tokenAccount.state, "failed");
+    assert.match(out.tokenAccount.error ?? "", /blockhash expired/);
+    assert.equal(h.alerts.length, 0, "~$0.20 of rent paged the operator");
+    assert.equal(out.residual.state, "swept");
+    assert.equal(typeof out.walletLamportsAfter, "number", "a rent-only failure unsettled the trade");
+  });
+
+  it("END TO END: the row records ata_close_signature beside, not instead of, sweep_signature", async () => {
+    repos.insertPosition({
+      positionId: "manlet-ata",
+      poolAddress: `${params.poolAddress}3`,
+      pairName: params.pairName,
+      strategyType: "SPOT",
+      entryPrice: 100,
+      lowerBinPrice: 90,
+      upperBinPrice: 110,
+      virtualSolAmount: 0.9,
+      entryTvl: 50_000,
+      entry24hVolume: 500_000,
+      confidenceScore: 70,
+      reasoningLog: "t",
+      entrySolPriceUsd: 100,
+      executionMode: "LIVE",
+      positionAddress: params.positionAddress,
+      openSignature: "sig-open",
+    });
+    const h = harness();
+    await agent.forceCloseAllPositions({
+      fetchPool: async () => ({ currentPrice: 105, feeTvlRatio24h: 0.01 }),
+      reflect: async () => null,
+      notify: async () => undefined,
+      closeLive: (p) => live.closeLivePosition(p, h.deps),
+    });
+    const row = repos.getPositionById("manlet-ata");
+    assert.equal(row?.sweep_signature, "sweep-sig");
+    assert.equal(row?.ata_close_signature, "ata-close-sig");
+  });
+
+  it("reclaimEmptyTokenAccount never throws on its own", async () => {
+    const r = await live.reclaimEmptyTokenAccount({ pairName: "X-SOL", mint: MINT }, async () => {
+      throw new Error("rpc down");
+    });
+    assert.equal(r.state, "failed");
+  });
+
+  it("the FAILED-open unwind closes the account too, only after an unwind that did not fail", () => {
+    const source = readFileSync("src/services/liveExecution.ts", "utf8");
+    const rescue = source.indexOf("rescueSignature = rescue.result.signature;");
+    const reclaim = source.indexOf("closeEmptyTokenAccount(auth, {", rescue);
+    const after = source.indexOf("const walletLamportsAfter = await readWalletLamports();", rescue);
+    assert.ok(rescue > 0 && reclaim > rescue && after > reclaim, "the unwind's account close is missing or misordered");
+    const guard = source.slice(source.lastIndexOf("const tokenAccount =", reclaim), reclaim);
+    assert.match(guard, /rescueError === null/);
+    assert.match(guard, /orphan\?\.state !== "failed"/);
+    assert.ok(source.includes("ataCloseSignature: tokenAccount.signature"));
   });
 });
 

@@ -43,6 +43,8 @@ import {
   getConnection,
   getJupiterQuote,
   resolveSlippageBps,
+  closeEmptyTokenAccount,
+  type CloseTokenAccountOutcome,
   onchainConfig,
   quoteOpenCost,
   rehearseOpenPosition,
@@ -1608,8 +1610,10 @@ export async function openLivePosition(params: {
      */
     let rescueSignature: string | null = null;
     let rescueError: string | null = null;
+    let rescueBalance: bigint | null = null;
     try {
       const current = await readTokenBalance(auth.wallet, pairedMint, pairedTokenProgram);
+      rescueBalance = current;
       if (current > 0n) {
         const rescue = await executeJupiterSwap(auth, {
           inputMint: pairedMint.toBase58(),
@@ -1621,6 +1625,28 @@ export async function openLivePosition(params: {
     } catch (rescueErr) {
       rescueError = rescueErr instanceof Error ? rescueErr.message : String(rescueErr);
     }
+
+    /*
+     * The unwind empties the paired-token account the balancing swap created, and nothing
+     * else would ever close it — so its rent goes back here too, not only on a clean exit.
+     * Only after an unwind that did not fail, and never while a funded position could not
+     * be recovered (a human will close it, and its withdrawal needs somewhere to land).
+     * The executor re-reads the account and leaves it alone if anything is still in it.
+     * Before the cost read below, so the rent that came back is not charged as cost.
+     */
+    const tokenAccount =
+      rescueError === null &&
+      orphan?.state !== "failed" &&
+      (rescueSignature !== null || rescueBalance === 0n)
+        ? await reclaimEmptyTokenAccount(
+            { pairName: params.pairName, mint: pairedMint.toBase58() },
+            () =>
+              closeEmptyTokenAccount(auth, {
+                mint: pairedMint.toBase58(),
+                tokenProgram: pairedTokenProgram.toBase58(),
+              }),
+          )
+        : TOKEN_ACCOUNT_SKIPPED;
 
     /*
      * Count it against the pool BEFORE reporting. This is the failure that costs money
@@ -1673,6 +1699,7 @@ export async function openLivePosition(params: {
         rescueSignature,
         positionAddress: orphan?.position ?? null,
         reason: err instanceof Error ? err.message : String(err),
+        ataCloseSignature: tokenAccount.signature,
       });
     } catch (bookkeeping) {
       console.warn(`[live] could not record the failed attempt for ${params.pairName}:`, bookkeeping);
@@ -1905,17 +1932,18 @@ export async function sweepResidualPairedToken(
 function defaultResidualSweepDeps(
   auth: ExecutionAuthorization,
   poolAddress: string,
+  /** Filled by `resolvePairedMint`, so the account close uses the SDK's token program. */
+  shared: { tokenProgram: PublicKey | null } = { tokenProgram: null },
 ): ResidualSweepDeps {
-  let tokenProgram: PublicKey | null = null;
   return {
     async resolvePairedMint() {
       const side = pairedSideOf(await loadDlmmPool(poolAddress), poolAddress);
-      tokenProgram = side.pairedTokenProgram;
+      shared.tokenProgram = side.pairedTokenProgram;
       return side.pairedMint.toBase58();
     },
     async readBalance(mint) {
-      if (tokenProgram === null) return null;
-      return readTokenBalanceOrNull(auth.wallet, new PublicKey(mint), tokenProgram);
+      if (shared.tokenProgram === null) return null;
+      return readTokenBalanceOrNull(auth.wallet, new PublicKey(mint), shared.tokenProgram);
     },
     async quoteToSol(mint, amount) {
       const quote = await getJupiterQuote({
@@ -1952,6 +1980,8 @@ export interface LiveCloseOutcome {
    */
   walletLamportsAfter: number | null;
   residual: ResidualSweep;
+  /** What became of the emptied paired-token account. */
+  tokenAccount: TokenAccountReclaim;
 }
 
 /** Everything `closeLivePosition` does to the outside world, injected for offline tests. */
@@ -1959,6 +1989,8 @@ export interface LiveCloseDeps {
   /** Withdraw + claim + close. Returns the confirmed signatures, or throws. */
   closeOnChain(params: { poolAddress: string; positionAddress: string }): Promise<string[]>;
   sweep: ResidualSweepDeps;
+  /** Closes the wallet's EMPTY account for `mint`; see `closeEmptyTokenAccount`. */
+  closeTokenAccount(mint: string): Promise<CloseTokenAccountOutcome>;
   readWalletLamports(): Promise<number | null>;
 }
 
@@ -1966,14 +1998,92 @@ function defaultLiveCloseDeps(poolAddress: string): LiveCloseDeps {
   // Evaluated when a close is REQUESTED, so an unarmed engine still refuses before any
   // network call — the behaviour `/close_all`'s tests depend on.
   const auth = authorizeExecution();
+  const shared: { tokenProgram: PublicKey | null } = { tokenProgram: null };
   return {
     async closeOnChain(p) {
       const closed = await dlmmExecutor.closePosition(auth, p);
       return closed.sent.map((s) => s.signature);
     },
-    sweep: defaultResidualSweepDeps(auth, poolAddress),
+    sweep: defaultResidualSweepDeps(auth, poolAddress, shared),
+    async closeTokenAccount(mint) {
+      if (shared.tokenProgram === null) {
+        throw new Error("the paired token program was never resolved");
+      }
+      return closeEmptyTokenAccount(auth, { mint, tokenProgram: shared.tokenProgram.toBase58() });
+    },
     readWalletLamports,
   };
+}
+
+/* ------------------------------------------------------------------ */
+/* Token account rent — the housekeeping after a sell-back             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * What became of the paired token's account once its balance was sold back to SOL.
+ *
+ *  - `closed`     closed, rent back in the wallet (`signature` is the evidence).
+ *  - `absent`     no account to close — already closed or never created. Success.
+ *  - `not-empty`  still holds tokens (e.g. a dust balance), so it was left alone.
+ *  - `skipped`    the sell-back did not settle, so the account was not touched: value may
+ *                 still be in it, and closing a non-empty account is refused anyway.
+ *  - `failed`     the close was attempted and did not land.
+ */
+export interface TokenAccountReclaim {
+  state: "closed" | "absent" | "not-empty" | "skipped" | "failed";
+  signature: string | null;
+  error: string | null;
+}
+
+export const TOKEN_ACCOUNT_SKIPPED: TokenAccountReclaim = {
+  state: "skipped",
+  signature: null,
+  error: null,
+};
+
+/**
+ * Closes the emptied paired-token account and takes its rent back. NEVER THROWS, NEVER PAGES.
+ *
+ * ~0.002 SOL of rent per mint is locked in every ATA the engine leaves behind, and nothing
+ * else ever closes one: two sat empty in the live wallet on 11 Sep 2026. Against a ~$9
+ * take-profit that is about 2% of the trade per mint, for good.
+ *
+ * Best effort and quiet on purpose, unlike the sweep before it. A failed SWEEP leaves value
+ * parked in a memecoin and pages a human; a failed CLOSE here leaves ~$0.20 of rent, which
+ * is logged and nothing more — paging for it would teach the operator to ignore the pages
+ * that matter. And it runs after a position has already closed (or after a failed open has
+ * already unwound), where nothing is allowed to turn the outcome into a throw.
+ */
+export async function reclaimEmptyTokenAccount(
+  context: { pairName: string; mint: string },
+  close: () => Promise<CloseTokenAccountOutcome>,
+): Promise<TokenAccountReclaim> {
+  try {
+    const outcome = await close();
+    switch (outcome.state) {
+      case "closed":
+        console.log(
+          `[live] ${context.pairName}: closed the empty ${context.mint} account ` +
+            `${outcome.ata}, rent returned (${outcome.signature})`,
+        );
+        return { state: "closed", signature: outcome.signature, error: null };
+      case "absent":
+        return { state: "absent", signature: null, error: null };
+      case "not-empty":
+        console.log(
+          `[live] ${context.pairName}: the ${context.mint} account still holds ` +
+            `${outcome.amount} base units; left open`,
+        );
+        return { state: "not-empty", signature: null, error: null };
+    }
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[live] ${context.pairName}: could not close the empty ${context.mint} account ` +
+        `(~0.002 SOL of rent stays locked; not paged): ${reason}`,
+    );
+    return { state: "failed", signature: null, error: reason };
+  }
 }
 
 /**
@@ -2019,6 +2129,20 @@ export async function closeLivePosition(
   );
 
   /*
+   * The emptied account's rent, ONLY once the sweep settled with nothing left in it: a sale
+   * that confirmed, or a balance that read exactly 0. A dust balance is not zero and the
+   * program would refuse the close; a failed or unmeasured sweep may still hold value.
+   * Before the wallet read, so the rent that comes back is part of the trade's result.
+   */
+  const mint = residual.mint;
+  const tokenAccount =
+    mint !== null && (residual.state === "swept" || (residual.state === "dust" && residual.amount === "0"))
+      ? await reclaimEmptyTokenAccount({ pairName: params.pairName, mint }, () =>
+          deps.closeTokenAccount(mint),
+        )
+      : TOKEN_ACCOUNT_SKIPPED;
+
+  /*
    * After the sweep, and only if it settled. Read at `confirmed`, so the withdrawal, the
    * reclaimed position rent and the sweep's proceeds are all in the balance. An unsettled
    * sweep leaves this NULL: "not measured" is honest, a balance with value still parked in
@@ -2033,7 +2157,7 @@ export async function closeLivePosition(
     }
   }
 
-  return { closeSignature, signatures, walletLamportsAfter, residual };
+  return { closeSignature, signatures, walletLamportsAfter, residual, tokenAccount };
 }
 
 /**

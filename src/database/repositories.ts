@@ -305,6 +305,7 @@ export function closePosition(input: ClosePositionInput): void {
             wallet_lamports_after = @walletLamportsAfter,
             residual_sweep = @residualSweep,
             sweep_signature = @sweepSignature,
+            ata_close_signature = @ataCloseSignature,
             closed_at = CURRENT_TIMESTAMP,
             last_checked_at = CURRENT_TIMESTAMP
       WHERE position_id = @positionId`,
@@ -314,6 +315,7 @@ export function closePosition(input: ClosePositionInput): void {
     walletLamportsAfter: input.walletLamportsAfter ?? null,
     residualSweep: input.residualSweep ?? null,
     sweepSignature: input.sweepSignature ?? null,
+    ataCloseSignature: input.ataCloseSignature ?? null,
   });
 }
 
@@ -1092,6 +1094,8 @@ export interface LiveExecutionAttemptInput {
   rescueSignature: string | null;
   positionAddress: string | null;
   reason: string | null;
+  /** The close of the emptied paired-token account after an unwind. Absent = none sent. */
+  ataCloseSignature?: string | null;
 }
 
 export interface LiveExecutionAttempt extends LiveExecutionAttemptInput {
@@ -1126,14 +1130,17 @@ export function recordLiveExecutionAttempt(input: LiveExecutionAttemptInput): vo
     `INSERT INTO live_execution_attempts (
        pool_address, pair_name, token_mint, outcome, stage,
        wallet_lamports_before, wallet_lamports_after, cost_lamports,
-       unwind, swap_signature, rescue_signature, position_address, reason
+       unwind, swap_signature, rescue_signature, position_address, reason,
+       ata_close_signature
      ) VALUES (
        @poolAddress, @pairName, @tokenMint, @outcome, @stage,
        @walletLamportsBefore, @walletLamportsAfter, @costLamports,
-       @unwind, @swapSignature, @rescueSignature, @positionAddress, @reason
+       @unwind, @swapSignature, @rescueSignature, @positionAddress, @reason,
+       @ataCloseSignature
      )`,
   ).run({
     ...input,
+    ataCloseSignature: input.ataCloseSignature ?? null,
     reason: input.reason === null ? null : input.reason.slice(0, 500),
     costLamports: attemptCostLamports(input.walletLamportsBefore, input.walletLamportsAfter),
   });
