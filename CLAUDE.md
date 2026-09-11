@@ -1127,6 +1127,13 @@ npm run smoke            # probe every external API, print screener output + rej
 npm run seed:demo        # demo positions marked [DEMO]; npm run db:reset clears everything
 ```
 
+**Tests never read `.env`.** Under `node --test` (`NODE_TEST_CONTEXT` is set in every test
+process) `env.ts` skips the file, so a test sees the code defaults plus whatever it puts in
+`process.env` itself. That is what made `npm test` 0-fail on the live host, whose armed
+`.env` used to hold seven posture tests permanently red. A test that needs a posture must
+INJECT it; `liveConfig.test.ts` "hermetic posture" proves armed and disarmed that way. The
+engine, the API and every script still load `.env` as before.
+
 `npm run report:quant` needs Python with `pandas numpy matplotlib scipy quantstats`
 (`python -m pip install pandas matplotlib quantstats`). It reads only the CSV the Node
 runner writes, so the backtest itself has no Python dependency. The PDF is printed from

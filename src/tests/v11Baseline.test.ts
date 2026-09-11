@@ -258,6 +258,8 @@ describe("V1.1 baseline — the live micro-capital profile does not touch it", (
       /LIVE_MICRO_CAPITAL: booleanish\(false\)/,
       "the live profile no longer defaults to off",
     );
-    assert.equal(liveMicroCapital.enabled, false, "this machine has the live profile armed");
+    // The CODE default (the test runner reads no .env); the armed posture is proven by
+    // injection in liveConfig.test.ts "hermetic posture".
+    assert.equal(liveMicroCapital.enabled, false, "the live profile is armed by default");
   });
 });

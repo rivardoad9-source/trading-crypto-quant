@@ -324,6 +324,11 @@ describe("execution guard - the operator width cap", () => {
   const HERE = dirname(fileURLToPath(import.meta.url));
   const SRC = resolve(HERE, "..");
 
+  /*
+   * These assert the CODE default. Under the test runner `env.ts` reads no `.env`, so the
+   * live host's LIVE_MAX_POSITION_BINS=1400 no longer turns them red; the 1400 posture is
+   * proven by injection in liveConfig.test.ts "hermetic posture".
+   */
   it("defaults to the narrow-only path, which is the one with a success rate", () => {
     assert.equal(env.LIVE_MAX_POSITION_BINS, 70);
   });
