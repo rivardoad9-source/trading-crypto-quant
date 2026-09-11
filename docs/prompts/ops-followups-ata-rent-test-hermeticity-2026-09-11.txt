@@ -1,0 +1,159 @@
+BRIEF OPS — follow-up setelah commit f5aedfa (drift SOL-based + sweep sisa token)
+Ditulis: 11 Sep 2026, sesudah review push Claude yang sudah gw merge, test, build, deploy.
+Repo: /home/ubuntu/flowmetrix-ai-agent  (branch main, HEAD f5aedfa)
+
+BACA DULU, JANGAN RISET ULANG. JANGAN sentuh .env. JANGAN restart pm2. JANGAN deploy.
+Semua di bawah ini gw temukan lewat verifikasi chain + wallet + log asli, bukan bacaan kode doang.
+Kerjakan berurutan; commit + push per task supaya bisa gw review satu-satu.
+
+= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+KONTEKS: kenapa 4 task ini
+= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+Fix f5aedfa (sweep sisa token ke SOL) SUDAH TERPASANG dan terverifikasi di boot:
+  - migrasi residual_sweep + sweep_signature ada
+  - [drift] sudah satuan SOL: "-0.014784 SOL (0.50%) — within thresholds; the USD value
+    differs by $8.11 because SOL/USD moved +3.24% ... that is PRICE"
+  - row trade pertama (id 4, MANLET-SOL) sudah di-settle operator:
+    residual_sweep='operator', wallet_lamports_after=2961019685
+  - reconcile pertama yang jujur: "database says $9.49, wallet says $7.98, drift $-1.51
+    (-15.9% of model)" — sebelumnya baris ini melaporkan drift -$127.
+Jadi TASK 1-4 di bawah ini BUKAN revisi kerjaan itu. Ini sisa lubang yang ketemu SETELAH
+kerjaan itu masuk. Verifikasi live sweep-nya sendiri (exit beneran) masih nunggu trade
+berikutnya — itu di sisi gw, jangan lu kerjain.
+
+= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+TASK 1 — ATA rent tidak pernah diambil balik. Ini kebocoran nyata, terukur.
+= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+BUKTI (dibaca dari chain, wallet FaVHg7bThap7wcF9G7kjSjrDsMbVrgUkpG6twzi1yQKi, 11 Sep):
+  - total ATA SPL: 2 — 1 kosong (mint HxQhDGYq…, rent ter-lock 0.001856 SOL)
+  - total ATA Token-2022: 1 — KOSONG
+  - yang kosong itu sisa dari mint yang sudah nggak dipegang; rent-nya nggak akan pernah
+    balik karena nggak ada yang menutup account-nya.
+
+MASALAH: sweep hanya menjual token jadi SOL. Account token (ATA) yang jadi kosong tetap
+hidup, dan rent-exempt-nya (0.0018-0.00204 SOL ≈ $0.19-0.21) terkunci PERMANEN per mint
+yang pernah disentuh. Efek ke ekonomi: TP 5% di posisi ~1.8 SOL memberi ~$9.49; $0.20 itu
+~2% dari profit, hilang di setiap mint baru, selamanya. Bukan efek samping kosmetik.
+
+YANG DIMINTA:
+  1. Setelah sweep SETTLED (state "swept" atau "dust" dengan saldo token terbaca 0),
+     kirim closeAccount untuk ATA token pasangan itu — pakai token program yang benar
+     (SPL Token ATAU Token-2022; `pairedSideOf()` sudah mengembalikan `pairedTokenProgram`,
+     jangan hardcode Tokenkeg…).
+  2. Idempoten: kalau account-nya sudah nggak ada, perlakukan sebagai SUKSES
+     ("account not found" bukan error).
+  3. Best effort dan tidak boleh melempar: dari titik close sudah confirmed, tidak ada
+     yang boleh mengubah position tertutup jadi throw. Gagal → catat + log, jangan page
+     operator untuk $0.19 (ini beda dari sweep: sweep gagal = value nyangkut di memecoin,
+     harus page; ATA gagal = $0.19, cukup log).
+  4. Rekam signature-nya. Tambah kolom (mis. `ata_close_signature`) — JANGAN timpa
+     `sweep_signature` (itu bukti jual tokennya, harus tetap utuh).
+  5. Pasang di DUA jalur yang membuat ATA kosong, bukan satu:
+     (a) `closeLivePosition` setelah `sweepResidualPairedToken` (liveExecution.ts:1993), dan
+     (b) jalur auto-unwind gagal-open / rescue (lihat `rescueSignature` di liveExecution.ts
+         ~baris 125-179) — di sana token juga dijual balik ke SOL dan ATA-nya ditinggal.
+  6. Tambah test: ATA ditutup saat sweep settled; ATA TIDAK ditutup saat sweep failed/
+     unmeasured (value masih di token — menutup ATA-nya justru mustahil/berbahaya);
+     "account not found" = sukses; kegagalan closeAccount tidak menggagalkan close.
+
+JANGAN: buat jalur swap kedua. Semua tetap lewat `executeJupiterSwap`.
+
+= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+TASK 2 — Sweep buta terhadap sisa token SELAIN token pasangan. Bikin dia minimal NGOMONG.
+= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+BUKTI: wallet sekarang memegang 1.062727 USDC (EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v)
+— sisa uang dari route Jupiter, bukan dari posisi DLMM.
+
+MASALAH: `sweepResidualPairedToken` hanya melihat mint pasangan pool-nya. Kalau route
+Jupiter meninggalkan value dalam bentuk token LAIN (USDC paling sering), engine tidak
+melihatnya sama sekali DAN tetap mencatat `wallet_lamports_after` sebagai angka final.
+Itu kelas bug yang sama dengan yang baru saja kita perbaiki: value nyangkut, buku bilang
+selesai. Bedanya sekarang cuma jumlahnya kecil.
+
+YANG DIMINTA (duduk perkara: jangan menambah otonomi jual-token-asing, cukup jujur):
+  1. Setelah sweep selesai, enumerasi SEMUA saldo token non-nol milik wallet (pakai
+     `getParsedTokenAccountsByOwner` untuk SPL Token DAN Token-2022 — banyak memecoin
+     sekarang Token-2022).
+  2. Abaikan WSOL. Kalau ada token lain non-nol: log satu baris eksplisit, mis.
+     `[live] residual: 2 non-paired token balance(s) left after the close (EPjFWdd5…: 1.062727)`
+     dan masukkan ke pesan alert close yang sudah ada — JANGAN page terpisah kalau nilainya
+     di bawah ambang yang wajar (pakai ambang yang jelas, sebut di komentar kenapa).
+  3. JANGAN otomatis menjual token yang bukan token pasangan. Memutuskan menjual aset yang
+     nggak kita kenal = keputusan terpisah, bukan default.
+  4. Kalau ini bikin `wallet_lamports_after` ambigu, tulis di komentar: SOL di wallet tetap
+     angka final untuk trade ITU; yang dilaporkan terpisah adalah sisa non-SOL yang belum
+     dijual. Jangan diam-diam mengubah definisi kolom.
+
+= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+TASK 3 — 7 test merah BUKAN regresi, tapi bikin suite ini buta di area guard.
+= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+BUKTI (dari /tmp/fmtest_new2.log, 802 test / 795 pass / 7 fail, dan 7 nama itu IDENTIK
+dengan baseline sebelum pushmu — jadi nol regresi dari f5aedfa):
+  - executionGuard.test.ts:328      expected 70 !== actual 1400   (live width cap)
+  - executionGuard.test.ts:362      false !== true
+  - executionGuard.test.ts        "[guard] ... live width cap: 1400 bins (the DLMM maximum;
+                                    no operator cap)" tidak match /live width cap: 70 bins \(NARROW ONLY/
+  - "this machine has live trading armed"   true !== false
+  - + 3 lagi yang sekelas: "is OFF by default", "requires BOTH switches", "stays inert
+    unless explicitly armed", "onchain executor — the engine cannot reach it", "status report"
+  Penyebabnya: test-nya meng-assert POSTUR DEFAULT (senjata belum dikokang, width cap 70),
+  padahal dia membaca `.env` ASLI mesin ini — dan mesin ini live: DRY_RUN=false,
+  LIVE_MAX_POSITION_BINS=1400, trading armed.
+
+MASALAH: 7 test itu merah permanen di mesin ini, jadi suite-nya bukan detektor regresi
+untuk area arming/guard/width — tepat di area yang paling mahal kalau salah. Kalau nanti
+ada regresi nyata di zona itu, ia tenggelam di antara merah yang "sudah biasa".
+
+YANG DIMINTA:
+  1. Bikin test-test itu HERMETIK: inject env-nya sendiri (atau pakai `.env.test` yang
+     dimuat eksplisit), jangan baca `.env` operator. Dua-duanya harus diuji — "armed"
+     DAN "disarmed" — dan keduanya lewat env yang di-inject.
+  2. JANGAN menyelesaikannya dengan melonggarkan assert atau menghapus test. Kalau ada
+     test yang memang sudah tidak relevan, tulis alasannya di komentar.
+  3. Target: `npm test` = 0 fail di mesin ini TANPA mengubah `.env`. Kalau ada test lain
+     yang ternyata bergantung pada state mesin, kumpulkan dan bikin hermetic juga.
+  4. JANGAN mengubah nilai gate/width/arming yang sebenarnya di `.env` atau di default
+     kode — yang berubah cuma CARA TEST MEMBACA, bukan aturannya.
+
+= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+TASK 4 — Kecil: settler tidak menulis balik ke `live_execution_attempts`.
+= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+BUKTI: setelah `scripts/settleResidualByHand.cjs --id 4 --after-lamports 2961019685
+--execute`, row `simulated_positions` id 4 sudah benar (residual_sweep='operator',
+wallet_lamports_after=2961019685). TAPI `live_execution_attempts` id 1 (MANLET-SOL,
+outcome 'opened') masih `wallet_lamports_after = NULL`, `cost_lamports = NULL`,
+`unwind = 'none'`. Jadi dua buku tidak sepakat, dan biaya/drift per-attempt tidak bisa
+dihitung untuk satu-satunya trade yang benar-benar tertutup.
+
+YANG DIMINTA:
+  1. Settler juga meng-update row `live_execution_attempts` yang cocok (match lewat
+     `position_address`; kalau NULL, fallback ke pair_name + jendela waktu, dan tulis
+     di komentar kenapa fallback-nya begitu).
+  2. Idempoten, dry-run tetap menampilkan apa yang AKAN diubah di kedua tabel.
+  3. JANGAN menebak-nebak nilai: kalau tidak ada row attempt yang bisa di-match dengan
+     yakin, bilang di output, jangan menulis.
+
+= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+TASK 5 — (murah, read-only) Audit jalur exit: pastikan tidak ada yang bypass sweep.
+= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+Klaim di komentar `closeLivePosition`: "Every live exit reaches the chain through here —
+take-profit, stop-loss, out-of-range and timeout from the monitor, and `/close_all` — via
+`settleLiveCloses`". Gw sudah hitung sendiri dan ketemu HANYA satu panggilan close mentah
+(onchainExecutor.ts:3074 = implementasi low-level di dalam dlmmExecutor). Minta lu
+memverifikasi ini secara independen dan TULIS DAFTARNYA: setiap tempat yang bisa menutup
+posisi live, dan kenapa dia lewat `closeLivePosition`. Kalau ada yang bypass, itu temuan
+P0 — laporkan, jangan diam-diam perbaiki tanpa bilang.
+
+= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+BATASAN (berlaku semua task)
+= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+- JANGAN sentuh `.env`. JANGAN restart pm2. JANGAN deploy. JANGAN ubah gate yang tidak
+  boleh berubah: breakeven 2.5x, anti-rug fail-closed, friction gate, LIVE_MAX_POSITION_BINS,
+  allowlist SOLANA_PRIVATE_KEY, POOL_DENYLIST.
+- JANGAN bikin jejak tanda tangan transaksi kedua di wallet yang sama (satu jalur swap saja:
+  `executeJupiterSwap`).
+- Setiap perubahan skema DB = migrasi aditif (kolom baru), jangan rewrite tabel.
+- Jangan tulis kredensial apa pun (bot token, RPC, private key) ke kode, log, test, atau commit.
+- Setelah selesai: `npm run typecheck` + `npm test` (laporkan jumlah pass/fail + nama fail
+  yang tersisa, dibandingkan baseline 7-fail di atas) + `npm run build`. JANGAN restart engine.
+- Commit + push per task, pesan commit deskriptif. Gw yang deploy.
