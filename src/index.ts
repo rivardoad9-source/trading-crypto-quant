@@ -23,6 +23,11 @@ import {
   reconcilePositions,
 } from "./services/reconciliation.js";
 import { assessLiveSizing, describeLiveSizing } from "./services/liveSizingGuard.js";
+import {
+  decideStandingAlert,
+  initialStandingAlertState,
+  type StandingAlertDecision,
+} from "./services/standingAlert.js";
 import { getWalletBalanceSol } from "./services/solana.js";
 import { getStartingBalanceUsd } from "./config/startingBalance.js";
 import { sendMessage } from "./services/telegram.js";
@@ -162,10 +167,30 @@ async function preflight(): Promise<void> {
  * position. The enforcement lives at the spend (`liveSizingGuard.ts` via
  * `openLivePosition`) and the correction is an operator's `.env` edit.
  *
- * Alerts are sent only for a BREACH, and only once per run of this function, so a check
- * on the screener's clock cannot turn a standing condition into a stream of messages
- * the operator learns to ignore.
+ * Alerts are sent only for a BREACH, and DEDUPED ON THE CONDITION (`standingAlert.ts`):
+ * the first breach pages with every number, the same breach is held for up to 6 hours,
+ * a different breach pages at once, and the return to normal sends one line. This used to
+ * say "only once per run of this function" — true, and on an hourly cron it meant a
+ * standing condition paged 24 times a day. The state is in memory: a restart re-pages a
+ * standing condition once, which is the right thing for a process that just came back.
  */
+let sizingAlertState = initialStandingAlertState();
+let driftAlertState = initialStandingAlertState();
+
+/** Logs a decision that sends nothing, and sends the ones that do. Never throws. */
+async function deliverStandingAlert(
+  channel: string,
+  decision: StandingAlertDecision,
+): Promise<void> {
+  if (!decision.send) {
+    if (decision.reason === "held") {
+      console.log(`[main]     ${channel} alert held (same condition already paged)`);
+    }
+    return;
+  }
+  await sendMessage(decision.text, false).catch(() => undefined);
+}
+
 async function reportCapitalHealth(): Promise<void> {
   const address = liveMicroCapital.walletAddress;
   let walletSol: number | null = null;
@@ -183,9 +208,16 @@ async function reportCapitalHealth(): Promise<void> {
   const sizing = assessLiveSizing({ balanceSol: walletSol, balanceError: readError });
   const line = describeLiveSizing(sizing);
   if (sizing.ok) console.log(`[main]     ${line}`);
-  else {
-    console.error(`[main]     ${line}`);
-    await sendMessage(line, false).catch(() => undefined);
+  else console.error(`[main]     ${line}`);
+  {
+    const { decision, next } = decideStandingAlert(sizingAlertState, {
+      violations: sizing.ok ? [] : [`sizing:${sizing.status}`],
+      message: line,
+      recoveredMessage: `✅ ${line} — normal lagi`,
+      nowMs: Date.now(),
+    });
+    sizingAlertState = next;
+    await deliverStandingAlert("sizing", decision);
   }
 
   try {
@@ -197,18 +229,32 @@ async function reportCapitalHealth(): Promise<void> {
       // against a version of it invented here.
       bookUsd: getStartingBalanceUsd() + getLifetimeStats().realizedPnlUsd,
       walletSol,
+      // Display only. The breach is decided in SOL against the baseline price below.
       solPriceUsd,
+      baselineSolPriceUsd: env.BASELINE_SOL_PRICE_USD,
       thresholds: {
         maxPct: env.WALLET_DRIFT_MAX_PCT,
         maxSol: env.WALLET_DRIFT_MAX_SOL,
       },
     });
     const driftLine = describeWalletDrift(drift);
-    if (drift.status === "drifted") {
-      console.warn(`[main]     ${driftLine}`);
-      await sendMessage(driftLine, false).catch(() => undefined);
-    } else {
-      console.log(`[main]     ${driftLine}`);
+    if (drift.status === "drifted") console.warn(`[main]     ${driftLine}`);
+    else console.log(`[main]     ${driftLine}`);
+
+    /*
+     * UNMEASURED feeds no decision: it is neither a breach nor a recovery, so a price or
+     * balance outage neither pages nor announces "normal" over a condition it cannot see.
+     */
+    if (drift.status !== "unmeasured") {
+      const direction = (drift.driftSol ?? 0) < 0 ? "short" : "surplus";
+      const { decision, next } = decideStandingAlert(driftAlertState, {
+        violations: drift.breached.map((b) => `drift:${direction}:${b}`),
+        message: driftLine,
+        recoveredMessage: `✅ ${driftLine} — normal lagi`,
+        nowMs: Date.now(),
+      });
+      driftAlertState = next;
+      await deliverStandingAlert("drift", decision);
     }
   } catch (err) {
     console.warn(

@@ -440,6 +440,26 @@ const EnvSchema = z
     WALLET_DRIFT_MAX_PCT: numeric(1),
     WALLET_DRIFT_MAX_SOL: numeric(0.02),
     /**
+     * The SOL/USD price at which `STARTING_BALANCE_USD` was pinned. Written by the
+     * OPERATOR, alongside that pin; never fetched, never defaulted.
+     *
+     * The drift check converts the USD book to SOL at THIS price and compares SOL to SOL.
+     * Without it the only way to compare was `walletSol x spot`, which made every SOL/USD
+     * move read as money leaving the wallet (11 Sep 2026: a 1.15% price dip paged
+     * "-0.033474 SOL" on a wallet that had not changed by a lamport). A price guessed or
+     * fetched here would re-create exactly that, so an unset value makes the check
+     * report NOT MEASURED instead. Not positive is treated the same way.
+     */
+    BASELINE_SOL_PRICE_USD: z
+      .string()
+      .optional()
+      .transform((v) => {
+        const trimmed = v?.trim() ?? "";
+        if (trimmed === "" || PLACEHOLDER.test(trimmed)) return null;
+        return Number(trimmed);
+      })
+      .pipe(z.number().finite().nullable()),
+    /**
      * The widest position, in bins, the LIVE path may open. Default 70 — narrow only.
      *
      * This is a CIRCUIT BREAKER on an execution path, not a view about what the DLMM
