@@ -1223,6 +1223,37 @@ export interface FailedAttemptCost {
  * window. `parseDbTimestamp` is the JavaScript-side equivalent, and this is why the sum
  * happens here rather than over rows read into memory.
  */
+/**
+ * Completes the `opened` attempt row once its position has closed and SETTLED.
+ *
+ * `openLivePosition` writes that row with `wallet_lamports_after` NULL on purpose — at open
+ * there is no honest "after". Nothing ever came back to fill it, so `live_execution_attempts`
+ * and `simulated_positions` disagreed about every trade that actually closed (MANLET-SOL,
+ * 11 Sep 2026, was the first). Called only with a SETTLED after-balance; the cost is
+ * `attemptCostLamports`, negative when the trade made SOL, and `unwind` becomes `clean`
+ * because the bought token is back in SOL.
+ *
+ * Matched on `position_address` and `outcome = 'opened'` only, and only while the row is
+ * still unfilled, so it never overwrites a figure and is safe to call twice. Returns the
+ * number of rows changed (0 or 1). Outcome-`failed` rows — the ones the failed-cost budget
+ * sums — are never touched.
+ */
+export function settleOpenedLiveAttempt(positionAddress: string, walletLamportsAfter: number): number {
+  const info = db
+    .prepare(
+      `UPDATE live_execution_attempts
+          SET wallet_lamports_after = @after,
+              cost_lamports = CASE WHEN wallet_lamports_before IS NULL THEN NULL
+                                   ELSE wallet_lamports_before - @after END,
+              unwind = CASE WHEN unwind IN ('none', 'unknown') OR unwind IS NULL
+                            THEN 'clean' ELSE unwind END
+        WHERE outcome = 'opened' AND position_address = @position
+          AND wallet_lamports_after IS NULL`,
+    )
+    .run({ after: Math.round(walletLamportsAfter), position: positionAddress });
+  return info.changes;
+}
+
 export function sumFailedAttemptCost(hours: number): FailedAttemptCost {
   const row = db
     .prepare(
