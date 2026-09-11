@@ -1,0 +1,126 @@
+FlowMetrix — 1 perbaikan KODE: wallet-drift harus diukur dalam SATUAN SOL, bukan USD.
+Branch: main. Baca dulu, jangan riset ulang. Jangan sentuh `.env`, jangan restart pm2, jangan deploy.
+
+====================================================================
+KONTEKS SINGKAT
+====================================================================
+`assessWalletDrift()` (src/services/reconciliation.ts) membandingkan `bookUsd`
+(`STARTING_BALANCE_USD + realizedPnlUsd`, dipin SEKALI di `.env`) dengan
+`walletSol x solPriceUsd` (spot). Konsekuensinya: SELURUH selisih ditentukan harga SOL,
+bukan oleh SOL yang benar-benar keluar.
+
+Bukti produksi 11 Sep 2026 (semua angka dari server, jam 05:4x WIB):
+- Wallet on-chain: 2.88099368 SOL — PERSIS sama sebelum dan sesudah alert.
+- `live_execution_attempts`: 0 baris. `simulated_positions`: 0 baris. Tidak ada uang keluar.
+- `STARTING_BALANCE_USD=288.27` dipin saat SOL/USD = 100.06 (288.27 / 2.880994).
+- Alert yang dikirim operator: `[drift] WALLET/BOOK DRIFT: the book says $288.27 and the
+  wallet holds 2.880994 SOL (~$284.96) — a drift of $-3.31 (-0.033474 SOL, 1.15% of the
+  book), over the 1% and 0.02 SOL threshold`.
+- Pemicunya murni harga: SOL/USD turun ~1,15% (100.06 → ~98.91). Tidak ada SOL hilang.
+
+CACAT YANG HARUS DIPERBAIKI (dan ini yang utama):
+`driftSol` BUKAN pengukuran SOL. Ia diturunkan dari selisih USD yang sama:
+`driftSol = driftUsd / solPriceUsd`. Jadi bidang "0.02 SOL" di thresholds itu bukan
+ambang SOL — ia ikut bergerak bersama harga dan tidak bisa membedakan
+(a) "harga SOL bergerak" dari (b) "SOL keluar dari wallet". Keduanya menghasilkan pesan
+yang identik, padahal yang (a) tidak butuh manusia sama sekali.
+
+Contoh kuantitatif yang harus jadi test: wallet 2.880994 SOL SEBELUM dan SESUDAH,
+harga 100.06 → 99.29 (-0,77%) sudah cukup menembus ambang `maxSol=0.02`
+(driftSol 0,0223). Artinya ambang SOL saat ini ≈ 0,7% dari book — lebih ketat dari
+ambang persennya sendiri, dan sepenuhnya noise.
+
+CATATAN OPERATOR (sudah dilakukan di server, JANGAN diubah lagi olehmu):
+threshold di `.env` sementara dinaikkan ke `WALLET_DRIFT_MAX_PCT=4` dan
+`WALLET_DRIFT_MAX_SOL=0.12` hanya sebagai NOISE FLOOR supaya alert berhenti setiap jam.
+Fix di bawah ini yang membuat angka wajar kembali; setelah fix landing, operator yang
+akan menurunkan threshold-nya, bukan kamu.
+
+====================================================================
+TASK 1 — Ukur drift dalam SOL terhadap baseline yang juga dipin dalam SOL
+====================================================================
+Yang diminta (minimal, jangan refactor besar):
+
+1. Tambahkan input `baselineSolPriceUsd` (nullable) ke `assessWalletDrift()`. Nilainya
+   berasal dari `.env` (operator yang menulisnya; kalau kamu butuh nama, usulkan di
+   komentar + `.env.example`, mis. `BASELINE_SOL_PRICE_USD`). JANGAN hardcode harga.
+
+2. Hitung dua kuantitas yang JUJUR dan beri nama yang tidak bisa tertukar:
+   - `bookSol = bookUsd / baselineSolPriceUsd` — apa yang diklaim buku, dalam SOL.
+   - `driftSol = walletSol - bookSol` — INI pengukurannya. Positif = wallet memegang
+     lebih banyak SOL daripada yang diklaim buku.
+   `driftUsd`/`driftPct` boleh tetap ada UNTUK TAMPILAN saja (harga yang dipakai harus
+   eksplisit di pesan), tapi **keputusan breach WAJIB berbasis SOL**.
+
+3. Ubah bentuk thresholds supaya tidak lagi mencampur dua satuan yang berbeda. Minimal,
+   hormati niat aslinya: satu ambang RELATIF (`maxPct` dihitung terhadap `bookSol`,
+   bukan terhadap USD) dan satu ambang ABSOLUT (`maxSol` sebagai selisih SOL nyata).
+   Breach dihitung dari `walletSol - bookSol`, titik.
+
+4. Kalau `baselineSolPriceUsd` tidak ada/`<= 0`, ATAU `walletSol` null:
+   `status: "unmeasured"`, `breached: []`, TIDAK ada alert, TIDAK ada drift 0. Sama
+   seperti aturan yang sudah ada: "tidak terukur" tidak boleh tampil seperti "sudah
+   dibandingkan dan cocok". Ditto kalau `solPriceUsd` null — boleh tetap `unmeasured`
+   untuk sisi USD, tapi JANGAN sampai membuat keputusan breach dari angka yang tidak ada.
+
+5. Pesan alert WAJIB memisahkan dua sebab itu secara eksplisit, karena inilah keluhan
+   aslinya. Kurang lebih:
+   - kalau `driftSol` di dalam ambang tetapi sisi USD bergerak: sebut bahwa yang bergerak
+     adalah HARGA (harga baseline vs harga sekarang), dan bahwa SALDO SOL TIDAK BERUBAH.
+     Status sebaiknya `ok`, bukan `drifted` — ini kondisi normal, bukan pekerjaan manusia.
+   - kalau `driftSol` di luar ambang: nyatakan SOL-nya keluar/masuk berapa, dan arahkan ke
+     `live_execution_attempts` untuk mencari apakah ada attempt yang menghabiskannya.
+   Pesan yang bilang "drift -0.033474 SOL" untuk gerakan harga **harus hilang** — angka
+   SOL di pesan hanya boleh berasal dari `walletSol - bookSol`.
+
+6. Pertahankan sifat yang sudah ada: modul tetap PURE (tanpa RPC, tanpa DB, tanpa clock —
+   semua input dilewatkan), dan gate ini LIVE-ONLY, jadi jalur paper harus byte-identical.
+   Sertakan atau pertahankan test yang membuktikan paper tidak berubah.
+
+TEST yang wajib ada (offline, tanpa network):
+- harga bergerak, wallet SOL identik → `ok`, TIDAK breach, TIDAK ada alert. (Ini test
+  yang menutup insiden 11 Sep; reproduksi angka di atas: 2.880994 SOL, 100.06 → 99.29.)
+- SOL benar-benar berkurang (mis. -0,05 SOL) → `drifted`, dan `driftSol` = selisih SOL
+  yang nyata, bukan hasil bagi USD.
+- SOL bertambah → arah `driftSol` positif (jangan clamp ke 0).
+- `baselineSolPriceUsd` null / `<= 0` → `unmeasured`, tanpa alert.
+- `walletSol` null → `unmeasured`, tanpa alert (fail-closed ke "jangan klaim", bukan ke 0).
+- `bookSol` = 0 → persen `null`, bukan Infinity.
+- batas: `|driftSol| == maxSol` → tentukan dan dokumentasikan arahnya (konsisten dengan
+  aturan `deployable == balance` yang sudah ada di `liveSizingGuard.ts`: kesetaraan LOLOS
+  pada batas yang diuji).
+
+====================================================================
+TASK 2 — Dedupe alert breach yang berdiri lama (sekali, bukan tiap jam)
+====================================================================
+Masalah: `reportCapitalHealth()` di `src/index.ts` dipanggil oleh cron `CRON.CAPITAL_HEALTH`
+(`7 * * * *`) dan mengirim Telegram setiap kali breach — jadi satu kondisi berdiri = satu
+pesan per jam, selamanya. Operator sudah pernah kena pola ini (watchdog no_agent yang
+spam tiap 15 menit, 10 Sep 2026), dan aturannya sudah ditulis di skill ops: **kondisi
+berulang wajib di-dedupe berbasis state, karena setiap stdout non-kosong dikirim apa adanya.**
+
+Yang diminta:
+- Dedupe berbasis hash dari SET pelanggaran (bukan angka mentah, supaya pesan tidak
+  berubah tiap kali harga bergerak sedikit): alert pertama dikirim, pengulangan yang sama
+  ditahan maksimal 6 jam, dan saat kembali normal kirim SATU baris `✅ … normal lagi`.
+- Sisi `reportCapitalHealth()` yang memeriksa SIZING (`assessLiveSizing`) punya masalah
+  yang sama — perlakukan sama.
+- Pesan tetap membawa semua angka yang sekarang (jangan kurangi informasi di alert pertama).
+
+TEST (offline): breach sama dua kali berturut-turut hanya memicu satu alert + satu alert
+ulang setelah jendela; transisi breach → normal memicu tepat satu baris "normal lagi";
+breach yang berbeda (angka berbeda kelas, mis. SOL vs wallet) memicu alert baru.
+
+====================================================================
+BATASAN
+====================================================================
+- Jangan sentuh `.env` (gitignored, cuma ada di server, wilayah operator). Kalau butuh
+  key baru, tulis di `.env.example` + komentar + sebutkan di ringkasanmu bahwa OPERATOR
+  yang harus menulis nilainya.
+- Jangan restart/deploy apa pun. Jangan jalankan engine.
+- Jangan mengubah arti historis `realized_pnl_usd`, jangan menyentuh gate friction/2.5x,
+  anti-rug, `LIVE_MAX_POSITION_BINS`, denylist, atau allowlist `SOLANA_PRIVATE_KEY`.
+- Jangan taruh helper sekali-pakai di `src/scripts/` (melanggar import-graph test).
+- Suite di mesin yang armed memang gagal 7 subtest dengan nama tetap (profil inert); itu
+  bukan regresi. Bandingkan NAMA yang gagal, bukan jumlahnya.
+- Jalankan `npm run typecheck` DAN `npm test` (bukan cuma `npx tsc --noEmit`).
