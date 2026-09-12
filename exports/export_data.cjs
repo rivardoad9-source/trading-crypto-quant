@@ -195,7 +195,15 @@ function gitPush(commitMsg) {
       execSync(`git commit -m "${commitMsg}"`, { cwd: REPO, stdio: ["ignore", "pipe", "pipe"] });
       // Rebase onto remote first so a concurrent push from the laptop can't
       // make the nightly push fail with a non-fast-forward rejection.
-      execSync("git pull --rebase origin main", { cwd: REPO, stdio: ["ignore", "pipe", "pipe"] });
+      //
+      // `--autostash`, because this working tree is NEVER clean: the engine writes
+      // exports/, data/ and .env as it runs, and `git pull --rebase` refuses outright
+      // when anything is unstaged ("cannot pull with rebase: You have unstaged
+      // changes"). That is exactly how the 11 Sep 2026 nightly export failed — it
+      // committed its own files, then refused to rebase because of changes it does not
+      // own, and exited 1 with nothing pushed. Autostash puts those aside for the
+      // rebase and restores them afterwards.
+      execSync("git pull --rebase --autostash origin main", { cwd: REPO, stdio: ["ignore", "pipe", "pipe"] });
       execSync("git push origin main", { cwd: REPO, stdio: ["ignore", "pipe", "pipe"] });
       const local = execSync("git rev-parse HEAD", { cwd: REPO }).toString().trim();
       const remote = execSync("git ls-remote origin main", { cwd: REPO })
