@@ -97,4 +97,8 @@ DB: `simulated_positions.id 5` + `live_execution_attempts.id 3` (buka read-only)
    `fm_residual_selfheal.py` (10 menit, 0 token).
 3. ⬜ SL −8% **belum pernah kena** di live (kode + test ada; jalur eksekusinya sama persis dengan TP
    yang barusan jalan — `dlmmTraderAgent.ts:487` → `closeLivePosition` yang sama).
-4. ⬜ Biaya konversi exit di pool bin-step lebar (§5) — keputusan operator.
+4. ❌ **Biaya konversi exit di pool bin-step lebar (§5) — KEPUTUSAN OPERATOR 12 Sep 2026: FORMULA TIDAK DIUBAH.**
+   TP/SL/max-age tetap V1.1 apa adanya, karena angka-angka itu adalah **hasil backtest**; menaikkan TP
+   (atau menyaring bin-step) berarti mengubah formula yang sudah divalidasi, dan backtest-nya jadi tidak
+   berlaku lagi. Biaya spread exit (~3.9% di pool bin-step 2%) diterima sebagai ongkos strategi.
+   **Jangan usulkan perubahan parameter TP/SL/gate lagi tanpa diminta.**
