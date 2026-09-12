@@ -1872,3 +1872,21 @@ Full write-up: `docs/incidents/2026-09-12-half-landed-open-orphan-manlet.md`.
    measured one, and refuses until the chain proves the recovery happened). Hermes' cron
    `fm_orphan_selfheal.py` runs both every 10 minutes — a safety net OUTSIDE the engine, not a
    substitute for the engine treating a partial open as its own problem.
+
+### A stale swap quote is re-quoted, not rebuilt (12 Sep 2026, same day)
+
+`executeJupiterSwap` fetches a quote and builds against it; `sendAndConfirm` rebuilds on a new
+blockhash but hands `buildJupiterSwap` the SAME quote. So a `SlippageToleranceExceeded`
+(Jupiter 6001, `0x1771`) refusal — the pool moved past the 0.5% bound baked into the quote —
+repeats identically on every rebuild. Observed on EMBER-SOL: **eight** rebuilds, all refused for
+the same drift, entry aborted with nothing spent (the refusal is a preflight rejection, so
+nothing reached the network).
+
+`isSlippageRejection()` (onchainExecutor.ts) names that refusal, and
+`executeJupiterSwapFreshQuote()` (liveExecution.ts, `SWAP_REQUOTE_ATTEMPTS = 2`) re-fetches the
+quote and rebuilds. **All three live swaps go through it**: the balancing swap before an open,
+the auto-unwind after a failed open, and the residual sale after an exit — the last two are the
+paths that put capital back in SOL, and failing them because the market moved is what leaves
+tokens in a wallet. Retrying is gated on the refusal type AND the attempt bound together;
+anything that is not a slippage refusal propagates untouched, because an unknown outcome must
+never be retried.

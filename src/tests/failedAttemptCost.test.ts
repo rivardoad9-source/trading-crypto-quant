@@ -177,7 +177,7 @@ describe("where the new gates sit", () => {
   it("checks the failed-cost budget and the capital guard BEFORE the balancing swap", () => {
     const budget = source.indexOf("sumFailedAttemptCost(env.LIVE_FAILED_COST_WINDOW_HOURS)");
     const sizing = source.indexOf("assessLiveSizing({ balanceSol: await readWalletBalanceForGuard() })");
-    const swap = source.indexOf("await executeJupiterSwap(auth, {");
+    const swap = source.indexOf("await executeJupiterSwapFreshQuote(auth, {");
 
     assert.ok(budget > 0, "the failed-cost budget must be consulted in openLivePosition");
     assert.ok(sizing > 0, "the capital guard must be consulted in openLivePosition");
@@ -290,7 +290,7 @@ describe("stranded capital — an unresolved orphan holds new entries", () => {
     const firstStrike = source.indexOf("recordPoolExecutionFailure({");
     // The balancing swap itself, not the word "swapping" — the rescue path swaps too, and a
     // comment mentioning it would make this assertion meaningless.
-    const swap = source.indexOf("await executeJupiterSwap(auth, {");
+    const swap = source.indexOf("await executeJupiterSwapFreshQuote(auth, {");
 
     assert.ok(guard > 0, "the stranded-capital guard is gone");
     assert.ok(breaker > 0 && firstStrike > 0 && swap > 0);

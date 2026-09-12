@@ -851,6 +851,39 @@ export function isStaleActiveBinRejection(
 }
 
 /**
+ * Whether a rejection says the SWAP QUOTE went stale rather than that the swap is wrong.
+ *
+ * `SlippageToleranceExceeded` is Jupiter's custom code 6001 (`0x1771`): the pool moved further
+ * than the slippage bound hard-coded into the quote between the moment the quote was fetched
+ * and the moment the transaction was simulated. Like a stale active bin it is a statement
+ * about ELAPSED TIME, not about the transaction — and it is the one refusal this engine cannot
+ * fix by rebuilding from the same quote, because the quote is the stale part. A fresh quote
+ * prices the moved pool and lands.
+ *
+ * 12 Sep 2026, EMBER-SOL: the balancing swap was rebuilt EIGHT times against a single quote
+ * (`buildJupiterSwap(auth, quote, …)` reuses it) and every attempt was refused for the same
+ * 0.5% of drift, so the entry aborted. Nothing was spent — a preflight rejection never reaches
+ * the network — but the engine could not enter any token that was actively moving, which is
+ * precisely when a DLMM fee opportunity is doing something.
+ *
+ * Safe to retry in both of its shapes:
+ *  - a preflight rejection means nothing entered the network;
+ *  - a transaction that LANDED and reverted moved no tokens, so nothing was swapped.
+ * Matched on the name first and the raw code second, like its two siblings.
+ */
+export function isSlippageRejection(
+  logs: readonly string[] | null,
+  message: string,
+): boolean {
+  const haystack = [message, ...(logs ?? [])].join(" | ");
+  // The negative lookahead keeps `0x1771` from matching inside a longer hex code, exactly as
+  // the insufficient-funds matcher keeps `0x1` away from `0x1774`.
+  return /SlippageToleranceExceeded|custom program error: 0x1771(?!\w)|Error Number: 6001(?!\w)/i.test(
+    haystack,
+  );
+}
+
+/**
  * Whether a rejection says an ACCOUNT WAS SHORT rather than that the work was wrong.
  *
  * The 10 Sep 2026 KNOTS-SOL open died on `TransferChecked` with the SPL token program's

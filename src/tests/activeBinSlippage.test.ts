@@ -73,7 +73,7 @@ describe("execution-time volatility — the free refusal", () => {
   it("runs BEFORE the swap and before the rehearsal, where a refusal costs nothing", () => {
     const gate = liveSource.indexOf("EXECUTION-TIME VOLATILITY");
     const rehearsal = liveSource.indexOf("const rehearsal = await rehearseOpenPosition");
-    const swap = liveSource.indexOf("const { result: swap } = await executeJupiterSwap");
+    const swap = liveSource.indexOf("const { result: swap } = await executeJupiterSwapFreshQuote");
     assert.ok(gate > 0 && gate < rehearsal && rehearsal < swap);
   });
 
