@@ -167,16 +167,26 @@ describe("onchain executor — the engine cannot reach it", () => {
     const importsExecutor = /(?:from\s*|import\s*\(\s*)["'][^"']*onchainExecutor(?:\.js)?["']/;
     const importers = files.filter((f) => importsExecutor.test(readFileSync(f, "utf8")));
     /*
-     * Four entries, and the list is the security boundary — every addition widens who
+     * Five entries, and the list is the security boundary — every addition widens who
      * can move funds. `liveExecution.ts` is the bridge the engine goes through; if a
-     * fifth file ever needs to be added here, that is the moment to ask whether it
+     * sixth file ever needs to be added here, that is the moment to ask whether it
      * should instead call the bridge.
+     *
+     * `scripts/recoverFundedOrphan.ts` (added 12 Sep 2026) is the same shape of exception
+     * as `testMicroSwap.ts`: an operator-run tool, deliberately NOT part of the engine's
+     * import graph, with a dry run as its default and `--execute` as the only way to spend.
+     * It goes through the executor rather than the bridge because the position it recovers
+     * is an ORPHAN — a half-landed open leaves a funded position account with NO
+     * `simulated_positions` row, and every bridge entry point keys off a tracked position.
+     * The engine itself grew no new caller: it is the operator's tool for the case the
+     * engine already gave up on (see docs/incidents/2026-09-12-half-landed-open-orphan-manlet.md).
      */
     const allowed = new Set([
       join(srcDir, "services", "onchainExecutor.ts"),
       join(srcDir, "services", "liveExecution.ts"),
       join(srcDir, "tests", "onchainExecutor.test.ts"),
       join(repoRoot, "scripts", "testMicroSwap.ts"),
+      join(repoRoot, "scripts", "recoverFundedOrphan.ts"),
     ]);
 
     for (const f of importers) {
@@ -351,6 +361,31 @@ describe("onchain executor — priority fee escalation", () => {
     const plan = await planPriorityFee(0, base);
     assert.ok(plan.computeUnitLimit > 0);
     assert.ok(plan.estimatedLamports > 0);
+  });
+
+  it("keeps rebuilding long enough for the escalating fee to reach the ceiling", async () => {
+    /*
+     * 12 Sep 2026, real money. The recovery for a half-landed open — first the Jupiter
+     * auto-unwind, then `closeOrphanPosition` — lost THREE rebuilds in a row to
+     * `blockhash expired`, at 20 000 / 40 000 / 80 000 micro-lamports per CU (about
+     * 0.000016 SOL of priority fee), and gave up. 1.802543 SOL of live capital stayed in
+     * a funded position nothing was watching until an operator closed it by hand.
+     *
+     * The escalation could always reach the ceiling; three attempts just never got there.
+     * This binds the budget to the thing that matters: the LAST rebuild is priced at the
+     * ceiling, so an expiry there is not a fee problem.
+     */
+    assert.ok(
+      base.maxBuildAttempts >= 8,
+      `rebuild budget is ${base.maxBuildAttempts}; a recovery that keeps expiring needs more ` +
+        `rounds than the fee needs doublings (8)`,
+    );
+    const last = await planPriorityFee(base.maxBuildAttempts - 1, base);
+    assert.equal(
+      last.microLamportsPerCu,
+      base.maxPriorityMicroLamports,
+      "the last rebuild is not priced at the ceiling, so it can expire for the same reason",
+    );
   });
 });
 

@@ -138,8 +138,22 @@ const OnchainSchema = z.object({
   ONCHAIN_MAX_PRIORITY_MICRO_LAMPORTS: numeric(2_000_000),
   /** Multiplier applied to the priority fee on each rebuild. */
   ONCHAIN_PRIORITY_ESCALATION: numeric(2.0),
-  /** How many times a transaction may be REBUILT after its blockhash expires. */
-  ONCHAIN_MAX_BUILD_ATTEMPTS: numeric(3),
+  /**
+   * How many times a transaction may be REBUILT after its blockhash expires.
+   *
+   * 8, not 3 (raised 12 Sep 2026 after a live incident). The fee escalates by
+   * `ONCHAIN_PRIORITY_ESCALATION` per rebuild, so a chain of 3 doublings from the 20 000
+   * micro-lamports floor tops out at 80 000 — roughly 0.000016 SOL of priority fee at the
+   * 400 000 CU floor, which a busy cluster simply ignores. On 12 Sep 2026 the recovery for
+   * a half-landed open (the Jupiter auto-unwind, then `closeOrphanPosition`) lost all
+   * three rebuilds to `blockhash expired` and gave up, leaving 1.8 SOL of live capital in
+   * a funded position nothing was watching until an operator closed it by hand.
+   * 8 rebuilds reach the `ONCHAIN_MAX_PRIORITY_MICRO_LAMPORTS` ceiling (20 000 x 2^7 =
+   * 2.56 M > 2 M), so the last attempt is priced to land whatever the cluster is charging;
+   * the whole worst-case chain costs ~0.0008 SOL. See
+   * `docs/incidents/2026-09-12-half-landed-open-orphan-manlet.md`.
+   */
+  ONCHAIN_MAX_BUILD_ATTEMPTS: numeric(8),
   /** Jupiter swap API base. Keyless lite tier; matches ENDPOINTS.JUPITER_PRICE's host. */
   JUPITER_SWAP_API_URL: z.string().url().default("https://lite-api.jup.ag/swap/v1"),
 });
