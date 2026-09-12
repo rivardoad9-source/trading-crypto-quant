@@ -40,6 +40,7 @@ import {
   binRangeFromPrices,
   depositSlippage,
   isInsufficientFundsRejection,
+  isSlippageRejection,
   isStaleActiveBinRejection,
   positionHoldsValue,
   dlmmExecutor,
@@ -1789,6 +1790,40 @@ describe("onchain executor — the narrow fused open is no longer sent blind", (
     );
   });
 
+  it("tells a stale SWAP QUOTE apart from the stale-active-bin and shortfall refusals", () => {
+    /*
+     * Third sibling, third remedy. Jupiter's `SlippageToleranceExceeded` is 0x1771 (6001);
+     * the DLMM active-bin refusal is 0x1774 (6004). One hex digit apart, opposite fixes: a
+     * stale QUOTE has to be re-fetched (rebuilding against it repeats the refusal forever —
+     * 12 Sep 2026, eight identical rebuilds and the entry aborted), while the deposit-side
+     * refusals are fixed by rebuilding from CURRENT state.
+     */
+    assert.equal(
+      isSlippageRejection(
+        null,
+        "Transaction simulation failed: Error processing Instruction 6: custom program error: 0x1771",
+      ),
+      true,
+    );
+    assert.equal(
+      isSlippageRejection(
+        ["Program JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4 failed: custom program error: 0x1771"],
+        "failed",
+      ),
+      true,
+    );
+    assert.equal(
+      isSlippageRejection(["Error Number: 6001. Error Message: SlippageToleranceExceeded."], "x"),
+      true,
+    );
+
+    // The lookalikes must not match: each one belongs to a different remedy.
+    assert.equal(isSlippageRejection(null, "custom program error: 0x1774"), false);
+    assert.equal(isSlippageRejection(null, JSON.stringify({ Custom: 6004 })), false);
+    assert.equal(isSlippageRejection(null, "custom program error: 0x1"), false);
+    assert.equal(isSlippageRejection([], "blockhash expired: block height exceeded"), false);
+  });
+
   it("simulates the fused transaction before sending it", () => {
     /*
      * The rehearsal deliberately skips this transaction — the deposit cannot be simulated
@@ -1862,6 +1897,39 @@ describe("onchain executor — the narrow fused open is no longer sent blind", (
       (executorSource.match(/await simulateAgainstCluster\(/g) ?? []).length,
       3,
       "a fourth simulation site appeared, or one stopped using the shared resolver",
+    );
+  });
+});
+
+describe("onchain executor — every live swap re-quotes a stale quote", () => {
+  /*
+   * 12 Sep 2026, EMBER-SOL: the balancing swap was rebuilt EIGHT times against one quote and
+   * every attempt was refused for 0.5% of drift, so the entry aborted with nothing spent. A
+   * quote is the one input a rebuild cannot refresh (`buildJupiterSwap` is handed the same
+   * `quote`), so the retry has to happen one level up.
+   */
+  const liveSource = readFileSync(join(srcDir, "services", "liveExecution.ts"), "utf8");
+
+  it("routes all three live swaps through the fresh-quote helper", () => {
+    assert.equal(
+      (liveSource.match(/await executeJupiterSwapFreshQuote\(/g) ?? []).length,
+      3,
+      "a live swap no longer re-quotes a stale quote (balancing swap, auto-unwind, residual sale)",
+    );
+    assert.equal(
+      (liveSource.match(/await executeJupiterSwap\(/g) ?? []).length,
+      1,
+      "a swap bypasses the helper and would burn its rebuilds on a stale quote",
+    );
+  });
+
+  it("retries ONLY a slippage refusal, so an unknown outcome is never retried", () => {
+    assert.match(liveSource, /isSlippageRejection\(logs, message\)/);
+    assert.match(liveSource, /const SWAP_REQUOTE_ATTEMPTS = 2;/);
+    // The retry must be gated on the refusal type and the attempt bound together.
+    assert.match(
+      liveSource,
+      /if \(!isSlippageRejection\(logs, message\) \|\| attempt >= SWAP_REQUOTE_ATTEMPTS\) throw err;/,
     );
   });
 });

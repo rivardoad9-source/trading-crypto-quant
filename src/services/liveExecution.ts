@@ -43,12 +43,14 @@ import {
   executeJupiterSwap,
   getConnection,
   getJupiterQuote,
+  isSlippageRejection,
   resolveSlippageBps,
   closeEmptyTokenAccount,
   type CloseTokenAccountOutcome,
   onchainConfig,
   quoteOpenCost,
   rehearseOpenPosition,
+  TransactionFailedError,
   type ExecutionAuthorization,
   type OrphanPositionOutcome,
 } from "./onchainExecutor.js";
@@ -362,6 +364,56 @@ export async function recoverPartiallyFundedPosition(
       signatures: [],
       error: reason,
     };
+  }
+}
+
+/**
+ * How many extra quotes a swap may try after the pool moved past the one it was built on.
+ *
+ * Two, matching the re-quote bounds either side of it. One re-quote covers the ordinary case
+ * (0.5% of drift in the seconds between quote and simulation); the second exists for a token
+ * that is moving hard, which is exactly when the entry is worth making. Beyond that the price
+ * is not a quote problem and chasing it is how a swap pays for a spike.
+ */
+const SWAP_REQUOTE_ATTEMPTS = 2;
+
+/**
+ * Runs a Jupiter swap, RE-QUOTING when the refusal says the quote went stale.
+ *
+ * `executeJupiterSwap` fetches a quote and then builds against it; `sendAndConfirm` rebuilds on
+ * a new blockhash but reuses that same quote, so a `SlippageToleranceExceeded` (0x1771) refusal
+ * repeats identically on every rebuild. On 12 Sep 2026 the balancing swap burned all EIGHT
+ * rebuilds that way and the entry aborted — the engine could not enter any token moving more
+ * than 0.5% between quote and preflight, which is precisely the kind of pool a DLMM fee entry
+ * wants.
+ *
+ * Retrying is safe in both shapes of that refusal: a preflight rejection never entered the
+ * network, and a landed-and-reverted swap moved no tokens. Anything else propagates untouched
+ * — an unknown outcome must never be retried, because that is how the same swap executes twice.
+ *
+ * Used for all three swaps the live path makes: the balancing swap before an open, the
+ * auto-unwind after a failed open, and the residual sale after an exit. The last two matter
+ * most: they are the paths that put capital back in SOL, and failing them because the market
+ * moved is what leaves tokens in a wallet.
+ */
+async function executeJupiterSwapFreshQuote(
+  auth: ExecutionAuthorization,
+  params: Parameters<typeof executeJupiterSwap>[1],
+  label: string,
+): Promise<Awaited<ReturnType<typeof executeJupiterSwap>>> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await executeJupiterSwap(auth, params);
+    } catch (err) {
+      const logs = err instanceof TransactionFailedError ? err.logs : null;
+      const message = err instanceof Error ? err.message : String(err);
+      if (!isSlippageRejection(logs, message) || attempt >= SWAP_REQUOTE_ATTEMPTS) throw err;
+      console.warn(
+        `[live] ${label}: the swap quote went stale (slippage exceeded on attempt ` +
+          `${attempt + 1}/${SWAP_REQUOTE_ATTEMPTS + 1}); fetching a FRESH quote and rebuilding ` +
+          `— the refusal was a preflight rejection, so nothing is in flight`,
+      );
+    }
   }
 }
 
@@ -1521,11 +1573,11 @@ export async function openLivePosition(params: {
     }
   }
 
-  const { result: swap } = await executeJupiterSwap(auth, {
+  const { result: swap } = await executeJupiterSwapFreshQuote(auth, {
     inputMint: WSOL_MINT,
     outputMint: pairedMint.toBase58(),
     amountLamports: swapLamports,
-  });
+  }, "balancing swap");
 
   /*
    * FROM HERE THE SWAP HAS SPENT. Everything below is inside the try, and that
@@ -1672,11 +1724,11 @@ export async function openLivePosition(params: {
       const current = await readTokenBalance(auth.wallet, pairedMint, pairedTokenProgram);
       rescueBalance = current;
       if (current > 0n) {
-        const rescue = await executeJupiterSwap(auth, {
+        const rescue = await executeJupiterSwapFreshQuote(auth, {
           inputMint: pairedMint.toBase58(),
           outputMint: WSOL_MINT,
           amountLamports: Number(current),
-        });
+        }, "auto-unwind after a failed open");
         rescueSignature = rescue.result.signature;
       }
     } catch (rescueErr) {
@@ -2012,11 +2064,11 @@ function defaultResidualSweepDeps(
       return Number(quote.outAmount);
     },
     async swapToSol(mint, amount) {
-      const sold = await executeJupiterSwap(auth, {
+      const sold = await executeJupiterSwapFreshQuote(auth, {
         inputMint: mint,
         outputMint: WSOL_MINT,
         amountLamports: Number(amount),
-      });
+      }, "residual sale after an exit");
       return sold.result.signature;
     },
     alert: (message) => sendError("closeLivePosition/residual", new Error(message)),

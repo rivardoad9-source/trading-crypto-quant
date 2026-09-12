@@ -112,7 +112,9 @@ describe("narrow-only — the entry's unrecoverable rent is finally worth-it che
 
   it("fires BEFORE the balancing swap, so a refusal costs nothing", () => {
     const rentAt = liveExecutionSource.indexOf("UnrecoverableRentError(");
-    const swapAt = liveExecutionSource.indexOf("executeJupiterSwap(");
+    // The CALL, not the helper's definition — the definition sits near the top of the file and
+    // would make this ordering assertion meaningless.
+    const swapAt = liveExecutionSource.indexOf("await executeJupiterSwapFreshQuote(");
     assert.ok(rentAt > 0 && swapAt > 0, "expected both the rent gate and the swap");
     assert.ok(
       rentAt < swapAt,

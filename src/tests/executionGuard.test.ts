@@ -695,7 +695,7 @@ describe("execution guard - the bench covers the TOKEN, not one pool address", (
        */
       const bridge = readFileSync(join(SRC, "services/liveExecution.ts"), "utf8");
       const check = bridge.indexOf("new TokenBenchedError(");
-      const swap = bridge.indexOf("const { result: swap } = await executeJupiterSwap(");
+      const swap = bridge.indexOf("const { result: swap } = await executeJupiterSwapFreshQuote(");
 
       assert.ok(check > 0, "openLivePosition must refuse a token-benched pool");
       assert.ok(swap > 0, "the balancing swap is gone");
@@ -749,7 +749,7 @@ describe("execution guard - the bench covers the TOKEN, not one pool address", (
     it("backfills the mint when the pair is resolved, before the swap", () => {
       const bridge = readFileSync(join(SRC, "services/liveExecution.ts"), "utf8");
       const backfill = bridge.indexOf("learnPoolExecutionToken(params.poolAddress");
-      const swap = bridge.indexOf("await executeJupiterSwap(auth, {");
+      const swap = bridge.indexOf("await executeJupiterSwapFreshQuote(auth, {");
       assert.ok(backfill > 0, "openLivePosition must backfill the bench token");
       assert.ok(backfill < swap, "the backfill must not depend on the entry succeeding");
     });
