@@ -1,0 +1,141 @@
+FlowMetrix — perbaikan KODE dari insiden live 12 Sep 2026 (open half-landed → posisi funded
+tanpa penjaga). Branch: main.
+Baca dulu, jangan riset ulang. JANGAN sentuh `.env`, jangan restart pm2, jangan deploy.
+
+====================================================================
+KONTEKS: apa yang terjadi 12 Sep 2026 11:08 WIB (04:08 UTC)
+====================================================================
+Engine coba MANLET-SOL LAGI (pool `68C62WPYiiNZxprbuaMj2ULXpiTDKcs5xsX7kBGnyajR`, 106 bin,
+bin_step 80). Urutan on-chain (wallet `FaVHg7bThap7wcF9G7kjSjrDsMbVrgUkp6twzi1yQKi`):
+
+- 04:01:07Z `pAxuS8Ea…` −0.900021 SOL — balancing swap 0.9 SOL → 99 285.446674 MANLET
+  (`HxQhDGYqyjorgogMJx7YbBHADEDxuHhLnMMmr6VYpyn`)
+- 04:01:55Z `3N92iF3y…` −0.062437 SOL — posisi `2uYWjuvEFR65A4wiBP1RptewxiG1WU3N7chGGopLgoLs`
+  dibuat (rent)
+- 04:03:35Z `59cBjLSC…` −0.840085 SOL — funding tx 1/2 LANDED (kaki wSOL)
+- funding tx 2/2 **rejected at preflight**, tidak pernah masuk network:
+
+    Program log: Instruction: RebalanceLiquidity
+    Program log: process deposit
+    Program Tokenkeg… invoke [2]
+    Program log: Error: insufficient funds        <- custom program error: 0x1
+
+TOTAL 1.802543 SOL keluar dari wallet, dan yang tertinggal di chain: posisi terisi 0.84 SOL
+(wSOL) + 99 285 MANLET di wallet. Ini bentuk yang SAMA dengan KNOTS-SOL 10 Sep
+(`docs/incidents/2026-09-10-half-landed-open-unmonitored-position.md`) — bukan kelas bug baru.
+
+**Yang BARU, dan ini yang memaksa manusia turun tangan:** KEDUA jalur pemulihan otomatis
+kalah oleh blockhash expired, masing-masing 3 build:
+- auto-unwind (jual token sisa → SOL): `aEL78kPC…` expired → menyerah setelah 3 build
+- `dlmmExecutor.closeOrphanPosition`: `2ru445UT…` expired → menyerah setelah 3 build
+
+Jadi klaim "auto-unwind yang menangani" tidak selalu benar: begitu satu build kalah, engine
+berhenti, dan modal (1.8 SOL = 61% dari kapital live) duduk di chain tanpa penjaga sampai
+operator memulihkannya manual (`scripts/recoverFundedOrphan.ts`, dipakai 11:17–11:22 WIB:
+close `2FBVbFtX…`, jual 99 285 MANLET → 0.871252198 SOL `4bMg2b8d…`, wallet
+1.158476886 → 2.946203635 SOL, net loss insiden 0.014816 SOL).
+
+====================================================================
+TASK 1 (P0) — deposit token paired di-size dari saldo AKTUAL setelah swap, bukan estimasi
+====================================================================
+Ini kemunculan ke-5 dari error yang sama (KNOTS 10 Sep: "the swap confirmed but no token
+balance could be read" dan "landed N of its transactions and then failed … insufficient
+funds"). Setiap kali harganya bergerak sedikit di antara swap dan deposit, deposit meminta
+lebih banyak token daripada yang benar-benar diterima swap → program menolak di
+`process deposit` (0x1), SETELAH swap dan rent sudah dibayar. Biaya tiap kejadian: swap
+round-trip + rent + tx yang gagal, dan posisi yang setengah terisi.
+
+Yang diminta:
+1. Deposito sisi token paired harus dihitung dari saldo token AKTUAL di wallet sesaat
+   sebelum instruksi dibangun (`readTokenBalance` sudah ada di src/services/liveExecution.ts),
+   atau di-cap ke nilai itu — bukan dari estimasi pra-swap (`pairedTokenAmount` yang dipakai
+   sekarang berasal dari quote, bukan dari chain).
+2. Kalau karena sesuatu nilai yang diminta masih > saldo aktual, engine harus memperkecil
+   PERMINTAANNYA (dan mencatatnya di log), bukan menyerahkan tx ke program untuk ditolak.
+3. Simpan bukti di log: `[live] MANLET-SOL: deposit sized to the on-chain balance X (estimated Y)`
+   supaya selisih estimasi-vs-aktual bisa dilihat tanpa menggali RPC.
+4. Tambah test yang menutup kasus "saldo aktual lebih kecil dari estimasi" di jalur funding
+   wide (dua fase) — pola test yang sudah ada untuk `DlmmPartialExecutionError` bisa dipakai.
+
+JANGAN sekadar memperbesar tolerance/slippage: penyebabnya kecocokan angka, bukan slippage.
+
+====================================================================
+TASK 2 (P0) — pemulihan open gagal harus TAHAN (bukan sekali coba lalu menyerah)
+====================================================================
+Sekarang, kalau seluruh build pada `sendAndConfirm` kalah oleh "blockhash expired", auto-unwind
+dan `closeOrphanPosition` berhenti dan hanya MENINGGALKAN pesan `ORPHAN LEFT`. Pesan itu benar
+dan sampai ke operator (watchdog pagi ini memang membunyikan alarm — bagian ini bekerja), tapi
+tidak ada satu pun usaha berikutnya.
+
+Yang diminta:
+1. Selesaikan pemulihan sebagai STATE yang diingat, bukan satu percobaan: kalau
+   unwind/close gagal karena expiry/timeout, catat dan ulangi di cycle berikutnya (mis.
+   lewat monitor loop yang sudah jalan 60 s) sampai state-nya `closed` / `absent` /
+   token sisa sudah terjual.
+2. Naikkan priority fee secara bertahap antar-percobaan (percobaan ke-2 dan ke-3 TIDAK boleh
+   memakai fee yang sama dengan yang sudah kalah — 3 build identik beruntun = 1 build dikali 3).
+3. Jangan pernah menandai selesai sebelum membaca chain: status akhir ditentukan oleh
+   `getAccountInfo(position)` = null + saldo token ≈ 0, bukan oleh "sudah dicoba".
+4. Kalau pemulihan masih gagal setelah N percobaan, eskalasi ke operator dengan SIAPA-berbuat-
+   apa yang jelas: alamat posisi, mint sisa, perintah yang harus dijalankan.
+
+====================================================================
+TASK 3 (P1) — pemulihan harus punya CATATAN di buku (schema)
+====================================================================
+`live_execution_attempts` id 2 sekarang masih berbunyi `cost_lamports = 1802542799`,
+`unwind = 'orphan'` — itu benar pada detik kegagalan dan salah setelah modalnya kembali.
+Tidak ada satu nilai pun di schema yang bisa mengatakan "sudah dipulihkan".
+
+Yang diminta:
+1. Tambah state (mis. `unwind = 'recovered'` + kolom `recovered_at`, `recovery_signatures`,
+   `wallet_lamports_after` final) lewat migrasi di `initDatabase()` seperti biasanya.
+2. Isi kolom itu dari jalur pemulihan engine SENDIRI, dan sediakan jalur operator
+   (script) untuk kasus pemulihan manual — supaya dua buku (`simulated_positions` dan
+   `live_execution_attempts`) bisa sepakat tanpa tulisan tangan ke DB.
+3. JANGAN menimpa angka yang diukur engine dengan angka manusia tanpa menandainya; aturan
+   `settleResidualByHand.cjs` (`residual_sweep = 'operator'`) sudah benar — tiru pola itu.
+
+====================================================================
+TASK 4 (P1) — setelah orphan, entry baru berhenti sampai orphan selesai
+====================================================================
+Pagi ini entry baru memang tidak bisa jalan (saldonya tinggal 1.15 SOL < 2.70 SOL deployable),
+tapi itu KEBETULAN, bukan penjagaan: kalau swap yang gagal hanya membakar sebagian kecil, engine
+akan lanjut membuka posisi baru sementara satu posisi yatim masih hidup di chain tanpa monitor.
+
+Yang diminta: setelah kegagalan pasca-swap yang meninggalkan state `orphan`/belum selesai,
+HOLD entry (mekanisme `data/engine_control.json` yang sudah ada, atau padanannya di memori)
+sampai pemulihan TASK 2 menyatakan bersih. Monitoring/exit tetap jalan. Pesan ke Telegram
+menyebut kenapa dan sampai kapan.
+
+====================================================================
+TASK 5 (P2) — review script pemulihan baru
+====================================================================
+Operator menambahkan `scripts/recoverFundedOrphan.ts` (dipakai pagi ini). Ia TIDAK menandatangani
+apa pun sendiri: `closeOrphanPosition` (jalur `withdrawClaimAndClose`) + `executeJupiterSwap` +
+`closeEmptyTokenAccount`, dry-run default, `--execute` untuk spend, dan MENOLAK posisi yang
+bukan milik wallet / bukan pool yang diminta.
+
+Yang diminta:
+1. Review dan jadikan ini tool resmi pemulihan posisi TERISI (pasangan
+   `closeOrphanPosition.cjs` yang hanya boleh menutup akun KOSONG).
+2. Beri komentar/test pada satu trik yang tidak jelas dan gampang dihapus orang lain:
+   transaksi balik dari SDK dibundel (`@meteora-ag/dlmm/dist/index.js` membawa web3.js-nya
+   sendiri), jadi `conn.simulateTransaction(tx, config)` melempar `Invalid arguments` —
+   sekarang disiasati dengan serialize → `VersionedTransaction.deserialize` sebelum simulasi.
+   Kalau SDK di-upgrade, ini yang pertama rusak.
+3. Tambah test unit untuk keputusan "posisi ini terisi berapa / layak dipulihkan" tanpa
+   menyentuh RPC.
+
+====================================================================
+BATASAN (berlaku semua task)
+====================================================================
+- JANGAN sentuh `.env`. JANGAN restart pm2. JANGAN deploy. JANGAN ubah gate yang sudah
+  ditetapkan: breakeven 2.5x, anti-rug fail-closed, allowlist `SOLANA_PRIVATE_KEY`,
+  `POOL_DENYLIST`, `LIVE_MAX_POSITION_BINS`, TP/SL (`TAKE_PROFIT_PCT`/`STOP_LOSS_PCT` —
+  perubahan TP/SL sedang diputuskan operator, jangan duluan).
+- JANGAN buat penjual otomatis sisi lain (dua sistem yang menandatangani di wallet yang sama).
+- `MANLET-SOL` mint `HxQhDGYq…` sekarang di-bench level-mint (strike pasca-swap), dan entry
+  sedang di-hold lewat `data/engine_control.json`. Jangan cabut keduanya.
+- Perbaiki juga `CLAUDE.md` kalau perilaku yang didokumentasikan berubah.
+- Tulis ringkasan hasil per task + commit hash di akhir; jangan klaim "selesai" tanpa
+  angka test sebelum/sesudah.
