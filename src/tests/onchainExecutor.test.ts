@@ -181,6 +181,16 @@ describe("onchain executor — the engine cannot reach it", () => {
      * `simulated_positions` row, and every bridge entry point keys off a tracked position.
      * The engine itself grew no new caller: it is the operator's tool for the case the
      * engine already gave up on (see docs/incidents/2026-09-12-half-landed-open-orphan-manlet.md).
+     *
+     * `scripts/retryResidualSweep.ts` (added 12 Sep 2026) is the same shape again: the
+     * operator/cron fallback for a residual-token sweep the close could not finish. It is
+     * NOT in the engine's import graph, it defaults to a dry run (resolve + read + quote,
+     * nothing signed), and it deliberately adds NO swap path of its own — it calls the
+     * engine's `sweepResidualPairedToken` + `defaultResidualSweepDeps` from
+     * `liveExecution.ts`, so the executor edge here is the same reviewed code the close
+     * path uses, not a second implementation. The bridge cannot host it: its close entry
+     * point owns a close, and by the time this tool runs the close has already landed and
+     * the row is closed.
      */
     const allowed = new Set([
       join(srcDir, "services", "onchainExecutor.ts"),
@@ -188,6 +198,7 @@ describe("onchain executor — the engine cannot reach it", () => {
       join(srcDir, "tests", "onchainExecutor.test.ts"),
       join(repoRoot, "scripts", "testMicroSwap.ts"),
       join(repoRoot, "scripts", "recoverFundedOrphan.ts"),
+      join(repoRoot, "scripts", "retryResidualSweep.ts"),
     ]);
 
     for (const f of importers) {

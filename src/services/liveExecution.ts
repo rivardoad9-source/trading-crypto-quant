@@ -2037,8 +2037,17 @@ export async function sweepResidualPairedToken(
   return result;
 }
 
-/** The production sweep: the SDK for the mint, the chain for the balance, Jupiter to sell. */
-function defaultResidualSweepDeps(
+/**
+ * The production sweep: the SDK for the mint, the chain for the balance, Jupiter to sell.
+ *
+ * EXPORTED 12 Sep 2026 for `scripts/retryResidualSweep.ts` — the operator tool that retries a
+ * sweep the close could not finish (`residual_sweep = 'failed' | 'unmeasured'`). Exporting it
+ * changes nothing at runtime, so the running engine does NOT need a rebuild for that tool to
+ * work: the script loads this same source through tsx. That is the point — a retry path must
+ * reuse this exact function (dust floor, quote, fresh-quote swap, alerts) rather than grow a
+ * second, weaker copy of it.
+ */
+export function defaultResidualSweepDeps(
   auth: ExecutionAuthorization,
   poolAddress: string,
   /** Filled by `resolvePairedMint`, so the account close uses the SDK's token program. */
