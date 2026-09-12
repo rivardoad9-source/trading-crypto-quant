@@ -6,6 +6,7 @@ import {
   LAMPORTS_PER_SOL,
 } from "../config/liveConfig.js";
 import {
+  countUnresolvedOrphanAttempts,
   getPoolExecutionRecord,
   getPoolExecutionRecords,
   learnPoolExecutionToken,
@@ -574,6 +575,44 @@ export class FailedCostBreakerError extends LiveEntryRefusedError {
 }
 
 /**
+ * Capital from an EARLIER failure is still on-chain, so this entry is refused.
+ *
+ * A half-landed open funds a position account the engine does not track: no
+ * `simulated_positions` row exists, because the open as a whole failed. On 12 Sep 2026 that
+ * was 1.802543 SOL sitting in bins nothing was watching, and the entry path had no opinion
+ * about it — the engine was one candidate away from opening a SECOND position with the rest
+ * of a wallet that was already partly spoken for.
+ *
+ * The sizing guard does not cover this and never did: it compares `LIVE_CAPITAL_SOL` against
+ * the wallet's total, so a wallet holding 2.9 SOL with 0.84 of it stranded in a position
+ * would size a fresh 1.8 SOL deposit and pass.
+ *
+ * `unwind = 'orphan'` is the engine's own record that an unwind failed or could not be
+ * confirmed, so this is not a heuristic — and it CLEARS ITSELF: recovering the position and
+ * recording it (scripts/recoverFundedOrphan.ts + scripts/settleRecoveredAttempt.cjs, or the
+ * orphan self-heal cron that does both) drops the count back to zero.
+ *
+ * A `LiveEntryRefusedError` like every other pre-swap refusal, so a cycle skips the candidate
+ * and no operator is paged for a condition an operator is already working on.
+ */
+export class StrandedCapitalError extends LiveEntryRefusedError {
+  constructor(pairName: string, poolAddress: string, attempts: number) {
+    super(
+      `[live] NEW ENTRIES ARE HELD: ${attempts} failed attempt${attempts === 1 ? "" : "s"} ` +
+        `still record${attempts === 1 ? "s" : ""} capital left ON-CHAIN (unwind = 'orphan'). ` +
+        `A half-landed open funds a position the engine does not track, so opening another one ` +
+        `treats the same wallet as if it were whole. Recover it (scripts/recoverFundedOrphan.ts, ` +
+        `or the orphan self-heal cron), then record it (scripts/settleRecoveredAttempt.cjs) and ` +
+        `entries resume on their own. Monitoring, fee claims and closes continue. ` +
+        `(${pairName} / ${poolAddress} was next.)`,
+      pairName,
+      poolAddress,
+    );
+    this.name = "StrandedCapitalError";
+  }
+}
+
+/**
  * A SIBLING pool of the same token is benched.
  *
  * Its own class rather than an `ExecutionBenchedError` with different words, because
@@ -878,6 +917,24 @@ export async function openLivePosition(params: {
       params.poolAddress,
       benched.reason ?? "benched",
     );
+  }
+
+  /*
+   * IS CAPITAL STILL STRANDED FROM AN EARLIER FAILURE? (12 Sep 2026)
+   *
+   * Before the breaker below, because it is the more literal question: the breaker asks what
+   * recent failures COST, this asks whether any of them is still HOLDING something. On
+   * 12 Sep 2026 the answer was yes for ten minutes — 1.802543 SOL in a funded position
+   * nothing tracked — and nothing in this path would have stopped a second open spending the
+   * rest of the wallet while it sat there.
+   *
+   * Free, local, and before any network call, exactly like the breaker: it reads one row
+   * count from `live_execution_attempts`, and it is cleared by the operator/recovery path
+   * rather than by time. Inert when the live profile is off.
+   */
+  const stranded = countUnresolvedOrphanAttempts();
+  if (stranded > 0) {
+    throw new StrandedCapitalError(params.pairName, params.poolAddress, stranded);
   }
 
   /*

@@ -1277,6 +1277,29 @@ export function sumFailedAttemptCost(hours: number): FailedAttemptCost {
 }
 
 /**
+ * How many failed attempts still say capital was left ON-CHAIN.
+ *
+ * `unwind = 'orphan'` means the wallet unwind failed or could not be confirmed; `'unknown'` is
+ * the older, weaker wording. Both mean nobody has yet proved the chain is clean, so both count
+ * — "unknown" is not evidence of "nothing there", the same rule the drift check follows.
+ *
+ * Read by the entry guard in `liveExecution.ts` (a stranded position means opening another one
+ * spends the same wallet twice) and by the orphan self-heal, which clears a row only after the
+ * chain agrees. Rows are retired by `scripts/settleRecoveredAttempt.cjs`, which replaces the
+ * provisional cost with the measured one.
+ */
+export function countUnresolvedOrphanAttempts(): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM live_execution_attempts
+        WHERE position_address IS NOT NULL
+          AND COALESCE(unwind, 'unknown') IN ('orphan', 'unknown')`,
+    )
+    .get() as { n: number } | undefined;
+  return row?.n ?? 0;
+}
+
+/**
  * Deletes recorded attempts, which is how the failed-cost breaker is CLEARED.
  *
  * `FailedCostBreakerError` holds new entries until the recent failed spend falls back

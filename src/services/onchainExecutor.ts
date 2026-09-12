@@ -632,6 +632,17 @@ export function resolveComputeUnitLimit(
  */
 const NARROW_OPEN_REQUOTE_ATTEMPTS = 2;
 
+/**
+ * How many times the WIDE funding sequence may be re-quoted after a simulation says a chunk
+ * asks for more of the paired token than the wallet holds.
+ *
+ * Two, matching the narrow path. The first re-quote reads the real balance and shrinks the
+ * request; the second exists for the case where the balance moved between the read and the
+ * rebuild. Beyond that the numbers are not the problem and another attempt would only delay
+ * the unwind.
+ */
+const WIDE_FUNDING_REQUOTE_ATTEMPTS = 2;
+
 export const DLMM_FUNDING_CU_PER_CHUNK = 1_000_000;
 export const DLMM_FUNDING_CU_PER_BIN_ARRAY_INIT = 350_000;
 
@@ -2300,6 +2311,40 @@ async function readAtaBalance(
 }
 
 /**
+ * Simulates every funding chunk and reports the FIRST refusal caused by insufficient funds,
+ * or null when none of them is short.
+ *
+ * WIDE path only, and called BEFORE anything is sent. The wide open funds its position with
+ * several transactions, so a chunk refused after an earlier one landed leaves a funded
+ * position account that nothing tracks — 12 Sep 2026, MANLET-SOL, 1.802543 SOL, and the
+ * recovery's own transactions then lost to expired blockhashes. Checking first turns that
+ * into a refusal that costs nothing but the swap's round trip.
+ *
+ * WHAT IT CANNOT PROVE, stated plainly: with no chunk landed, a shortfall caused by the
+ * WALLET's balance is visible here — that is the 12 Sep case, where chunk 2 asked for more
+ * of the paired token than the wallet held — while a shortfall that only exists in the state
+ * a later chunk inherits is not. The caller's recovery path remains the answer for that
+ * residue.
+ *
+ * An RPC that could not simulate is skipped, never reported: "I could not check" is not
+ * evidence that a chunk is short, and refusing on it would block opens for an RPC hiccup.
+ */
+async function firstShortFundingChunk(
+  transactions: Transaction[],
+  payer: PublicKey,
+): Promise<string | null> {
+  const { blockhash } = await getConnection().getLatestBlockhash("confirmed");
+  for (const [index, tx] of transactions.entries()) {
+    const sim = await simulateAgainstCluster(tx.instructions, payer, blockhash, onchainConfig);
+    if (!sim.ran || sim.error === null) continue;
+    if (isInsufficientFundsRejection(sim.logs, sim.error)) {
+      return `chunk ${index + 1}/${transactions.length}: ${sim.error}`;
+    }
+  }
+  return null;
+}
+
+/**
  * Submits a sequence of SDK transactions one at a time, stopping at the first failure.
  *
  * Sequential and not parallel: these transactions touch the same position account, and
@@ -2726,9 +2771,11 @@ export const dlmmExecutor: DlmmExecutor = {
     }
 
     /*
-     * A FACTORY rather than a constant, because the narrow path may have to rebuild the
-     * deposit with a smaller paired amount after simulating it (see below). The wide
-     * path binds it once, to the nominal figure, and never re-quotes.
+     * A FACTORY rather than a constant, because BOTH paths may have to rebuild the deposit
+     * with a smaller paired amount after checking it against the chain: the narrow path
+     * simulates its fused open and re-quotes before sending, and the wide path simulates its
+     * funding chunks and re-quotes before sending any of them (12 Sep 2026). Neither binds a
+     * single deposit and trusts it — that is what left a funded position unattended.
      */
     const depositFor = (pairedAmount: BN) => ({
       positionPubKey: positionKeypair.publicKey,
@@ -2743,8 +2790,6 @@ export const dlmmExecutor: DlmmExecutor = {
       // The SDK takes slippage as a PERCENTAGE; our bound is in bps.
       slippage: slip.percent,
     });
-
-    const deposit = depositFor(paired);
 
     /*
      * What this open will actually cost in rent, asked of the SDK because bin-array
@@ -3014,14 +3059,79 @@ export const dlmmExecutor: DlmmExecutor = {
      * recovered.
      */
     let funded: SendResult[] = [];
+    /**
+     * The paired amount the funding actually asks for; it may only ever move DOWN (see the
+     * pre-send check below). Declared out here because the result reports it to the caller —
+     * the position row must record what the chain was asked for, not what was requested.
+     */
+    let pairedForDeposit = paired;
     try {
       const activeIdAtBuild = pool.lbPair.activeId;
-      const liquidityTxs = await pool.addLiquidityByStrategyChunkable(deposit);
+      /*
+       * The wide path used to bind the deposit ONCE to the nominal figure and never
+       * re-quote it, which is how a chunk asking for more of the paired token than the
+       * wallet held reached the cluster on 12 Sep 2026. The pre-send check below shrinks it,
+       * and the rebuild closure reads this variable rather than the original so a
+       * mid-flight rebuild cannot inflate it back.
+       */
+      let liquidityTxs = await pool.addLiquidityByStrategyChunkable(depositFor(pairedForDeposit));
 
       if (liquidityTxs.length === 0) {
         throw new DlmmExecutionError(
           `the SDK produced no liquidity transaction for a ${binWidth}-bin range`,
         );
+      }
+
+      /*
+       * PROVE THE SEQUENCE IS PAYABLE BEFORE ANY OF IT LANDS (12 Sep 2026).
+       *
+       * The wide open is the only shape that can leave capital behind, and this is why: it
+       * funds the position with SEVERAL transactions, so "chunk 1 landed, chunk 2 refused"
+       * is a state that can exist on-chain — a funded position account that no
+       * `simulated_positions` row describes, because the open as a whole failed. On
+       * 12 Sep 2026 that is exactly what happened (MANLET-SOL, 1.802543 SOL off the wallet,
+       * the recovery's own transactions then lost to expired blockhashes, and the position
+       * closed by hand ten minutes later).
+       *
+       * The NARROW path cannot fail this way: it simulates the fused open and, on
+       * `insufficient funds`, re-reads the wallet's real token balance and shrinks the
+       * request before sending anything. This is that protection, ported, with the same
+       * refusal-shaped ending — when the shortfall cannot be re-quoted away this THROWS
+       * BEFORE THE FIRST CHUNK IS SENT, so the caller unwinds a swap and an empty position
+       * account instead of discovering a funded one.
+       */
+      for (let attempt = 0; ; attempt++) {
+        const short = await firstShortFundingChunk(liquidityTxs, auth.wallet);
+        if (short === null) break;
+
+        const onChain = await readAtaBalance(auth.wallet, pairedMint, pairedTokenProgram);
+        const next = onChain === null ? null : BN.min(pairedForDeposit, new BN(onChain.toString()));
+
+        if (attempt >= WIDE_FUNDING_REQUOTE_ATTEMPTS || next === null || next.gte(pairedForDeposit)) {
+          throw new DlmmExecutionError(
+            `the wide funding sequence for ${params.poolAddress} was REFUSED IN SIMULATION and NOT ` +
+              `SENT (${short}) after ${attempt + 1} attempt(s): not one chunk was broadcast, so no ` +
+              `capital is stranded on-chain. The balancing swap has already spent, so the caller ` +
+              `must unwind. The wallet holds ${onChain === null ? "an unreadable" : onChain.toString()} ` +
+              `paired base units against a deposit request of ${pairedForDeposit.toString()} ` +
+              `(the swap delivered ${paired.toString()}).`,
+          );
+        }
+
+        pairedForDeposit = next;
+        console.log(
+          `[onchain/dlmm] ${positionAddress}: a funding chunk is short on the paired token; ` +
+            `re-quoting the deposit DOWN from ${paired.toString()} to ${pairedForDeposit.toString()} ` +
+            `base units and rebuilding its ${liquidityTxs.length} chunk(s) — nothing has been sent`,
+        );
+        await pool.refetchStates();
+        liquidityTxs = await pool.addLiquidityByStrategyChunkable(depositFor(pairedForDeposit));
+        if (liquidityTxs.length === 0) {
+          throw new DlmmExecutionError(
+            `the SDK produced no liquidity transaction after re-quoting the paired side down to ` +
+              `${pairedForDeposit.toString()} base units`,
+          );
+        }
       }
 
       /*
@@ -3080,7 +3190,13 @@ export const dlmmExecutor: DlmmExecutor = {
               `${pool.lbPair.activeId} (${Math.abs(pool.lbPair.activeId - activeIdAtBuild)} ` +
               `bin(s) of drift, tolerance ${slip.bins})`,
           );
-          return pool.addLiquidityByStrategyChunkable(deposit);
+          /*
+           * `pairedForDeposit`, not `paired`: if the pre-send check already had to shrink the
+           * paired side to fit the wallet, a rebuild must stay at that smaller figure.
+           * Rebuilding from the original is how a re-quote gets undone by the retry that was
+           * meant to rescue it.
+           */
+          return pool.addLiquidityByStrategyChunkable(depositFor(pairedForDeposit));
         },
         prepare: (legacy) => {
           const { kept, dropped, keptBinArrayInits } = partitionFundingInstructions(
@@ -3194,14 +3310,16 @@ export const dlmmExecutor: DlmmExecutor = {
     }
 
     /*
-     * The wide path never re-quotes — its funding chunks are built once from `deposit`
-     * and rebuilt only against a moving active bin — so what it asked for is what it
-     * deposited.
+     * The amount the CHAIN was asked for, which is no longer always the amount the caller
+     * read: since 12 Sep 2026 the wide path simulates its funding chunks before sending any
+     * of them and re-quotes the paired side DOWN when the wallet cannot cover the request.
+     * Reporting `paired` here would write the caller's figure onto the position row while
+     * the deposit carried less — the same class of untruth the narrow path already avoids.
      */
     return {
       sent: [created, ...funded],
       position: positionAddress,
-      depositedPairedAmount: paired.toString(),
+      depositedPairedAmount: pairedForDeposit.toString(),
     };
   },
 

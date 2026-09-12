@@ -238,3 +238,75 @@ describe("where the new gates sit", () => {
     assert.ok(source.includes("COST NOT MEASURED"));
   });
 });
+
+/**
+ * 12 Sep 2026: a half-landed wide open left 1.802543 SOL in a funded position the engine does
+ * NOT track (no `simulated_positions` row — the open failed as a whole), and the entry path had
+ * no opinion about it. The engine was one candidate away from opening a second position with a
+ * wallet that was already partly spoken for. `StrandedCapitalError` is that opinion, and these
+ * tests pin both halves of it: what it counts, and that nothing can spend past it.
+ */
+describe("stranded capital — an unresolved orphan holds new entries", () => {
+  let source: string;
+  before(async () => {
+    const { readFileSync } = await import("node:fs");
+    source = readFileSync("src/services/liveExecution.ts", "utf8");
+  });
+
+  it("counts attempts that still claim capital is on-chain, and only those", () => {
+    assert.equal(repos.countUnresolvedOrphanAttempts(), 0, "an empty ledger strands nothing");
+
+    failed(0.02, { unwind: "clean" });
+    failed(0.02, { unwind: "none" });
+    assert.equal(
+      repos.countUnresolvedOrphanAttempts(),
+      0,
+      "a settled unwind is not stranded capital — counting it would shut entries forever",
+    );
+
+    failed(0.02, { unwind: "orphan", positionAddress: "Pos1111111111111111111111111111111111111" });
+    assert.equal(repos.countUnresolvedOrphanAttempts(), 1);
+  });
+
+  it("never treats 'unknown' as clean, and needs an address to act on", () => {
+    failed(0.02, { unwind: "unknown", positionAddress: null });
+    assert.equal(
+      repos.countUnresolvedOrphanAttempts(),
+      0,
+      "with no position address there is no account to check, so nothing is provably stranded",
+    );
+
+    failed(0.02, { unwind: "unknown", positionAddress: "Pos2222222222222222222222222222222222222" });
+    assert.equal(
+      repos.countUnresolvedOrphanAttempts(),
+      1,
+      "'unknown' is not evidence the chain is clean — the whole drift-check rule",
+    );
+  });
+
+  it("is read before the breaker, before any strike, and before the swap", () => {
+    const guard = source.indexOf("throw new StrandedCapitalError(");
+    const breaker = source.indexOf("throw new FailedCostBreakerError(");
+    const firstStrike = source.indexOf("recordPoolExecutionFailure({");
+    // The balancing swap itself, not the word "swapping" — the rescue path swaps too, and a
+    // comment mentioning it would make this assertion meaningless.
+    const swap = source.indexOf("await executeJupiterSwap(auth, {");
+
+    assert.ok(guard > 0, "the stranded-capital guard is gone");
+    assert.ok(breaker > 0 && firstStrike > 0 && swap > 0);
+    // The breaker asks what failures COST; this asks whether one is still HOLDING something.
+    assert.ok(guard < breaker, "the literal question must be asked first");
+    assert.ok(guard < swap, "a guard that runs after the swap is not a guard");
+    assert.ok(guard < firstStrike, "a wallet-level condition must not bench a pool");
+  });
+
+  it("stays out of the close path, so monitoring and exits never wait on it", () => {
+    const close = source.indexOf("export async function closeLivePosition");
+    assert.ok(close > 0);
+    assert.equal(
+      source.slice(close).includes("StrandedCapitalError"),
+      false,
+      "holding entries must never hold an EXIT",
+    );
+  });
+});
