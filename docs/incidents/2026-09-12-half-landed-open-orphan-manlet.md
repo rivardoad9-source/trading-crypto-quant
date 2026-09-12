@@ -74,6 +74,15 @@ guarantee. That gap is the reason the capital needed a human.
 
 ## Follow-ups (brief: `docs/prompts/fix-post-swap-deposit-and-orphan-recovery-2026-09-12.txt`)
 
+**Operator patch already in place (12 Sep 12:50 WIB, outside the engine):**
+`~/.hermes/scripts/fm_orphan_selfheal.py` as a Hermes no_agent cron every 10 minutes (0 tokens).
+It finds `live_execution_attempts` rows with `unwind = 'orphan'`, re-runs the recovery through
+`scripts/recoverFundedOrphan.ts`, holds new entries while capital is stranded, and retires a row
+only when the CHAIN says clean. Verified against a copy of the database with a fake row: clean →
+reports and retires; stuck → hourly alert with the exact command, and it never touches a hold a
+human wrote. This is a safety net, NOT the fix — the engine must recover itself (below), because
+this net does not run when Hermes does not.
+
 1. Size the paired deposit from the **actual post-swap token balance** (or cap to it), not the
    pre-swap estimate — the recurring 0x1.
 2. Make the failed-open recovery **durable**: retry the unwind/close on later cycles instead of

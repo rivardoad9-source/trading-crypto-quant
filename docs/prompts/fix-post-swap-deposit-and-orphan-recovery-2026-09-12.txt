@@ -36,36 +36,60 @@ close `2FBVbFtX…`, jual 99 285 MANLET → 0.871252198 SOL `4bMg2b8d…`, walle
 1.158476886 → 2.946203635 SOL, net loss insiden 0.014816 SOL).
 
 ====================================================================
-TASK 1 (P0) — deposit token paired di-size dari saldo AKTUAL setelah swap, bukan estimasi
+TASK 1 (P0) — funding multi-tx TIDAK boleh meninggalkan posisi setengah terisi
 ====================================================================
-Ini kemunculan ke-5 dari error yang sama (KNOTS 10 Sep: "the swap confirmed but no token
-balance could be read" dan "landed N of its transactions and then failed … insufficient
-funds"). Setiap kali harganya bergerak sedikit di antara swap dan deposit, deposit meminta
-lebih banyak token daripada yang benar-benar diterima swap → program menolak di
-`process deposit` (0x1), SETELAH swap dan rent sudah dibayar. Biaya tiap kejadian: swap
-round-trip + rent + tx yang gagal, dan posisi yang setengah terisi.
+KOREKSI dari brief pertama (operator, 12 Sep 12:50 WIB): TULISAN AWAL DI SINI SALAH. Ia
+mengatakan deposit di-size dari estimasi pra-swap. Bukan. `openLivePosition`
+(src/services/liveExecution.ts:1489) SUDAH membaca saldo token AKTUAL setelah swap
+(`readTokenBalance`) dan mengirimnya sebagai `pairedTokenAmount` (baris 1498). Jadi bukan itu.
+
+Yang sebenarnya terjadi (decoded on-chain, tx `59cBjLSC…` yang LANDED):
+- tx funding 1/2 mengangkut 840 000 000 lamports → wSOL → SATU instruksi
+  `addLiquidityByStrategy` → sisa wSOL di-unwrap balik. Reserve wSOL pool +0.84 SOL.
+  TIDAK ada token MANLET yang berpindah sama sekali di tx ini.
+- tx funding 2/2 ditolak DI PREFLIGHT dengan `insufficient funds` (0x1) dari Tokenkeg di
+  dalam `process deposit`.
+Artinya: jumlah yang diminta SDK untuk chunk terakhir **tidak tertutup oleh saldo wallet**
+(chunk 1 sudah mengambil 0.84 dari SOL yang tersedia), dan **tidak ada satu pun pemeriksaan
+sebelum chunk 1 dikirim** yang bisa menangkap itu. Karena funding itu BUKAN satu transaksi
+untuk posisi lebar (chunking dipaksa batas CU), chunk 1 mendarat, chunk 2 ditolak, dan yang
+tersisa di chain adalah posisi TERISI yang tidak dimonitor siapa pun.
 
 Yang diminta:
-1. Deposito sisi token paired harus dihitung dari saldo token AKTUAL di wallet sesaat
-   sebelum instruksi dibangun (`readTokenBalance` sudah ada di src/services/liveExecution.ts),
-   atau di-cap ke nilai itu — bukan dari estimasi pra-swap (`pairedTokenAmount` yang dipakai
-   sekarang berasal dari quote, bukan dari chain).
-2. Kalau karena sesuatu nilai yang diminta masih > saldo aktual, engine harus memperkecil
-   PERMINTAANNYA (dan mencatatnya di log), bukan menyerahkan tx ke program untuk ditolak.
-3. Simpan bukti di log: `[live] MANLET-SOL: deposit sized to the on-chain balance X (estimated Y)`
-   supaya selisih estimasi-vs-aktual bisa dilihat tanpa menggali RPC.
-4. Tambah test yang menutup kasus "saldo aktual lebih kecil dari estimasi" di jalur funding
-   wide (dua fase) — pola test yang sudah ada untuk `DlmmPartialExecutionError` bisa dipakai.
+1. Sebelum chunk PERTAMA dikirim, buktikan seluruh rencana funding bisa dibayar: simulasi
+   setiap transaksi (atau minimal total yang benar-benar dipindahkan tiap tx, dibaca dari
+   instruksinya) vs saldo SOL dan saldo token paired yang AKTUAL. Kalau ada satu chunk yang
+   tidak tertutup → BATALKAN sebelum apa pun mendarat, unwind bersih, bench pool+mint, dan
+   log alasannya. Kalah sebelum swap jauh lebih murah daripada menang setengah jalan.
+2. `insufficient funds` pada jalur funding HARUS rebuildable, bukan terminal: modul yang sama
+   sudah punya `isInsufficientFundsRejection` (onchainExecutor.ts:848) dan TIDAK dipakai di
+   jalur funding — yang dipasang hanya `rebuildableRejection: isStaleActiveBinRejection`
+   (baris 3060). Rebuild harus benar-benar mengubah angka: `refetchStates()` lalu size ulang
+   deposit dari saldo AKTUAL (`readTokenBalance`) dan, kalau perlu, KECILKAN permintaannya —
+   bukan mengirim ulang angka yang sama dengan fee lebih mahal.
+3. Tambah test yang menutup kasus "saldo aktual lebih kecil dari yang diminta SDK" di jalur
+   funding dua fase — pola test `DlmmPartialExecutionError` yang sudah ada bisa dipakai.
 
 JANGAN sekadar memperbesar tolerance/slippage: penyebabnya kecocokan angka, bukan slippage.
 
 ====================================================================
 TASK 2 (P0) — pemulihan open gagal harus TAHAN (bukan sekali coba lalu menyerah)
 ====================================================================
+CATATAN OPERATOR (12 Sep 2026, 12:50 WIB): sudah dipasang JARING SEMENTARA di sisi Hermes —
+`~/.hermes/scripts/fm_orphan_selfheal.py` (cron no_agent tiap 10 menit, 0 token) mencari row
+`live_execution_attempts` dengan `unwind='orphan'`, menjalankan ulang pemulihan lewat
+`scripts/recoverFundedOrphan.ts`, dan menahan entry sampai chain bilang bersih. Itu penambal
+di LUAR engine; yang diminta di bawah tetap harus dikerjakan DI DALAM engine, karena hanya
+engine yang tahu state-nya sendiri (dan jaring Hermes tidak jalan kalau Hermes mati).
+
 Sekarang, kalau seluruh build pada `sendAndConfirm` kalah oleh "blockhash expired", auto-unwind
 dan `closeOrphanPosition` berhenti dan hanya MENINGGALKAN pesan `ORPHAN LEFT`. Pesan itu benar
 dan sampai ke operator (watchdog pagi ini memang membunyikan alarm — bagian ini bekerja), tapi
-tidak ada satu pun usaha berikutnya.
+tidak ada satu pun usaha berikutnya. Jalur pemulihan juga mati pada preflight rejection yang
+TIDAK dikenali sebagai "stale active bin" — 12 Sep rejection-nya `insufficient funds`, jadi
+`rebuildableRejection: isStaleActiveBinRejection` tidak jalan dan tx itu dianggap terminal
+setelah SATU percobaan, padahal `isInsufficientFundsRejection` sudah ada di modul yang sama
+dan tidak dipakai di jalur funding.
 
 Yang diminta:
 1. Selesaikan pemulihan sebagai STATE yang diingat, bukan satu percobaan: kalau
