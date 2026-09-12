@@ -1835,3 +1835,40 @@ Pitfalls that cost real debugging time:
   sanitization leaks static `(`/`)` and makes Telegram reject the message with
   "can't parse entities". `replyMarkdown` falls back to plain text if escaping
   still fails.
+
+## A half-landed WIDE open can no longer strand capital (12 Sep 2026)
+
+Three changes, all from one incident: chunk 1 of a wide funding sequence landed, chunk 2 was
+refused for `insufficient funds`, and the wallet was left with a **funded position account that
+no `simulated_positions` row describes** — the open failed as a whole, so the engine did not
+know it existed. 1.802543 SOL sat in bins nothing was watching; the engine's own recovery
+(Jupiter auto-unwind, then `closeOrphanPosition`) lost all three of its rebuilds to expired
+blockhashes; an operator closed it by hand ten minutes later.
+Full write-up: `docs/incidents/2026-09-12-half-landed-open-orphan-manlet.md`.
+
+1. **The wide funding path now proves it can pay BEFORE it sends anything.**
+   `firstShortFundingChunk()` simulates every chunk in order and reports the first refusal
+   caused by insufficient funds; if the deposit asks for more of the paired token than the
+   wallet holds, `openPosition` re-reads the real ATA balance and re-quotes the paired side
+   **DOWN** (`BN.min`) — `WIDE_FUNDING_REQUOTE_ATTEMPTS = 2` — exactly the protection the
+   NARROW path already had. When it cannot be re-quoted away, it THROWS BEFORE THE FIRST CHUNK
+   IS SENT, so the caller unwinds a swap and an empty account instead of discovering a funded
+   one. Every chunk build (first build, re-quote, mid-flight rebuild) reads the mutable
+   `pairedForDeposit`, and `depositedPairedAmount` reports what the CHAIN was asked for.
+   Bound to the source by `src/tests/onchainExecutor.test.ts` → "the WIDE funding path proves
+   it can pay before it sends".
+2. **`ONCHAIN_MAX_BUILD_ATTEMPTS` is 8, not 3.** Three doublings from the 20 000
+   micro-lamports floor top out at ~0.000016 SOL of fee, which a busy cluster ignores; eight
+   reach the 2 M ceiling (~0.0004 SOL), so the last rebuild is priced to land. The worst-case
+   chain costs ~0.0008 SOL.
+3. **`StrandedCapitalError` holds new ENTRIES while any attempt still records capital
+   on-chain** (`countUnresolvedOrphanAttempts()`, `unwind = 'orphan'`, read next to — and before
+   — the failed-cost breaker). The sizing guard never covered this: a wallet holding 2.9 SOL
+   with 0.84 stranded would still size a fresh 1.8 SOL deposit. It clears itself by the
+   recovery being RECORDED, and it never touches monitoring or exits.
+   Operator tools that pair with it: `scripts/recoverFundedOrphan.ts` (dry-run default,
+   simulates the close against mainnet first, refuses a position it does not own) and
+   `scripts/settleRecoveredAttempt.cjs` (replaces the provisional failed cost with the
+   measured one, and refuses until the chain proves the recovery happened). Hermes' cron
+   `fm_orphan_selfheal.py` runs both every 10 minutes — a safety net OUTSIDE the engine, not a
+   substitute for the engine treating a partial open as its own problem.

@@ -1860,8 +1860,57 @@ describe("onchain executor — the narrow fused open is no longer sent blind", (
     assert.match(helper, /resolveComputeUnitLimit\(requested, config\.computeUnitLimit\)/);
     assert.equal(
       (executorSource.match(/await simulateAgainstCluster\(/g) ?? []).length,
-      2,
-      "a third simulation site appeared, or one stopped using the shared resolver",
+      3,
+      "a fourth simulation site appeared, or one stopped using the shared resolver",
+    );
+  });
+});
+
+describe("onchain executor — the WIDE funding path proves it can pay before it sends", () => {
+  /*
+   * 12 Sep 2026: chunk 1 of a wide funding sequence landed, chunk 2 was refused for
+   * `insufficient funds`, and the result was a FUNDED position account with no
+   * `simulated_positions` row — capital nothing was watching until an operator closed it by
+   * hand. The narrow path could not have failed that way, because it simulates and re-quotes
+   * before it sends. These tests hold the port in place.
+   */
+  const executorSource = readFileSync(join(srcDir, "services", "onchainExecutor.ts"), "utf8");
+  const wide = executorSource.slice(
+    executorSource.indexOf("PROVE THE SEQUENCE IS PAYABLE BEFORE ANY OF IT LANDS"),
+    executorSource.indexOf(`operation: "openPosition (fund wide position)"`),
+  );
+
+  it("simulates the whole chunk sequence, and refuses instead of sending a short one", () => {
+    assert.ok(wide.length > 0, "the pre-send funding check is gone");
+    assert.match(wide, /await firstShortFundingChunk\(liquidityTxs, auth\.wallet\)/);
+    // A THROW, before the send — not a comment about one.
+    assert.match(wide, /was REFUSED IN SIMULATION and NOT/);
+  });
+
+  it("re-quotes DOWN only, and against the chain rather than the caller's read", () => {
+    assert.match(wide, /BN\.min\(pairedForDeposit, new BN\(onChain\.toString\(\)\)\)/);
+    assert.match(wide, /readAtaBalance\(auth\.wallet, pairedMint, pairedTokenProgram\)/);
+  });
+
+  it("bounds the re-quote, and keeps the mid-flight rebuild at the re-quoted figure", () => {
+    assert.match(executorSource, /const WIDE_FUNDING_REQUOTE_ATTEMPTS = 2;/);
+    assert.match(wide, /attempt >= WIDE_FUNDING_REQUOTE_ATTEMPTS/);
+    /*
+     * The rebuild closure used to rebuild from the ORIGINAL paired figure. With a re-quote in
+     * place that would undo the shrink on the retry meant to rescue it, so every site that
+     * builds chunks must read the mutable value: the first build, the re-quote rebuild, and
+     * the mid-flight rebuild closure.
+     */
+    assert.equal(
+      (executorSource.match(/addLiquidityByStrategyChunkable\(depositFor\(pairedForDeposit\)\)/g) ?? [])
+        .length,
+      3,
+      "a chunk build went back to a figure other than the re-quoted paired amount",
+    );
+    assert.equal(
+      (executorSource.match(/addLiquidityByStrategyChunkable\(deposit\)/g) ?? []).length,
+      0,
+      "a chunk is still built from the bound-once deposit",
     );
   });
 });

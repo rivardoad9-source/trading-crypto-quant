@@ -3,6 +3,30 @@ tanpa penjaga). Branch: main.
 Baca dulu, jangan riset ulang. JANGAN sentuh `.env`, jangan restart pm2, jangan deploy.
 
 ====================================================================
+STATUS per 12 Sep 2026 14:0x WIB — SEBAGIAN SUDAH DIKERJAKAN OPERATOR (Hermes)
+====================================================================
+Sudah SELESAI dan sudah ter-deploy (commit `cbf36fc` + commit berikutnya; 845 test / 845 pass):
+- TASK 1 (P0) — jalur wide sekarang: `firstShortFundingChunk()` menyimulasikan SEMUA chunk
+  sebelum satu pun dikirim, dan kalau token paired kurang → baca saldo ATA aktual →
+  re-quote TURUN (`BN.min`, `WIDE_FUNDING_REQUOTE_ATTEMPTS = 2`) → bangun ulang. Kalau tidak
+  bisa diselamatkan → THROW SEBELUM chunk 1 dikirim. Test baru:
+  `src/tests/onchainExecutor.test.ts` → "the WIDE funding path proves it can pay before it
+  sends". Pelajaran untuk perubahan berikutnya: chunk build di TIGA tempat (build awal,
+  re-quote, rebuild saat flight) dan ketiganya harus baca `pairedForDeposit`.
+- TASK 2 (P0) — sebagian: `ONCHAIN_MAX_BUILD_ATTEMPTS` 3 → 8 (fee terakhir menyentuh ceiling).
+  BELUM: retry lintas-cycle DI DALAM engine (sekarang masih mengandalkan pemulihan sekali +
+  jaring Hermes).
+- TASK 4 (P1) — SELESAI: `StrandedCapitalError` + `countUnresolvedOrphanAttempts()`, dicek
+  tepat sebelum failed-cost breaker; nol efek ke monitoring/exit.
+- TASK 5 (P2) — `scripts/recoverFundedOrphan.ts` sudah ada & dipakai; masih ingin review +
+  test unit untuk keputusan "terisi / layak dipulihkan"-nya.
+- TASK 3 (P1) — SEBAGIAN: `scripts/settleRecoveredAttempt.cjs` mengganti cost_lamports
+  sementara dengan yang TERUKUR (dan MENOLAK sampai chain membuktikan posisinya hilang), tapi
+  schema belum punya state `recovered` sebagai nilai kelas satu.
+- TAMBAHAN di luar brief: cron Hermes `fm_orphan_selfheal.py` (tiap 10 menit) memulihkan +
+  MENCATAT sendiri; jaring di luar engine, bukan pengganti perbaikan di dalam engine.
+
+====================================================================
 KONTEKS: apa yang terjadi 12 Sep 2026 11:08 WIB (04:08 UTC)
 ====================================================================
 Engine coba MANLET-SOL LAGI (pool `68C62WPYiiNZxprbuaMj2ULXpiTDKcs5xsX7kBGnyajR`, 106 bin,
