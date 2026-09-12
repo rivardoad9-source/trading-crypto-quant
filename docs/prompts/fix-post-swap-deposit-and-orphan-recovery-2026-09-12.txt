@@ -56,19 +56,32 @@ untuk posisi lebar (chunking dipaksa batas CU), chunk 1 mendarat, chunk 2 ditola
 tersisa di chain adalah posisi TERISI yang tidak dimonitor siapa pun.
 
 Yang diminta:
-1. Sebelum chunk PERTAMA dikirim, buktikan seluruh rencana funding bisa dibayar: simulasi
-   setiap transaksi (atau minimal total yang benar-benar dipindahkan tiap tx, dibaca dari
-   instruksinya) vs saldo SOL dan saldo token paired yang AKTUAL. Kalau ada satu chunk yang
-   tidak tertutup → BATALKAN sebelum apa pun mendarat, unwind bersih, bench pool+mint, dan
-   log alasannya. Kalah sebelum swap jauh lebih murah daripada menang setengah jalan.
-2. `insufficient funds` pada jalur funding HARUS rebuildable, bukan terminal: modul yang sama
-   sudah punya `isInsufficientFundsRejection` (onchainExecutor.ts:848) dan TIDAK dipakai di
-   jalur funding — yang dipasang hanya `rebuildableRejection: isStaleActiveBinRejection`
-   (baris 3060). Rebuild harus benar-benar mengubah angka: `refetchStates()` lalu size ulang
-   deposit dari saldo AKTUAL (`readTokenBalance`) dan, kalau perlu, KECILKAN permintaannya —
+1. **PORT PROTEKSI JALUR NARROW KE JALUR WIDE — ini temuan paling tajam.** Jalur narrow
+   (`binWidth <= DLMM_BINS_PER_INIT`, onchainExecutor.ts ~2775-2900) SUDAH punya tiga hal
+   yang jalur wide tidak punya, dan komentar di baris 2728-2732 mengatakannya sendiri
+   ("the wide path binds it once, to the nominal figure, and never re-quotes"):
+   (a) simulasi sebelum kirim (`simulateAgainstCluster`), (b) kalau `insufficient funds`,
+   baca ulang saldo ATA paired (`readAtaBalance`) lalu PERKECIL permintaan
+   (`BN.min(pairedForDeposit, onChain)`) dan bangun ulang, (c) batas percobaan
+   (`NARROW_OPEN_REQUOTE_ATTEMPTS`) sebelum MENOLAK TANPA MENGIRIM — sehingga jalur narrow
+   tidak pernah bisa meninggalkan posisi setengah terisi.
+   Jalur wide sebaliknya: `depositFor(paired)` di-bind SEKALI, `addLiquidityByStrategyChunkable`
+   dipanggil sekali di depan (jadi semua chunk dibangun dari snapshot yang sama), lalu
+   `sendSequentially` mengirim satu per satu. Kalau chunk terakhir ditolak, chunk sebelumnya
+   SUDAH mendarat → posisi terisi tanpa penjaga. Port (a)+(b)+(c) ke jalur wide.
+2. Karena chunk dibangun dari satu snapshot, simulasikan SELURUH rangkaian SEBELUM chunk
+   pertama dikirim (atau minimal buktikan total yang benar-benar dipindahkan tiap tx vs saldo
+   SOL dan token paired yang AKTUAL). Kalau ada satu chunk yang tidak tertutup → BATALKAN
+   sebelum apa pun mendarat, unwind bersih, bench pool+mint. Kalah sebelum swap jauh lebih
+   murah daripada menang setengah jalan.
+3. `insufficient funds` pada jalur funding harus rebuildable, bukan terminal: modul yang sama
+   sudah punya `isInsufficientFundsRejection` (dipakai di jalur narrow, baris ~2864) dan TIDAK
+   dipakai di jalur wide — di sana hanya `rebuildableRejection: isStaleActiveBinRejection`
+   (baris ~3060). Rebuild harus benar-benar mengubah angka (refetch + clamp dari saldo aktual),
    bukan mengirim ulang angka yang sama dengan fee lebih mahal.
-3. Tambah test yang menutup kasus "saldo aktual lebih kecil dari yang diminta SDK" di jalur
-   funding dua fase — pola test `DlmmPartialExecutionError` yang sudah ada bisa dipakai.
+4. Tambah test yang menutup kasus "saldo aktual lebih kecil dari yang diminta SDK" di jalur
+   funding wide — pola test `DlmmPartialExecutionError` dan test jalur narrow yang sudah ada
+   bisa dipakai sebagai cetakan.
 
 JANGAN sekadar memperbesar tolerance/slippage: penyebabnya kecocokan angka, bukan slippage.
 
