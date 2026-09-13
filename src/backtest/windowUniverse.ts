@@ -244,6 +244,16 @@ export async function loadWindowDataset(input: {
   refresh: boolean;
   cacheDir?: string;
   barsWanted?: number;
+  /**
+   * One k for every window, fitted where it CAN be fitted: today's survivors of all ages.
+   *
+   * Fitting k per window from the candidates born before that window ends selects only the
+   * OLD survivors for an old window — pools whose volume today is a fraction of their TVL —
+   * and produced k = 2.6 and 4.3 for the two older windows against 0.195 for the newest,
+   * zero trades in both. The harness's TVL model assumes one k across time; this keeps it.
+   * A cached dataset selected with a different k is re-selected (from its files, no network).
+   */
+  kOverride?: number | null;
   /** The strategy's TVL band; `k` is fitted from the candidates' TODAY figures. */
   tvlBand?: { minUsd: number; maxUsd: number };
   deps: WindowIngestDeps;
@@ -254,7 +264,8 @@ export async function loadWindowDataset(input: {
 
   if (!input.refresh) {
     const hit = readJson<WindowDataset>(cachePath);
-    if (hit && Array.isArray(hit.pools)) return { dataset: hit, cache: "hit", cachePath };
+    const kMatches = input.kOverride == null || hit?.selection?.k === input.kOverride;
+    if (hit && Array.isArray(hit.pools) && kMatches) return { dataset: hit, cache: "hit", cachePath };
   }
 
   let partial = input.refresh ? null : readJson<PartialFile>(partialPath);
@@ -306,7 +317,7 @@ export async function loadWindowDataset(input: {
   }
   writeJson(partialPath, partial);
 
-  const k = kFromCandidates(partial.candidates);
+  const k = input.kOverride ?? kFromCandidates(partial.candidates);
   const selection = selectWindowUniverse({
     candidates: partial.candidates
       .filter((p) => inWindowBars.has(p.address))

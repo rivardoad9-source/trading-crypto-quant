@@ -667,6 +667,8 @@ async function runPerWindowUniverse(ctx: {
       window: spec,
       n,
       candidatesCap,
+      // The newest window's candidates are today's survivors of every age: its k serves all windows.
+      kOverride: i === 0 ? null : (loaded[0]?.dataset.selection.k ?? null),
       solUsdPool: SOL_USDC_POOL,
       refresh: ctx.flags.has("refresh"),
       barsWanted: oldestBars,
