@@ -459,6 +459,24 @@ const EnvSchema = z
     LIVE_MAX_TOKEN_TRANSFER_FEE_BPS: numeric(0),
 
     /**
+     * Kill switch buat screen Token-2022 (fee/hook/non-transferable) di funnel.
+     *
+     * Default `true` (nyala). `false` = screen-nya DILEWATI TOTAL: pool dengan transfer fee
+     * (dan hook / non-transferable) boleh masuk seperti sebelum gate ini ada.
+     *
+     * KENAPA ADA: 13 Sep 2026 operator minta gate-nya dimatikan — "ikutin formula yang kemarin
+     * berhasil, trade pertama jalan tanpa guard". Switch-nya dijelaskan di sini, bukan disetel
+     * diam-diam lewat angka bps, supaya statusnya KELIHATAN: baris boot `[guard]` nyetak
+     * "token fees: SCREEN OFF (operator)" dan funnel nyetel token-fee 0 — jadi 'lagi mati'
+     * itu fakta yang kebaca, bukan tebakan.
+     *
+     * HARGA YANG DIBAYAR (dicatat sekali, buat jejak): fee kena di KEDUA kaki putaran.
+     * NEARKAT (3%) gagal-open dan putaran swap-nya memakan 8.77% dari 0.9 SOL; EMBER di pool
+     * bin_step 2% cuma menyisakan +2.65% dari TP +5.26%. Balikin ke `true` kalau itu kejadian lagi.
+     */
+    LIVE_TOKEN_FEE_SCREEN_ENABLED: booleanish(true),
+
+    /**
      * Drift thresholds for the periodic wallet-vs-book reconciliation, in percent of
      * the book and in absolute SOL. EITHER being exceeded raises the alert.
      *
