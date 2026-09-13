@@ -336,6 +336,29 @@ describe("the live-eligible arm", () => {
 
 /* ------------------------------------------------------------------ */
 
+describe("sweep flags", () => {
+  it("leave the published 30-day / $100 / 50% sweep byte-identical when absent", async () => {
+    const { applySweepFlags, readSweepFlags } = await import("../backtest/sweepHarness.js");
+    const flags = readSweepFlags(["--live-entry"]);
+    assert.equal(flags.days, 30);
+    const base = defaultBacktestConfig();
+    assert.deepEqual(applySweepFlags(base, flags), base);
+  });
+
+  it("override only the field each flag names", async () => {
+    const { applySweepFlags, readSweepFlags } = await import("../backtest/sweepHarness.js");
+    const flags = readSweepFlags(["--days=91", "--capital=300", "--sizepct=63", "--concurrent=1", "--gas=0.004", "--exitcost=envelope"]);
+    const out = applySweepFlags(defaultBacktestConfig(), flags);
+    assert.deepEqual(
+      [flags.days, out.startingCapitalUsd, out.positionSizePct, out.maxConcurrentPositions, out.gasSolPerTransaction],
+      [91, 300, 63, 1, 0.004],
+    );
+    assert.ok(out.exitCostModel && out.exitCostModel.spreadPerBinStepPct > 0);
+    assert.equal(out.swapSlippagePct, 0, "an absent --swapslip must not start pricing the swap");
+    assert.throws(() => readSweepFlags(["--capital=lots"]), /not a number/);
+  });
+});
+
 describe("non-overlapping windows", () => {
   const long = pool({ bars: bars(Array(24 * 20).fill(100)) }); // 20 days
 

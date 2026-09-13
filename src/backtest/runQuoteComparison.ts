@@ -46,6 +46,7 @@ import {
 } from "./historicalData.js";
 import { calibrateTvlModel, describeTvlModel, type TvlModel } from "./tvlModel.js";
 import { renderTable } from "./report.js";
+import { eligibilityLines } from "./sweepHarness.js";
 import { liveV11Config, type MicroCapitalOptions } from "./runMicroCapital.js";
 import {
   describeBacktestProfile,
@@ -468,6 +469,7 @@ async function main(): Promise<void> {
       force: refresh,
       survivorTvlBand: { minUsd: env.MIN_TVL_USD, maxUsd: env.MAX_TVL_USD },
       poolFilter: arm === "sol" ? isSolArm : isUsdArm,
+      annotateTokens: true,
     });
 
   if (ingestOnly !== null) {
@@ -624,7 +626,11 @@ async function main(): Promise<void> {
   );
 
   h("1. HEADLINE — same rules, same capital, different quote asset");
-  out.push(armTable(arms));
+  out.push(
+    ...(await eligibilityLines(bothPools, solUsdBars, tvlModel, config, env.LIVE_MAX_TOKEN_TRANSFER_FEE_BPS)),
+    "",
+    armTable(arms),
+  );
   out.push(
     "",
     "BOTH is not the sum of the two arms: it runs one account over the union, so the",

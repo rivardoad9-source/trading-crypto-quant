@@ -20,6 +20,12 @@
 import { defaultBacktestConfig, runSimulation, type BacktestConfig } from "../backtest/engine.js";
 import { loadHistoricalData, type PoolHistory } from "../backtest/historicalData.js";
 import { calibrateTvlModel } from "../backtest/tvlModel.js";
+import {
+  applySweepFlags,
+  describeSweepAccount,
+  eligibilityLines,
+  readSweepFlags,
+} from "../backtest/sweepHarness.js";
 import type { DlmmPool } from "../services/meteora.js";
 import { env } from "../config/env.js";
 
@@ -110,7 +116,14 @@ function score(
 }
 
 async function main(): Promise<void> {
-  const dataset = await loadHistoricalData({ poolCount: 16, deadPoolCount: 10, windowDays: 30 });
+  // Absent flags keep the published 30-day / $100 / 50% setup exactly.
+  const flags = readSweepFlags(process.argv.slice(2));
+  const dataset = await loadHistoricalData({
+    poolCount: 16,
+    deadPoolCount: 10,
+    windowDays: flags.days,
+    annotateTokens: true,
+  });
 
   const survivors = dataset.pools.filter((p) => p.cohort === "survivor");
   const tvlModel = calibrateTvlModel(
@@ -151,18 +164,32 @@ async function main(): Promise<void> {
    * trade count can collapse, which is itself the answer.
    */
   const liveEntry = process.argv.includes("--live-entry");
-  const base: BacktestConfig = liveEntry
-    ? {
-        ...defaultBacktestConfig(),
-        downsideCoverPct: env.MIN_DOWNSIDE_COVER_PCT,
-        upsideCoverPct: env.MIN_UPSIDE_COVER_PCT,
-        minFeeCostCoverage: env.MIN_FEE_COST_COVERAGE,
-        minTvlUsd: env.MIN_TVL_USD,
-        minFeeTvlRatio: env.MIN_FEE_TVL_RATIO,
-        maxPriceChange24hPct: env.MAX_PRICE_CHANGE_24H_PCT,
-        maxConcurrentPositions: env.MAX_CONCURRENT_POSITIONS,
-      }
-    : defaultBacktestConfig();
+  const base: BacktestConfig = applySweepFlags(
+    liveEntry
+      ? {
+          ...defaultBacktestConfig(),
+          downsideCoverPct: env.MIN_DOWNSIDE_COVER_PCT,
+          upsideCoverPct: env.MIN_UPSIDE_COVER_PCT,
+          minFeeCostCoverage: env.MIN_FEE_COST_COVERAGE,
+          minTvlUsd: env.MIN_TVL_USD,
+          minFeeTvlRatio: env.MIN_FEE_TVL_RATIO,
+          maxPriceChange24hPct: env.MAX_PRICE_CHANGE_24H_PCT,
+          maxConcurrentPositions: env.MAX_CONCURRENT_POSITIONS,
+        }
+      : defaultBacktestConfig(),
+    flags,
+  );
+
+  console.log(describeSweepAccount(base, flags));
+  for (const line of await eligibilityLines(
+    dataset.pools,
+    dataset.solUsdBars,
+    tvlModel,
+    { ...base, takeProfitNetPct: env.TAKE_PROFIT_PCT, stopLossPct: env.STOP_LOSS_PCT, takeProfitFeePct: Number.POSITIVE_INFINITY },
+    env.LIVE_MAX_TOKEN_TRANSFER_FEE_BPS,
+  )) {
+    console.log(line);
+  }
 
   console.log(
     liveEntry
