@@ -14,6 +14,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  barFilePath,
   kFromCandidates,
   loadWindowDataset,
   selectWindowUniverse,
@@ -183,7 +184,8 @@ describe("loadWindowDataset — cache hit, resume, fresh", () => {
     });
     const partialPath = `${windowCachePath(w2, dir)}.partial.json`;
     const partial = JSON.parse(readFileSync(partialPath, "utf8"));
-    assert.ok(partial.bars.A, "A's bars are in the partial file");
+    assert.ok(existsSync(barFilePath("A", dir)), "A's bars are in their own per-pool file");
+    assert.equal(partial.bars, undefined, "the partial file is a list, not a bar store");
     assert.equal(partial.failed.B, "429");
 
     // The run was interrupted before its final cache landed.
@@ -207,6 +209,48 @@ describe("loadWindowDataset — cache hit, resume, fresh", () => {
     assert.equal(resumed.cache, "resumed");
     assert.deepEqual(resumedCalls, ["B"], "A is not refetched; the failed B is retried");
     assert.deepEqual(resumed.dataset.pools.map((p) => p.address).sort(), ["A", "B"]);
+  });
+});
+
+describe("an old-format partial file (bars inline) is migrated, not refetched", () => {
+  it("moves each pool's bars to its own file and fetches only the pools it never had", async () => {
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    const dir = join(cacheDir, "migrate");
+    const w3 = { start: W.start - 182 * DAY, end: W.start - 91 * DAY };
+    const born = (w3.start - DAY) * 1000;
+    const partialPath = `${windowCachePath(w3, dir)}.partial.json`;
+    mkdirSync(dirname(partialPath), { recursive: true });
+    writeFileSync(
+      partialPath,
+      JSON.stringify({
+        window: w3,
+        candidates: [pool("A", { createdAtMs: born }), pool("B", { createdAtMs: born })],
+        bars: { A: bars(w3.start, w3.end, 1_000) },
+        failed: {},
+        solUsdBars: bars(w3.start, w3.end, 0),
+      }),
+    );
+
+    const fetched: string[] = [];
+    const result = await loadWindowDataset({
+      window: w3, n: 5, candidatesCap: 10, solUsdPool: "SOLUSDC", refresh: false, cacheDir: dir,
+      deps: {
+        buildUniverse: async () => {
+          throw new Error("a migrated run must not rebuild the universe");
+        },
+        fetchBars: async (a: string) => {
+          fetched.push(a);
+          return bars(w3.start, w3.end, 1_000);
+        },
+        log: () => undefined,
+        nowMs: () => NOW * 1000,
+      },
+    });
+    assert.equal(result.cache, "resumed");
+    assert.deepEqual(fetched, ["SOLUSDC", "B"], "A came from the migrated file; SOL/USD and B were never on disk");
+    assert.ok(existsSync(barFilePath("A", dir)));
+    const after = JSON.parse(readFileSync(partialPath, "utf8"));
+    assert.equal(after.bars, undefined);
   });
 });
 

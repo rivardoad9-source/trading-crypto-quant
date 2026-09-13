@@ -34,7 +34,6 @@ import {
   SOL_USDC_POOL,
   fetchHourlyBars,
   loadHistoricalData,
-  type Bar,
   type HistoricalDataset,
   type PoolHistory,
 } from "./historicalData.js";
@@ -656,20 +655,11 @@ async function runPerWindowUniverse(ctx: {
   const candidatesCap = ctx.num("candidates", n * 3);
   const specs = windowsEndingAt(Math.floor(Date.now() / 1000), ctx.days, ctx.windowsWanted);
   /*
-   * One fetch per pool per run, as deep as the OLDEST window: the windows share most
-   * candidates, and each fetch pages back through a 4-second rate limit.
+   * As deep as the OLDEST window, so the one per-pool bar file on disk serves every window
+   * (the windows share most candidates, and each fetch pages through a 4-second rate limit).
+   * Nothing is memoised in memory: the first version did, and was killed for low memory.
    */
   const oldestBars = Math.ceil(((Date.now() / 1000 - (specs[specs.length - 1]?.start ?? 0)) / 3600) * 1.05);
-  const barMemo = new Map<string, Promise<Bar[]>>();
-  const fetchBarsOnce = (address: string): Promise<Bar[]> => {
-    let hit = barMemo.get(address);
-    if (!hit) {
-      hit = fetchHourlyBars(address, oldestBars);
-      barMemo.set(address, hit);
-      hit.catch(() => barMemo.delete(address));
-    }
-    return hit;
-  };
 
   const loaded: Array<{ label: string; spec: WindowSpec; dataset: WindowDataset; cache: CacheOutcome }> = [];
   for (const [i, spec] of specs.entries()) {
@@ -679,10 +669,11 @@ async function runPerWindowUniverse(ctx: {
       candidatesCap,
       solUsdPool: SOL_USDC_POOL,
       refresh: ctx.flags.has("refresh"),
+      barsWanted: oldestBars,
       tvlBand: { minUsd: env.MIN_TVL_USD, maxUsd: env.MAX_TVL_USD },
       deps: {
         buildUniverse: (daysBack) => buildPointInTimeUniverse({ windowDays: daysBack, survivorPages: 3, cohortPages: 40 }),
-        fetchBars: (address) => fetchBarsOnce(address),
+        fetchBars: fetchHourlyBars,
         log: (line) => console.log(line),
         nowMs: () => Date.now(),
       },

@@ -142,9 +142,16 @@ export function kFromCandidates(pools: readonly UniversePool[]): number | null {
 interface PartialFile {
   window: WindowSpec;
   candidates: UniversePool[];
-  bars: Record<string, Bar[]>;
   failed: Record<string, string>;
-  solUsdBars: Bar[] | null;
+  /** Present only in partial files written before bars moved to per-pool files; migrated on read. */
+  bars?: Record<string, Bar[]>;
+  solUsdBars?: Bar[] | null;
+}
+
+interface BarFile {
+  /** How deep the fetch that produced this file asked to go, in hourly bars. */
+  requestedBars: number;
+  bars: Bar[];
 }
 
 const readJson = <T>(path: string): T | null => {
@@ -168,8 +175,36 @@ const writeJson = (path: string, data: unknown): void => {
 export type CacheOutcome = "hit" | "resumed" | "fresh";
 
 /**
+ * One file per pool, shared by every window and every run.
+ *
+ * WHY NOT ONE FILE (14 Sep 2026). The first version kept every candidate's bars in the
+ * window's partial file and rewrote it after each pool, while also memoising all bars in
+ * memory across windows. On a 6 GB box the run was killed for low memory at pool 28 of 96,
+ * with a 17 MB partial file re-serialised every ~30 s. Per-pool files keep each write small,
+ * let the process drop a pool's full history as soon as its window slice is taken, and turn
+ * "resume" into "the file exists".
+ */
+export const barFilePath = (address: string, cacheDir = ".cache"): string => `${cacheDir}/window_bars/${address}.json`;
+
+async function barsFor(
+  address: string,
+  barsWanted: number,
+  cacheDir: string | undefined,
+  fetchBars: WindowIngestDeps["fetchBars"],
+): Promise<{ bars: Bar[]; fromCache: boolean }> {
+  const path = barFilePath(address, cacheDir);
+  const hit = readJson<BarFile>(path);
+  if (hit && Array.isArray(hit.bars) && hit.requestedBars >= barsWanted) return { bars: hit.bars, fromCache: true };
+  const bars = await fetchBars(address, barsWanted);
+  writeJson(path, { requestedBars: barsWanted, bars } satisfies BarFile);
+  return { bars, fromCache: false };
+}
+
+/**
  * Loads a window's dataset: the final cache when present (and not `refresh`), otherwise the
- * ingest, resuming from `<cache>.partial.json`. Progress is printed per pool.
+ * ingest, resuming from `<cache>.partial.json` and the per-pool bar files. Progress is
+ * printed per pool. `barsWanted` defaults to this window's depth; a caller ingesting several
+ * windows passes the OLDEST window's depth so one fetch serves them all.
  */
 export async function loadWindowDataset(input: {
   window: WindowSpec;
@@ -178,6 +213,7 @@ export async function loadWindowDataset(input: {
   solUsdPool: string;
   refresh: boolean;
   cacheDir?: string;
+  barsWanted?: number;
   /** The strategy's TVL band; `k` is fitted from the candidates' TODAY figures. */
   tvlBand?: { minUsd: number; maxUsd: number };
   deps: WindowIngestDeps;
@@ -194,7 +230,19 @@ export async function loadWindowDataset(input: {
   let partial = input.refresh ? null : readJson<PartialFile>(partialPath);
   const resumed = partial !== null;
   const daysBack = Math.ceil((deps.nowMs() / 1000 - w.start) / 86_400);
-  const barsWanted = Math.ceil(daysBack * 24 * 1.05);
+  const barsWanted = input.barsWanted ?? Math.ceil(daysBack * 24 * 1.05);
+
+  if (partial?.bars) {
+    // Migrate an old-format partial: its bars become per-pool files, and it shrinks to a list.
+    for (const [address, bars] of Object.entries(partial.bars)) {
+      if (!existsSync(resolve(process.cwd(), barFilePath(address, input.cacheDir)))) {
+        writeJson(barFilePath(address, input.cacheDir), { requestedBars: barsWanted, bars } satisfies BarFile);
+      }
+    }
+    delete partial.bars;
+    delete partial.solUsdBars;
+    writeJson(partialPath, partial);
+  }
 
   if (!partial) {
     deps.log(`[window ${day(w.start)}→${day(w.end)}] building candidate universe (${daysBack} days back)…`);
@@ -203,38 +251,39 @@ export async function loadWindowDataset(input: {
       .filter((p) => !p.isBlacklisted && !(p.createdAtMs > 0 && p.createdAtMs / 1000 >= w.end))
       .sort((a, b) => b.lifetimeVolumeUsd - a.lifetimeVolumeUsd || a.address.localeCompare(b.address))
       .slice(0, input.candidatesCap);
-    partial = { window: w, candidates, bars: {}, failed: {}, solUsdBars: null };
+    partial = { window: w, candidates, failed: {} };
     writeJson(partialPath, partial);
   }
 
-  if (partial.solUsdBars === null) {
-    partial.solUsdBars = (await deps.fetchBars(input.solUsdPool, barsWanted)).filter((b) => b.t >= w.start && b.t < w.end);
-    writeJson(partialPath, partial);
-  }
+  const solUsdBars = (await barsFor(input.solUsdPool, barsWanted, input.cacheDir, deps.fetchBars)).bars.filter(
+    (b) => b.t >= w.start && b.t < w.end,
+  );
 
   const total = partial.candidates.length;
+  // Only the in-window slice of each candidate stays in memory.
+  const inWindowBars = new Map<string, Bar[]>();
   for (const [i, pool] of partial.candidates.entries()) {
+    const tag = `[window ${day(w.start)}] ${String(i + 1).padStart(3)}/${total} ${pool.pairName.padEnd(18)}`;
     // A failure recorded by an earlier run is retried: it was a fact about the network then.
     if (resumed && partial.failed[pool.address]) delete partial.failed[pool.address];
-    if (partial.bars[pool.address] || partial.failed[pool.address]) {
-      deps.log(`[window ${day(w.start)}] ${String(i + 1).padStart(3)}/${total} ${pool.pairName.padEnd(18)} cached`);
-      continue;
-    }
     try {
-      const bars = await deps.fetchBars(pool.address, barsWanted);
-      partial.bars[pool.address] = bars;
-      const inWindow = bars.filter((b) => b.t >= w.start && b.t < w.end).length;
-      deps.log(`[window ${day(w.start)}] ${String(i + 1).padStart(3)}/${total} ${pool.pairName.padEnd(18)} ${inWindow} bars in window`);
+      const { bars, fromCache } = await barsFor(pool.address, barsWanted, input.cacheDir, deps.fetchBars);
+      const slice = bars.filter((b) => b.t >= w.start && b.t < w.end);
+      inWindowBars.set(pool.address, slice);
+      deps.log(`${tag} ${slice.length} bars in window${fromCache ? " (cached)" : ""}`);
     } catch (err) {
       partial.failed[pool.address] = err instanceof Error ? err.message : String(err);
-      deps.log(`[window ${day(w.start)}] ${String(i + 1).padStart(3)}/${total} ${pool.pairName.padEnd(18)} FAILED: ${partial.failed[pool.address]}`);
+      deps.log(`${tag} FAILED: ${partial.failed[pool.address]}`);
+      writeJson(partialPath, partial);
     }
-    writeJson(partialPath, partial);
   }
+  writeJson(partialPath, partial);
 
   const k = kFromCandidates(partial.candidates);
   const selection = selectWindowUniverse({
-    candidates: partial.candidates.filter((p) => partial!.bars[p.address]).map((pool) => ({ pool, bars: partial!.bars[pool.address]! })),
+    candidates: partial.candidates
+      .filter((p) => inWindowBars.has(p.address))
+      .map((pool) => ({ pool, bars: inWindowBars.get(pool.address)! })),
     window: w,
     n: input.n,
     tvlBand: input.tvlBand && k !== null ? { ...input.tvlBand, k } : undefined,
@@ -254,14 +303,14 @@ export async function loadWindowDataset(input: {
     quoteIsUsd: ["USDC", "USDT", "USDH", "PYUSD", "FDUSD", "DAI"].includes(pool.quoteSymbol.toUpperCase()),
     cohort: pool.cohort,
     lifetimeVolumeUsd: pool.lifetimeVolumeUsd,
-    bars: bars.filter((b) => b.t >= w.start && b.t < w.end),
+    bars,
   }));
 
   const dataset: WindowDataset = {
     fetchedAt: new Date(deps.nowMs()).toISOString(),
     windowDays: (w.end - w.start) / 86_400,
     pools,
-    solUsdBars: partial.solUsdBars,
+    solUsdBars,
     window: { start: day(w.start), end: day(w.end), startSec: w.start, endSec: w.end },
     selection: { candidates: total, rejected: selection.rejected, n: input.n, k },
   };
