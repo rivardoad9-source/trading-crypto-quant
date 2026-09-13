@@ -13,6 +13,47 @@
 >   **13 dari 32 trade (41%) masih pool USDC** yang nggak bisa didanai live. Subset SOL-side:
 >   **19 trade, net +$331.92** (70% dari headline).
 
+## §E. Biaya swap diprice: `npm run backtest:quote` (91 hari, $300, 63%, 1 posisi, aturan V1.1)
+
+Runner `backtest:quote` = satu-satunya yang **menghitung biaya balancing swap** (2 kaki untuk
+pool SOL, 4 kaki untuk USDC) dan menyapu bandnya. Per-leg: gas 0.004 SOL + concession 0–0.5%.
+
+| arm | trade | win | net | return | PF | max DD | friction total | of which swap |
+|---|---|---|---|---|---|---|---|---|
+| **SOL-quoted** (yang engine bisa danai) | 59 | 72.9% | **+$166.46** | +55.5% | 1.45 | 24.6% | $158.78 | **$68.13** |
+| USDC-quoted (live tolak) | 1 | 0% | −$21.80 | −7.3% | 0.00 | 7.3% | $4.51 | $2.17 |
+| BOTH (satu akun, 1 slot) | 60 | 71.7% | +$122.64 | +40.9% | 1.34 | 30.4% | $156.60 | $67.83 |
+
+Sensitivitas band (arm SOL, central 0.25%/kaki, cap on-chain 0.50%):
+
+| per-leg swap | SOL net | trade |
+|---|---|---|
+| 0.00% (yang dipakai runner lain!) | **+$217.78** | 59 |
+| 0.10% | +$196.67 | 59 |
+| **0.25%** (separuh cap) | **+$166.46** | 59 |
+| 0.50% (cap on-chain `HARD_MAX_SLIPPAGE_BPS`) | **+$119.76** | 59 |
+
+**Tiga hal yang ini buktikan:**
+1. **Biaya swap menggeser hasil sebesar ~$98 (0% → 0.5%), ≈44% dari seluruh friction.** Runner
+   `backtest:micro` dan dua sweep **tidak** menghitungnya (default `swapSlippagePct=0`), jadi
+   headline +$474.62/+135–158% itu **optimistis tanpa batas yang diketahui** — sekarang ada batasnya.
+2. **Trade USDC di benchmark lama itu artefak dari swap gratis.** Dengan swap diprice, arm USDC
+   menghasilkan **1 trade dalam 91 hari** — pool USDC butuh 4 kaki swap, jadi hampir nggak ada yang
+   lolos gate. Artinya 83% trade benchmark di pool USDC itu ada **karena** model tidak membebankan
+   biaya swap ke mereka.
+3. **Sebagian PnL arm SOL itu beta SOL, bukan alpha**: engine menilai posisi di quote asset, jadi PnL
+   pool SOL diam-diam mengasumsikan SOL/USD datar — padahal SOL naik **+48.96%** di window ini.
+   Kolom diagnostik `Net PnL (USD)` = **$198.08** (selisih **$31.62** = beta). Ini diagnostik, engine
+   tidak diubah.
+
+Caveat: profil di run ini = override `--capital=300 --sizepct=63` (profil live di window-start SOL/USD
+$68.34 setara **$194.76**, dan runner-nya sendiri memperingatkan "NOT THE LIVE PROFILE"); TVL dimodel
+(k median 0.223); universe 24 pool SOL + 23 USDC. Dan biaya exit nyata di live (EMBER bin_step 2%:
+exit **3.95% di bawah** harga pool) masih **lebih buruk** dari 0.25%/kaki yang dimodel di sini — jadi
+$166.46 itu tetap batas optimistis sampai S1 (biaya exit per bin_step) dipasang.
+
+
+
 ## §0. Audit universe: dari trade yang BENAR-BENAR terjadi
 
 Diukur dengan `scripts/auditBacktestTokens.ts` (jalur kode yang sama dengan engine:
