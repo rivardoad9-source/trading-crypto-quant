@@ -1,0 +1,90 @@
+WORK ORDER untuk Claude Code (LOKAL) — 13 Sep 2026
+Repo: ~/flowmetrix-ai-agent. Branch: work/backtest-integrity-2026-09-13 (jangan di main).
+
+== BACA DULU (fakta yang SUDAH diukur hari ini — jangan diukur ulang) ==
+1. Backtest TIDAK menghitung biaya balancing swap. `defaultBacktestConfig()` punya
+   `swapSlippagePct: 0` dan `swapGasSolPerLeg: 0`, komentarnya sendiri: "the balancing swap
+   has never been priced here". Angka dampaknya (dari `npm run backtest:quote`, 91 hari,
+   $300, 63%, 1 posisi, aturan V1.1): arm SOL net +$217.78 @0.00%/kaki -> +$196.67 @0.10%
+   -> +$166.46 @0.25% -> +$119.76 @0.50% (cap on-chain). Ekor $98 itu ~44% dari seluruh friction.
+2. Exit TAKE_PROFIT tidak dikenakan slippage SAMA SEKALI. `forcedExitSlippagePct` hanya
+   berlaku untuk exit paksa (OUT_OF_RANGE / STOP_LOSS / RATCHET_STOP / rugged).
+   Bukti live: exit EMBER tereksekusi 3.95% DI BAWAH harga pool yang dilaporkan (pool
+   bin_step 200, TVL $82.8k, jual 0.79 SOL); kegagalan NEARKAT bin_step 400 = 8.77% round trip.
+3. Universe backtest != universe live. `scripts/auditBacktestTokens.ts` pada hasil 8 Sep:
+   35/42 trade ada di pool TANPA sisi wSOL (live menolaknya: `noWsol`), dan 9 trade di
+   OPENAI-USDC = mint Token-2022 fee 50 bps + TRANSFER HOOK (gate live menolak) — 9 trade itu
+   47.7% dari net benchmark. Run 13 Sep: 0 trade ditolak gate, tapi 13/32 masih pool USDC.
+4. Grid yang ada TIDAK bisa dipakai untuk $300/91 hari: `sweep:entry` dan `sweep:exits`
+   hardcode 30 hari dan memakai akun default (`defaultBacktestConfig()`: $100, 50%/posisi,
+   `MAX_CONCURRENT_POSITIONS=3`, slippage 1%).
+5. Kebijakan live yang jadi sumber kebenaran (.env): coverage 2.5x, TP net +5%, SL -8%,
+   max age 24h, bin range -45%/+15%, `LIVE_MAX_POSITION_BINS=1400`, gas asumsi 0.004 SOL/tx,
+   `FORCED_EXIT_SLIPPAGE_PCT=2.0` (FLAT untuk semua pool — ini yang dicurigai salah).
+6. Acuan angka+metode: `docs/backtests/2026-09-13-v11-vs-variants-300usd.md`.
+   Insiden terbaru: `docs/incidents/2026-09-13-residual-sale-refused-at-entry-slippage-bound.md`
+   dan `docs/incidents/2026-09-13-token2022-transfer-fee-nearkat.md`.
+
+== P0 (prioritas) — Backtest harus ngomongin hal yang SAMA dengan live ==
+P0.1 ARM "LIVE-ELIGIBLE" JADI STANDAR. Di ingest data historis, simpan per pool:
+     `hasWsolLeg` (dari pasangan mint) + `pairedMintTransferFeeBps` + `hasTransferHook` /
+     `nonTransferable` (1 `getAccountInfo` per mint, di-cache; PAKAI `src/services/
+     tokenExtensions.ts` yang sudah ada — jangan bikin decoder kedua).
+     Setiap run WAJIB mencetak 3 baris: (a) live-eligible = pool ber-sisi wSOL + mint lolos
+     kebijakan gate, (b) full universe, (c) selisihnya. Arm lama TETAP ADA (tambah, jangan ganti).
+P0.2 HARGA KEDUA KAKI SWAP + BIAYA EXIT PER POOL. (a) Kenakan biaya swap ke semua swap
+     backtest (default tetap 0 supaya run lama reproducible, tapi flag harus bisa nyalain).
+     (b) Kenakan slippage exit ke SEMUA exit termasuk TP — bukan cuma exit paksa.
+     (c) Biaya keluar = f(bin_step, notional/TVL), bukan flat 2%. Kalibrasi konstanta dari
+     data live: MANLET (bin_step kecil) gap ~0.6pp; EMBER bin_step 200 -> exit 3.95% di bawah
+     pool; NEARKAT bin_step 400 -> 8.77% round trip. Tulis fungsi kalibrasi + test-nya, dan
+     sekalian laporkan: dengan model ini, pool bin_step berapa yang masih bisa profit di TP 5%.
+P0.3 ULANGI baseline V1.1 di $300 / 91 hari SETELAH P0.1+P0.2, dan tampilkan BERDAMPINGAN
+     dengan angka lama (yang tanpa biaya swap). Eksplisit: berapa turunnya + berapa banyak
+     yang hilang gara-gara universe dipersempit.
+P0.4 BARU SETELAH ITU: grid TP & grid gate di 91 hari / $300 / profil live. Tambahkan flag
+     `--days --capital --sizepct --concurrent --gas` ke `sweep:entry` dan `sweep:exits`
+     (default JANGAN diubah, biar run lama tetap bisa direproduksi).
+P0.5 ROBUSTNESS: minimal 2 window 91 hari NON-overlap (batas free tier 208 hari — kalau nggak
+     bisa, tulis kenapa). Laporkan PER WINDOW, jangan dirata-rata. Bar OOS tetap >= 8 trade:
+     kalau kurang sampel tulis "belum bisa diverifikasi", jangan dianggap menang.
+DELIVERABLE P0: satu tabel dengan kolom (live-eligible | full universe | selisih) untuk
+baseline + tiap varian TP/gate, plus jawaban ya/tidak: "naikin TP (6/8/10%) dan/atau ngubah
+gate friction (2.5x -> 2.0x/1.5x) menaikkan NET di arm live-eligible, di KEDUA window?"
+
+== P1 — Exit path hardening (hari ini operator harus jual token sisa PAKAI TANGAN) ==
+P1.1 FALLBACK ROUTE buat jual sisa token. Sekarang: ladder 50 -> 150 -> 300 bps via Jupiter
+     (`EXIT_MAX_SLIPPAGE_BPS`, `SWEEP_SLIPPAGE_LADDER_BPS` di `liveExecution.ts`); kalau SEMUA
+     rung gagal, engine cuma page operator. Tambah jalur terakhir: jual LANGSUNG ke pool DLMM
+     yang barusan dipakai posisi itu (SDK DLMM `swap`), dengan batas harga dari quote pool.
+     Kalau itu juga gagal, baru page — dan page-nya bawa: mint, amount, estimasi SOL, error
+     Jupiter, error pool. Jangan bikin jalur swap kedua yang lebih lemah: bungkus rapi + test.
+P1.2 CLOSE PATH SADAR STATE. Sebelum rebuild tx close, verifikasi on-chain (position account
+     masih ada? liquidity masih di dalam?) supaya retry tidak pernah double-close / close
+     posisi yang sudah kosong. Insiden 13 Sep: close 2 tx kena `blockhash expired` attempt
+     1-4/8 lalu 1-3/8 sebelum landed — retry-nya sudah benar hasilnya, tapi belum tentu sadar state.
+P1.3 Test untuk P1.1 + P1.2 lewat dependency injection (pola: `src/tests/exitSlippage.test.ts`).
+
+== P2 (kalau waktu masih ada, jangan duluan) ==
+- Analytics/dashboard nampilin kolom baru: `exec_transfer_fee_rejected`, batas entry vs exit
+  slippage, dan status ladder sweep terakhir. Cek `src/server.ts` + halaman analytics.
+
+== ATURAN WAJIB ==
+- JANGAN deploy, JANGAN restart pm2, JANGAN ubah `.env`, JANGAN kirim transaksi on-chain.
+- Jangan ubah nilai default di `src/config/env.ts` / `src/services/onchainExecutor.ts`, dan
+  jangan sentuh test baseline V1.1 (`v11Baseline`, `backtestGuardrails`, `backtestLiveProfile`).
+  Semua variasi lewat flag/konfigurasi injeksi.
+- JANGAN tambah file yang meng-import `src/services/onchainExecutor.ts`. Allowlist di
+  `src/tests/onchainExecutor.test.ts` itu boundary keamanan (siapa yang boleh gerakin dana).
+  Butuh fungsi dari sana? Lewat bridge `src/services/liveExecution.ts` (re-export sudah ada).
+- Output hasil: `backtest_micro_capital_report.txt` atau `backtest_*_summary.json`
+  (pola lain ke-ignore .gitignore; `git add -f` kalau memang perlu di-commit).
+- WAJIB hijau: `npm run typecheck` dan `npm test` (baseline sekarang **882/882 pass, 0 fail**).
+  Kalau ada `not ok`, bandingkan dengan baseline dan JANGAN tambal test supaya hijau.
+- Bahasa laporan: Indonesia, angka mentah, tabel. Termasuk section "yang gw nggak bisa klaim"
+  (kedalaman data, sampel tipis, TVL model k historis vs live, biaya gas).
+- Commit kecil-kecil dengan pesan yang menjelaskan KENAPA, bukan apa. Push ke branch, jangan main.
+
+Intinya: P0 bikin backtest kita akhirnya ngomongin hal yang sama dengan live (sekarang dia
+belum nagih biaya yang di live justru paling gede). P1 bikin kegagalan exit tidak lagi berakhir
+di tangan manusia.
