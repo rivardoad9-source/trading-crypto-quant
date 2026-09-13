@@ -1,0 +1,73 @@
+TASK — BACKTEST 3 BULAN, MODAL $300: apakah naikin TP / ngubah gate friction bikin NET naik?
+Repo: ~/flowmetrix-ai-agent (Node + TS). Kerjakan di LOKAL. JANGAN deploy, JANGAN sentuh .env, JANGAN restart engine, JANGAN sign apa pun on-chain.
+
+KONTEKS (dari data LIVE 11–13 Sep 2026, real money — ini yang harus direkonsiliasi backtest-nya)
+- Modal live sekarang: LIVE_CAPITAL_SOL=2.85 (~$289 @ SOL $101), LIVE_MAX_POSITION_SOL=1.8 (1 posisi) = 63% per posisi.
+- Rumus beku V1.1: TP +5% (net), SL −8%, MAX_POSITION_AGE_HOURS=24, MIN_FEE_COST_COVERAGE=2.5, range floor −45%/+15%.
+- 3 posisi live yang BERHASIL, semua profit, tapi ada GAP buku vs chain yang konsisten:
+    MANLET  : buku +5.29%  → chain +0.0800 SOL (notional 1.8 SOL) ≈ +4.4%  → gap ~0.6pp
+    EMBER#5 : buku +5.26%  → chain +0.0477 SOL                    ≈ +2.65% → gap ~2.6pp (pool bin_step 200 = 2%; exit tereksekusi 3.95% DI BAWAH harga pool)
+    EMBER#6 : chain +0.0511 SOL
+    NEARKAT : GAGAL open (bin_step 400 = 4%); bolak-balik swap = 8.77% dari 0.9 SOL hilang
+- Kesimpulan yang mau diuji: **biaya keluar itu fungsi bin_step** (~2 × bin_step), sedangkan model biaya backtest sekarang pakai `forcedExitSlippagePct = 1.0` FLAT untuk semua pool. Artinya gate friction 2.5x sekarang menilai pool bin_step 4% pakai asumsi biaya 1%, padahal biaya nyatanya ~8%. Kalau benar, gate-nya salah sasaran: dia nolak pool murah dan meloloskan pool mahal.
+
+TUJUAN (jawab pakai angka, bukan opini)
+A. Berapa NET USD (dan PF, DD, expectancy, jumlah trade) kalau TP dinaikkan, di akun $300 / 3 bulan / profil live, dengan disiplin out-of-sample?
+B. Berapa NET kalau gate friction digeser (2.5 → 2.0 / 1.5 / 1.0)?
+C. Apakah 3 formula usulan di bawah mengalahkan V1.1 baseline pada NET USD **out-of-sample** (bukan cuma in-sample)?
+
+ATURAN MAIN
+- Jangan mengubah nilai default di `src/config/env.ts` atau test V1.1 (`v11Baseline.test.ts`, `backtestGuardrails.test.ts`, `backtestLiveProfile.test.ts`). Semua variasi lewat konfigurasi runner / flag / harness baru.
+- Baseline dulu, baru varian. Baseline harus direproduksi dan angkanya dilaporkan APA ADANYA sebelum varian apa pun dinilai.
+- Out-of-sample wajib: pakai `splitWindow()` + `survivedOutOfSample()` dari `src/backtest/sweepHarness.ts` (bar: payoff > 1 DAN expectancy > 0 di KEDUA paruh). Grid tanpa split = curve fitting, jangan dipakai untuk rekomendasi.
+- Ambang sampel: satu varian dengan < 8 trade (MIN_TRADES di sweepEntry) = NOISE, bukan temuan. Tulis "noise", jangan tulis "menang".
+- Data: `loadHistoricalData()` (cache `.cache/historical_data_micro.json`, `FREE_TIER_HISTORY_DAYS = 208`). **208 hari hanya cukup untuk DUA window 91 hari yang tidak tumpang tindih (2×91=182).** Kalau `--refresh` nggak bisa nambah depth, tulis batasnya, jangan pura-pura ada 3 window.
+- Selalu sebut 3 caveat yang sudah ada di harness: (1) komposisi cohort (survivor vs dead-or-dormant), (2) TVL itu MODEL `k × volume24h` (jalankan sensitivitas k = median vs p75), (3) sensitivitas gas.
+
+LANGKAH 0 — ANCHOR & KALIBRASI BIAYA KELUAR (jangan dilewat)
+1. Baseline: `npm run backtest:micro -- --days=91 --capital=300 --sizepct=63 --concurrent=1 --refresh` → catat trade, net USD, PF, DD, expectancy, mix exit (TP/SL/TIMEOUT/OUT_OF_RANGE), avg hold.
+2. Ukur ulang biaya keluar sebagai fungsi bin_step: untuk bucket bin_step (≤20, 50, 100, 200, 400 bp), hitung berapa % notional yang hilang saat exit (minimal: pakai selisih mark-to-net yang sudah ada di engine; kalau perlu tambah kolom diagnostik di hasil, JANGAN ubah logika exit). Output: tabel bin_step → realized exit cost %. Ini yang jadi dasar formula S1.
+3. Laporkan `forcedExitSlippagePct = 1.0` flat vs hasil langkah 2. Kalau memang salah, tulis berapa nilai yang benar per bucket.
+
+FORMULA USULAN (uji sebagai hipotesis, satu per satu, lalu kombinasi)
+
+S1 — biaya putaran yang sadar bin_step (pengganti asumsi sippage flat)
+    roundTripCostUsd(pool) = gasSolPerTransaction * 2 * solUsd
+                           + notionalUsd * (forcedExitSlippagePct / 100)
+                           + notionalUsd * (2 * binStepBp / 10000)      <-- BARU: spread masuk+keluar
+    Gate tetap: expectedFee24hUsd / roundTripCostUsd(pool) >= MIN_FEE_COST_COVERAGE
+    Hipotesis: pool bin_step ≥ 200bp berhenti lolos (biaya ≥ 4% dari notional vs TP 5%), dan kuota posisi pindah ke pool bin_step kecil dengan volume nyata → NET naik walau jumlah trade turun.
+
+S2 — gate dalam DOLLAR (bukan cuma rasio)
+    expectedNetUsd = expectedFee24hUsd * (expectedHoldHours / 24) - roundTripCostUsd(pool)   [(S1)]
+    Lolos kalau expectedNetUsd >= MIN_NET_EXPECTANCY_USD   (sweep: 0 / 1.5 / 3.0)
+      DAN expectedFee24hUsd / roundTripCostUsd(pool) >= 1.0 (lantai, biar pool mini ber-noise nggak lolos)
+    Catatan: engine live sudah punya lantai net $1.50 di `assessMicroCapitalFriction` (liveConfig.ts).
+    Tugas lu: selaraskan atau jelaskan bedanya — jangan sampai ada DUA definisi "net" yang beda.
+
+S3 — TP per-pool yang minimal nutup biaya keluar
+    tpEffective(pool) = max(TP_NOMINAL, 2 * binStepBp / 100 + TP_MARGIN_PCT)
+    Sweep: TP_NOMINAL ∈ {5, 6, 8} × TP_MARGIN_PCT ∈ {2, 3}, SL & age tetap (−8%, 24h).
+    Pakai TP NET (`takeProfitNetPct`) seperti engine live; `takeProfitFeePct` biarkan non-aktif biar nggak nutup posisi lebih dulu.
+    Hipotesis: di bin_step 100–200bp TP 5% cuma balik modal (bukti live: buku +5.26% → chain +2.65%); TP turunan 6–7% mengubah trade "kena TP tapi net ≈ 0" jadi menang. Di bin_step 400bp nggak ada TP waras yang cukup — harusnya sudah tersaring S1.
+
+LANGKAH UJI (urutan, semua di akun $300 / 91 hari / profil live)
+1. Baseline V1.1 (langkah 0.1) — 2 window 91 hari non-overlap.
+2. Baselines gate: `MIN_FEE_COST_COVERAGE` = 2.5 / 2.0 / 1.5 / 1.0. Pakai grid yang SUDAH ada: `npm run sweep:entry` (FEE_COST_COVERAGE = [0.5,1.0,1.5,2.5]), lalu laporkan yang LOLOS out-of-sample saja + berapa trade-nya.
+3. TP sweep: `npm run sweep:exits` (TAKE_PROFITS = [4,5,6,8,10,12,15,∞]) — sama, laporkan yang lolos out-of-sample.
+4. Varian S1, S2, S3 (implementasi di harness/engine sebagai flag, lihat aturan main) — masing-masing dengan split in/out-of-sample.
+5. Kombinasi terbaik (mis. S1+S3, atau S1+S2) — TAPI hanya kalau masing-masing komponen sudah lolos sendiri.
+6. Window kedua 91 hari: ulangi langkah 1–5. **Kalau ranking varian berubah antar window, tulis "NGGAK STABIL — jangan ubah apa pun".** Itu hasil yang sah dan penting.
+
+OUTPUT YANG GW MINTA (bahasa Indonesia, tabel boleh header Inggris)
+1. Tabel anchor: baseline V1.1 per window (trade, win rate, net USD, PF, DD%, expectancy, mix exit, avg hold) + tabel bin_step → biaya exit nyata vs asumsi flat 1%.
+2. Tabel varian: baris = varian (baseline, gate 2.0/1.5/1.0, TP 6/8/10, S1, S2, S3, kombinasi), kolom = trade, net USD, PF, DD%, expectancy, payoff, **status in-sample vs out-of-sample (lolos/nggak)**, catatan sampel (<8 trade = noise).
+3. Dekomposisi biaya per varian: fee yang didapat vs gas vs slippage exit vs komponen spread bin_step. Ini yang bikin angkanya bisa dipercaya.
+4. Jawaban langsung 3 pertanyaan A/B/C di atas — masing-masing dengan angka dan status sampel.
+5. Rekomendasi: (a) ubah, (b) jangan ubah, atau (c) butuh data lebih dalam — plus alasan. Kalau rekomendasinya "ubah", sebut angka yang dipakai dan jelaskan kenapa bukan curve fitting (sebut window + jumlah trade + hasil out-of-sample).
+6. Daftar file output: simpan sebagai `backtest_*_summary.json` atau `backtest_micro_capital_report.txt` (pola `backtest_results_*.json` DI-GITIGNORE — kalau nyangkut, `git add -f`), push ke branch `backtest/tp-gate-300usd-3mo`, JANGAN ke main.
+
+YANG NGGAK BOLEH
+- Nggak boleh: ubah `.env`, jalankan `npm run db:reset` / `seed:demo`, restart pm2, jalanin apa pun yang nge-sign transaksi, atau nge-commit ke main.
+- Nggak boleh: melaporkan varian sebagai "lebih baik" kalau cuma menang in-sample, atau kalau trade-nya < 8.
+- Nggak boleh: nyimpulin "TP lebih tinggi = lebih baik" tanpa nyebut trade-off-nya (TP lebih tinggi = lebih sedikit posisi kena TP, lebih banyak kena TIMEOUT/SL, dan fee mengalir lebih lama → makin sensitif ke model TVL).
