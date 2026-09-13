@@ -10,6 +10,98 @@
 import { runSimulation, type BacktestConfig } from "./engine.js";
 import type { PoolHistory } from "./historicalData.js";
 import type { calibrateTvlModel } from "./tvlModel.js";
+import { exitCostModelFromFlag } from "./exitCost.js";
+import { describeEligibilityArms, partitionLiveEligible } from "./liveEligibility.js";
+
+/**
+ * Account and cost flags shared by `sweep:entry` and `sweep:exits`.
+ *
+ * Every flag is OPTIONAL and an absent flag leaves the sweep's own default untouched —
+ * the sweeps were published at 30 days on a $100 / 50% / MAX_CONCURRENT_POSITIONS
+ * account, and those figures must stay reproducible from the same command. A flag only
+ * ever overrides the field it names.
+ */
+export interface SweepFlags {
+  days: number;
+  capitalUsd?: number;
+  positionSizePct?: number;
+  maxConcurrentPositions?: number;
+  gasSolPerTransaction?: number;
+  swapSlippagePct?: number;
+  swapGasSolPerLeg?: number;
+  exitCost?: string;
+}
+
+export function readSweepFlags(argv: string[], defaultDays = 30): SweepFlags {
+  const values = new Map<string, string>();
+  for (const arg of argv) {
+    const m = /^--([a-z-]+)=(.*)$/i.exec(arg);
+    if (m) values.set(m[1]!.toLowerCase(), m[2]!);
+  }
+  const n = (key: string): number | undefined => {
+    const raw = values.get(key);
+    if (raw === undefined) return undefined;
+    const v = Number(raw);
+    if (!Number.isFinite(v)) throw new Error(`--${key}=${raw} is not a number`);
+    return v;
+  };
+  return {
+    days: n("days") ?? defaultDays,
+    capitalUsd: n("capital"),
+    positionSizePct: n("sizepct"),
+    maxConcurrentPositions: n("concurrent"),
+    gasSolPerTransaction: n("gas"),
+    swapSlippagePct: n("swapslip"),
+    swapGasSolPerLeg: n("swapgas"),
+    exitCost: values.get("exitcost"),
+  };
+}
+
+/** Applies ONLY the flags that were given. */
+export function applySweepFlags(base: BacktestConfig, flags: SweepFlags): BacktestConfig {
+  const out: BacktestConfig = { ...base };
+  if (flags.capitalUsd !== undefined) out.startingCapitalUsd = flags.capitalUsd;
+  if (flags.positionSizePct !== undefined) out.positionSizePct = flags.positionSizePct;
+  if (flags.maxConcurrentPositions !== undefined) out.maxConcurrentPositions = flags.maxConcurrentPositions;
+  if (flags.gasSolPerTransaction !== undefined) out.gasSolPerTransaction = flags.gasSolPerTransaction;
+  if (flags.swapSlippagePct !== undefined) out.swapSlippagePct = flags.swapSlippagePct;
+  if (flags.swapGasSolPerLeg !== undefined) out.swapGasSolPerLeg = flags.swapGasSolPerLeg;
+  if (flags.exitCost !== undefined) out.exitCostModel = exitCostModelFromFlag(flags.exitCost, out.forcedExitSlippagePct);
+  return out;
+}
+
+export function describeSweepAccount(c: BacktestConfig, flags: SweepFlags): string {
+  return (
+    `Account: ${c.startingCapitalUsd === null ? `${c.virtualSol} SOL` : `$${c.startingCapitalUsd}`} · ` +
+    `${c.positionSizePct}%/position · ${c.maxConcurrentPositions} concurrent · gas ${c.gasSolPerTransaction} SOL/tx · ` +
+    `swap ${c.swapSlippagePct}%/leg · exit ${c.exitCostModel?.label ?? "legacy (forced only)"} · ${flags.days} days`
+  );
+}
+
+/**
+ * The three eligibility lines for one configuration, over the whole window. Pools must
+ * already carry `tokenScreen` (ingest with `annotateTokens`); unannotated ones count as
+ * NOT eligible, exactly as an unread mint is live.
+ */
+export async function eligibilityLines(
+  pools: PoolHistory[],
+  solUsdBars: PoolHistory["bars"],
+  tvlModel: TvlModel,
+  config: BacktestConfig,
+  maxTransferFeeBps: number,
+): Promise<string[]> {
+  const partition = await partitionLiveEligible(pools, { maxTransferFeeBps });
+  const fig = (set: PoolHistory[]) => {
+    if (set.length === 0) return { pools: 0, trades: 0, netPnlUsd: 0, profitFactor: null, maxDrawdownPct: 0 };
+    try {
+      const s = runSimulation({ label: "eligibility", pools: set, solUsdBars, tvlModel, config }).summary;
+      return { pools: set.length, trades: s.totalTrades, netPnlUsd: s.netPnlUsd, profitFactor: s.profitFactor, maxDrawdownPct: s.maxDrawdownPct };
+    } catch {
+      return { pools: set.length, trades: 0, netPnlUsd: 0, profitFactor: null, maxDrawdownPct: 0 };
+    }
+  };
+  return describeEligibilityArms(fig(partition.eligible), fig(pools), partition);
+}
 
 export type TvlModel = ReturnType<typeof calibrateTvlModel>;
 

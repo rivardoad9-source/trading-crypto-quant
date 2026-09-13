@@ -17,9 +17,13 @@ import { defaultBacktestConfig, type BacktestConfig } from "../backtest/engine.j
 import { loadHistoricalData } from "../backtest/historicalData.js";
 import { calibrateTvlModel } from "../backtest/tvlModel.js";
 import {
+  applySweepFlags,
   day,
+  describeSweepAccount,
+  eligibilityLines,
   fmt,
   pf,
+  readSweepFlags,
   scoreConfig,
   splitWindow,
   survivedOutOfSample,
@@ -46,7 +50,14 @@ interface Row {
 }
 
 async function main(): Promise<void> {
-  const dataset = await loadHistoricalData({ poolCount: 16, deadPoolCount: 10, windowDays: 30 });
+  // Absent flags keep the published 30-day / $100 / 50% setup exactly.
+  const flags = readSweepFlags(process.argv.slice(2));
+  const dataset = await loadHistoricalData({
+    poolCount: 16,
+    deadPoolCount: 10,
+    windowDays: flags.days,
+    annotateTokens: true,
+  });
 
   const survivors = dataset.pools.filter((p) => p.cohort === "survivor");
   const tvlModel = calibrateTvlModel(
@@ -66,16 +77,29 @@ async function main(): Promise<void> {
    * Exits pinned to what the engine actually runs, so the only thing varying across
    * rows is the entry gate under test.
    */
-  const base: BacktestConfig = {
-    ...defaultBacktestConfig(),
-    takeProfitFeePct: Number.POSITIVE_INFINITY,
-    takeProfitNetPct: env.TAKE_PROFIT_PCT,
-    stopLossPct: env.STOP_LOSS_PCT,
-    upsideCoverPct: env.MIN_UPSIDE_COVER_PCT,
-    maxConcurrentPositions: env.MAX_CONCURRENT_POSITIONS,
-  };
+  const base: BacktestConfig = applySweepFlags(
+    {
+      ...defaultBacktestConfig(),
+      takeProfitFeePct: Number.POSITIVE_INFINITY,
+      takeProfitNetPct: env.TAKE_PROFIT_PCT,
+      stopLossPct: env.STOP_LOSS_PCT,
+      upsideCoverPct: env.MIN_UPSIDE_COVER_PCT,
+      maxConcurrentPositions: env.MAX_CONCURRENT_POSITIONS,
+    },
+    flags,
+  );
 
   console.log("");
+  console.log(describeSweepAccount(base, flags));
+  for (const line of await eligibilityLines(
+    dataset.pools,
+    dataset.solUsdBars,
+    tvlModel,
+    base,
+    env.LIVE_MAX_TOKEN_TRANSFER_FEE_BPS,
+  )) {
+    console.log(line);
+  }
   console.log(`Window ${day(split.start)} -> ${day(split.end)}  (split at ${day(split.mid)})`);
   console.log(`In-sample pools ${split.inPools.length}, out-of-sample pools ${split.outPools.length}`);
   console.log(

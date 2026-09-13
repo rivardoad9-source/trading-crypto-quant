@@ -31,6 +31,8 @@ import {
   type ExitReason,
 } from "./engine.js";
 import { BACKTEST_CAVEATS, loadHistoricalData } from "./historicalData.js";
+import { exitCostModelFromFlag } from "./exitCost.js";
+import { eligibilityLines } from "./sweepHarness.js";
 import { calibrateTvlModel, describeTvlModel, type TvlModel } from "./tvlModel.js";
 import { renderTable } from "./report.js";
 import {
@@ -275,6 +277,9 @@ function parseArgs(argv: string[]): {
   deadPools: number;
   refresh: boolean;
   overrides: ProfileOverrides;
+  swapSlippagePct: number;
+  swapGasSolPerLeg: number;
+  exitCost: string | undefined;
 } {
   const flags = new Map<string, string>();
   for (const arg of argv) {
@@ -296,6 +301,11 @@ function parseArgs(argv: string[]): {
     // Account inputs are NOT defaulted here: absent flags mean "the live profile",
     // resolved once the SOL/USD at the window start is known.
     overrides: readProfileOverrides(flags),
+    // Both default to the published accounting (swap free, legacy exits) so an
+    // unflagged run reproduces every figure already quoted from this runner.
+    swapSlippagePct: n("swapslip", 0),
+    swapGasSolPerLeg: n("swapgas", 0),
+    exitCost: flags.get("exitcost"),
   };
 }
 
@@ -303,7 +313,8 @@ function parseArgs(argv: string[]): {
 const DEFAULT_GAS_SOL_PER_TX = 0.0035;
 
 async function main(): Promise<void> {
-  const { days, pools, deadPools, refresh, overrides } = parseArgs(process.argv.slice(2));
+  const { days, pools, deadPools, refresh, overrides, swapSlippagePct, swapGasSolPerLeg, exitCost } =
+    parseArgs(process.argv.slice(2));
 
   console.log(`\n[micro] ${days}-day window · account from the live profile unless overridden`);
 
@@ -320,6 +331,7 @@ async function main(): Promise<void> {
      * comparison degenerates into "one side never traded".
      */
     survivorTvlBand: { minUsd: env.MIN_TVL_USD, maxUsd: env.MAX_TVL_USD },
+    annotateTokens: true,
   });
 
   const profile = resolveBacktestProfile({
@@ -328,7 +340,13 @@ async function main(): Promise<void> {
     defaultGasSolPerTransaction: DEFAULT_GAS_SOL_PER_TX,
   });
   const options = profile.options;
-  const config = liveV11Config(options);
+  const liveConfig = liveV11Config(options);
+  const config: BacktestConfig = {
+    ...liveConfig,
+    swapSlippagePct,
+    swapGasSolPerLeg,
+    exitCostModel: exitCostModelFromFlag(exitCost, liveConfig.forcedExitSlippagePct),
+  };
   for (const line of describeBacktestProfile(profile)) console.log(`[micro] ${line}`);
 
   const survivors = dataset.pools.filter((p) => p.cohort === "survivor");
@@ -439,8 +457,21 @@ async function main(): Promise<void> {
       `${config.lockoutConsecutiveFailures} consecutive failures → ${config.lockoutHours}h lockout`,
   );
 
+  const eligibility = await eligibilityLines(
+    dataset.pools,
+    dataset.solUsdBars,
+    tvlModel,
+    config,
+    env.LIVE_MAX_TOKEN_TRANSFER_FEE_BPS,
+  );
+
   h("1. HEADLINE — UNBIASED UNIVERSE, FULL V1.1 RULES");
-  out.push(portfolioTable(unbiased));
+  out.push(
+    `Swap ${config.swapSlippagePct}%/leg + ${config.swapGasSolPerLeg} SOL/leg · exit ${config.exitCostModel?.label ?? "legacy (forced exits only)"}`,
+    ...eligibility,
+    "",
+    portfolioTable(unbiased),
+  );
 
   h("2. EXIT TRIGGER DISTRIBUTION (unbiased, full rules)");
   out.push(exitDistributionTable(unbiased));
@@ -630,6 +661,7 @@ async function main(): Promise<void> {
           samples: tvlModel.samples,
         },
         universe: { survivors: survivors.length, dead: dead.length },
+        eligibility,
         scenarios: {
           unbiased,
           unbiasedNoChurn,
