@@ -235,6 +235,41 @@ describe("loadWindowDataset — cache hit, resume, fresh", () => {
   });
 });
 
+describe("one k across windows", () => {
+  it("re-selects a cached window whose k differs from the override — from files, no network", async () => {
+    const dir = join(cacheDir, "koverride");
+    const calls: string[] = [];
+    const deps = {
+      buildUniverse: async () => ({
+        pools: [pool("A", { tvlTodayUsd: 400_000, volume24hTodayUsd: 100_000 })],
+        survivors: 1, deadOrDormant: 0, scanned: 1, totalUniverseSize: 1,
+      }),
+      fetchBars: async (a: string) => {
+        calls.push(a);
+        return bars(W.start, W.end, 2_000); // 48k/day
+      },
+      log: () => undefined,
+      nowMs: () => NOW * 1000,
+    };
+    const band = { minUsd: 50_000, maxUsd: 500_000 };
+    // k from the candidate = 4: 48k/day x 4 = $192k, inside the band.
+    const first = await loadWindowDataset({ window: W, n: 5, candidatesCap: 5, solUsdPool: "S", refresh: false, cacheDir: dir, tvlBand: band, deps });
+    assert.equal(first.dataset.selection.k, 4);
+    assert.equal(first.dataset.pools.length, 1);
+
+    calls.length = 0;
+    // k = 0.5: $24k modelled, below the band — the cached selection is stale and is redone.
+    const second = await loadWindowDataset({ window: W, n: 5, candidatesCap: 5, solUsdPool: "S", refresh: false, cacheDir: dir, tvlBand: band, kOverride: 0.5, deps });
+    assert.notEqual(second.cache, "hit");
+    assert.equal(second.dataset.selection.k, 0.5);
+    assert.equal(second.dataset.pools.length, 0);
+    assert.deepEqual(calls, [], "re-selection reads the bar files; nothing is refetched");
+
+    const third = await loadWindowDataset({ window: W, n: 5, candidatesCap: 5, solUsdPool: "S", refresh: false, cacheDir: dir, tvlBand: band, kOverride: 0.5, deps });
+    assert.equal(third.cache, "hit");
+  });
+});
+
 describe("an old-format partial file (bars inline) is migrated, not refetched", () => {
   it("moves each pool's bars to its own file and fetches only the pools it never had", async () => {
     const { mkdirSync, writeFileSync } = await import("node:fs");
