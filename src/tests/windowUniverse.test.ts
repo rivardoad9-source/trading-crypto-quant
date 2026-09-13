@@ -17,6 +17,7 @@ import {
   barFilePath,
   kFromCandidates,
   loadWindowDataset,
+  pickCandidates,
   selectWindowUniverse,
   universeCoverage,
   windowCachePath,
@@ -107,6 +108,28 @@ describe("selectWindowUniverse", () => {
   it("fits k from today's TVL/volume, and says null rather than guess when nothing reports both", () => {
     assert.equal(kFromCandidates([pool("A", { tvlTodayUsd: 100, volume24hTodayUsd: 1000 })]), 0.1);
     assert.equal(kFromCandidates([pool("A", { tvlTodayUsd: 0 })]), null);
+  });
+
+  it("fits k on SURVIVORS only — a dormant pool's tiny volume today must not inflate it", () => {
+    const k = kFromCandidates([
+      pool("S1", { tvlTodayUsd: 100_000, volume24hTodayUsd: 1_000_000 }),
+      pool("D1", { cohort: "dead-or-dormant", tvlTodayUsd: 50_000, volume24hTodayUsd: 10 }),
+      pool("D2", { cohort: "dead-or-dormant", tvlTodayUsd: 50_000, volume24hTodayUsd: 10 }),
+    ]);
+    assert.equal(k, 0.1, "the 5000x dormant ratios are not part of the fit");
+  });
+
+  it("never lets one cohort crowd the other out of the candidate cap", () => {
+    const survivors = Array.from({ length: 10 }, (_, i) => pool(`S${i}`, { volume24hTodayUsd: 1_000 + i, lifetimeVolumeUsd: 1e12 }));
+    const dead = Array.from({ length: 10 }, (_, i) => pool(`D${i}`, { cohort: "dead-or-dormant", lifetimeVolumeUsd: 1_000 + i }));
+    const picked = pickCandidates([...survivors, ...dead], W, 6);
+    assert.equal(picked.length, 6);
+    assert.equal(picked.filter((p) => p.cohort === "survivor").length, 3);
+    assert.deepEqual(picked.filter((p) => p.cohort !== "survivor").map((p) => p.address), ["D9", "D8", "D7"]);
+
+    // Too few dead pools: survivors fill the rest; a pool born after the window never counts.
+    const fill = pickCandidates([...survivors, dead[0]!, pool("NEW", { cohort: "dead-or-dormant", createdAtMs: W.end * 1000 })], W, 6);
+    assert.deepEqual([fill.length, fill.filter((p) => p.cohort !== "survivor").length], [6, 1]);
   });
 
   it("cuts non-overlapping windows newest first, and names each cache by its dates", () => {

@@ -672,7 +672,19 @@ async function runPerWindowUniverse(ctx: {
       barsWanted: oldestBars,
       tvlBand: { minUsd: env.MIN_TVL_USD, maxUsd: env.MAX_TVL_USD },
       deps: {
-        buildUniverse: (daysBack) => buildPointInTimeUniverse({ windowDays: daysBack, survivorPages: 3, cohortPages: 40 }),
+        /*
+         * Survivors inside the strategy's TVL band, exactly as the legacy ingest asks for.
+         * Without it the survivor cohort is the volume leaderboard — SOL-USDC-scale pools —
+         * and the first per-window run traded nothing in any window. Today's TVL is a fair
+         * filter for SURVIVORS only (they are alive today); the dead cohort is unfiltered.
+         */
+        buildUniverse: (daysBack) =>
+          buildPointInTimeUniverse({
+            windowDays: daysBack,
+            survivorPages: 12,
+            cohortPages: 40,
+            survivorTvlBand: { minUsd: env.MIN_TVL_USD, maxUsd: env.MAX_TVL_USD },
+          }),
         fetchBars: fetchHourlyBars,
         log: (line) => console.log(line),
         nowMs: () => Date.now(),

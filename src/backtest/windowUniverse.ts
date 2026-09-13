@@ -135,8 +135,38 @@ export interface WindowDataset extends HistoricalDataset {
  * and it is stored with the dataset so the report can name it.
  */
 export function kFromCandidates(pools: readonly UniversePool[]): number | null {
-  const ks = pools.filter((p) => p.tvlTodayUsd > 0 && p.volume24hTodayUsd > 0).map((p) => p.tvlTodayUsd / p.volume24hTodayUsd);
+  /*
+   * SURVIVORS only, as `calibrateTvlModel` does everywhere else. The first per-window run
+   * fitted k over every candidate and got 1.4-1.8 (a median over SOL-USDC-scale pools whose
+   * TVL dwarfs a day of volume) against ~0.13 elsewhere — which put every pool's modelled
+   * fee/TVL under the entry floor and produced three windows of zero trades.
+   */
+  const usable = (p: UniversePool) => p.tvlTodayUsd > 0 && p.volume24hTodayUsd > 0;
+  const survivors = pools.filter((p) => p.cohort === "survivor" && usable(p));
+  const basis = survivors.length > 0 ? survivors : pools.filter(usable);
+  const ks = basis.map((p) => p.tvlTodayUsd / p.volume24hTodayUsd);
   return ks.length === 0 ? null : median(ks);
+}
+
+/**
+ * The candidate list: at most half the cap from each cohort, so the dead cohort is never
+ * crowded out. Ranking everything by lifetime volume — the first version — took 95 of 96
+ * candidates from long-lived majors and left the survivorship control with one dead pool.
+ * Survivors are ranked by today's volume, the dead by lifetime volume (today's is ~0).
+ */
+export function pickCandidates(pools: readonly UniversePool[], window: WindowSpec, cap: number): UniversePool[] {
+  const eligible = pools.filter((p) => !p.isBlacklisted && !(p.createdAtMs > 0 && p.createdAtMs / 1000 >= window.end));
+  const byAddress = (a: UniversePool, b: UniversePool) => a.address.localeCompare(b.address);
+  const survivors = eligible
+    .filter((p) => p.cohort === "survivor")
+    .sort((a, b) => b.volume24hTodayUsd - a.volume24hTodayUsd || byAddress(a, b));
+  const dead = eligible
+    .filter((p) => p.cohort !== "survivor")
+    .sort((a, b) => b.lifetimeVolumeUsd - a.lifetimeVolumeUsd || byAddress(a, b));
+  const half = Math.ceil(cap / 2);
+  const takeDead = Math.min(dead.length, cap - Math.min(survivors.length, half));
+  const takeSurvivors = Math.min(survivors.length, cap - takeDead);
+  return [...survivors.slice(0, takeSurvivors), ...dead.slice(0, takeDead)];
 }
 
 interface PartialFile {
@@ -247,10 +277,7 @@ export async function loadWindowDataset(input: {
   if (!partial) {
     deps.log(`[window ${day(w.start)}→${day(w.end)}] building candidate universe (${daysBack} days back)…`);
     const universe = await deps.buildUniverse(daysBack);
-    const candidates = universe.pools
-      .filter((p) => !p.isBlacklisted && !(p.createdAtMs > 0 && p.createdAtMs / 1000 >= w.end))
-      .sort((a, b) => b.lifetimeVolumeUsd - a.lifetimeVolumeUsd || a.address.localeCompare(b.address))
-      .slice(0, input.candidatesCap);
+    const candidates = pickCandidates(universe.pools, w, input.candidatesCap);
     partial = { window: w, candidates, failed: {} };
     writeJson(partialPath, partial);
   }
