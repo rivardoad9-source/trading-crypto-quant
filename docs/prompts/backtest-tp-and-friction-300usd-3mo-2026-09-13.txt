@@ -4,12 +4,15 @@ Repo: ~/flowmetrix-ai-agent (Node + TS). Kerjakan di LOKAL. JANGAN deploy, JANGA
 KONTEKS (dari data LIVE 11–13 Sep 2026, real money — ini yang harus direkonsiliasi backtest-nya)
 - Modal live sekarang: LIVE_CAPITAL_SOL=2.85 (~$289 @ SOL $101), LIVE_MAX_POSITION_SOL=1.8 (1 posisi) = 63% per posisi.
 - Rumus beku V1.1: TP +5% (net), SL −8%, MAX_POSITION_AGE_HOURS=24, MIN_FEE_COST_COVERAGE=2.5, range floor −45%/+15%.
+- **BENCHMARK v1.1 SEBELUMNYA (yang harus jadi pembanding, jangan diubah): file `backtest_micro_capital.json` (tracked di git), window 9 Jun → 8 Sep 2026, `windowDays=91`, `startingCapitalUsd=300`, sizepct 70%, concurrent 1, gas 0.004 SOL/tx, coverage 2.5x, TP net 5%, SL −8%, age 24h, forcedExitSlippagePct 2%. Hasil skenario `unbiased-v11`: 42 trade, win 90.5%, net **+$351.78 (+117.26%)**, PF 2.09, maxDD 40.1%, fee $544.63, gas $27.91, slippage $21.52, position value change −$143.42, exit mix TP 31/OOR 4/TIMEOUT 3/SL 2/RUG 1. Skenario lain di file yang sama: `unbiased-v11-no-cooldown` (55 trade), `biased-survivors-only` (10 trade), `gasBand` (7), `feasibility` (7).**
+- **ATURAN PEMBANDING:** ulangi V1.1 di window yang SAMA-nya dulu (setting identik: `--days=91 --capital=300 --sizepct=70 --concurrent=1 --gas=0.004`, dan JANGAN `--refresh` setelah dataset 13 Sep dibuat) → laporkan V1.1 "hari ini" di dataset yang sama; bedanya dengan angka 8 Sep di atas = efek data/window, bukan efek parameter. Baru habis itu varian dinilai, di dataset yang sama dengan V1.1 "hari ini". Kalau datasetnya beda, tulis bedanya — jangan banding silang dataset.
+- Catatan: biaya keluar di harness = `FORCED_EXIT_SLIPPAGE_PCT` dari .env = **2.0, FLAT untuk semua pool**. Ini inti hipotesis S1 di bawah.
 - 3 posisi live yang BERHASIL, semua profit, tapi ada GAP buku vs chain yang konsisten:
     MANLET  : buku +5.29%  → chain +0.0800 SOL (notional 1.8 SOL) ≈ +4.4%  → gap ~0.6pp
     EMBER#5 : buku +5.26%  → chain +0.0477 SOL                    ≈ +2.65% → gap ~2.6pp (pool bin_step 200 = 2%; exit tereksekusi 3.95% DI BAWAH harga pool)
     EMBER#6 : chain +0.0511 SOL
     NEARKAT : GAGAL open (bin_step 400 = 4%); bolak-balik swap = 8.77% dari 0.9 SOL hilang
-- Kesimpulan yang mau diuji: **biaya keluar itu fungsi bin_step** (~2 × bin_step), sedangkan model biaya backtest sekarang pakai `forcedExitSlippagePct = 1.0` FLAT untuk semua pool. Artinya gate friction 2.5x sekarang menilai pool bin_step 4% pakai asumsi biaya 1%, padahal biaya nyatanya ~8%. Kalau benar, gate-nya salah sasaran: dia nolak pool murah dan meloloskan pool mahal.
+- Kesimpulan yang mau diuji: **biaya keluar itu fungsi bin_step** (~2 × bin_step), sedangkan model biaya backtest sekarang pakai `forcedExitSlippagePct = 2.0` (dari `.env` `FORCED_EXIT_SLIPPAGE_PCT`) FLAT untuk semua pool. Artinya gate friction 2.5x sekarang menilai pool bin_step 4% pakai asumsi biaya 2%, padahal biaya nyatanya ~8%. Kalau benar, gate-nya salah sasaran: dia nolak pool murah dan meloloskan pool mahal.
 
 TUJUAN (jawab pakai angka, bukan opini)
 A. Berapa NET USD (dan PF, DD, expectancy, jumlah trade) kalau TP dinaikkan, di akun $300 / 3 bulan / profil live, dengan disiplin out-of-sample?
