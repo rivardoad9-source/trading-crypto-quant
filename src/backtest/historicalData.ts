@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { getJson } from "../services/http.js";
 import { buildPointInTimeUniverse, type UniversePool } from "./universe.js";
+import { annotateTokenScreens, type TokenScreenRecord } from "./liveEligibility.js";
 
 /**
  * Historical ingestion for the backtest.
@@ -112,6 +113,12 @@ export interface PoolHistory {
   cohort: string;
   lifetimeVolumeUsd: number;
   bars: Bar[];
+  /**
+   * The paired mint's Token-2022 extensions, stored at ingest when the runner asks for
+   * it (`annotateTokens`). Optional so every cache written before it still loads; a pool
+   * without it is NOT live-eligible — see `liveEligibility.ts`.
+   */
+  tokenScreen?: TokenScreenRecord;
 }
 
 export interface HistoricalDataset {
@@ -349,6 +356,28 @@ export interface IngestOptions {
    * windows should pass an absolute floor instead.
    */
   minBars?: number;
+  /**
+   * Reads each pool's paired-mint Token-2022 extensions (one `getAccountInfo` per
+   * distinct mint, file-cached) and stores them on the pool, so a runner can print the
+   * live-eligible arm directly. Off by default: it is RPC I/O every existing caller never
+   * did. A cached dataset missing the records is annotated and written back.
+   */
+  annotateTokens?: boolean;
+}
+
+async function withTokenScreens(
+  dataset: HistoricalDataset,
+  cachePath: string,
+  options: IngestOptions,
+): Promise<HistoricalDataset> {
+  if (!options.annotateTokens) return dataset;
+  const { rpcReads, failures, changed } = await annotateTokenScreens(dataset.pools);
+  console.log(
+    `[backtest] token screen: ${dataset.pools.length} pools annotated ` +
+      `(${rpcReads} RPC reads, ${failures} unreadable — unreadable counts as NOT live-eligible)`,
+  );
+  if (changed) writeCacheFile(cachePath, dataset);
+  return dataset;
 }
 
 /** Trims bars to the requested trailing window. */
@@ -380,7 +409,7 @@ export async function loadHistoricalData(options: IngestOptions = {}): Promise<H
           `[backtest] using cached history from ${cached.fetchedAt} ` +
             `(${survivors} survivors, ${deadCached} dead/dormant)`,
         );
-        return cached;
+        return withTokenScreens(cached, cachePath, options);
       }
     }
   }
@@ -487,5 +516,5 @@ export async function loadHistoricalData(options: IngestOptions = {}): Promise<H
       `(${pools.length - deadIngested} survivors, ${deadIngested} dead/dormant) to ${cachePath}`,
   );
 
-  return dataset;
+  return withTokenScreens(dataset, cachePath, options);
 }
