@@ -213,6 +213,132 @@ export function calibrateExitCostModel(
   };
 }
 
+/* ------------------------------------------------------------------ */
+/* Observations from the exit_economics ledger                         */
+/* ------------------------------------------------------------------ */
+
+/** The ledger columns a calibration needs (structural, so this file stays DB-free). */
+export interface MeasuredExitRow {
+  position_id: string;
+  pair_name: string | null;
+  bin_step: number | null;
+  sweep_concession_bps: number | null;
+  expected_out_lamports: number | null;
+  tvl_usd_at_exit: number | null;
+  entry_tvl_usd: number | null;
+  source: string;
+}
+
+/**
+ * Ledger rows -> calibration observations, in the SAME unit as `LIVE_EXIT_OBSERVATIONS`
+ * (concession per leg on the amount swapped).
+ *
+ * Only rows with a measured concession and a bin step become observations — an unmeasured
+ * row is left out, never read as a zero-cost exit. The share of TVL is NaN (and the row
+ * then only informs a bin-step-only fit) when neither TVL at exit nor the entry proxy is
+ * known, or no SOL/USD was given to convert the swapped SOL into dollars.
+ */
+export function observationsFromLedger(
+  rows: readonly MeasuredExitRow[],
+  solUsd: number | null,
+): { observations: ExitCostObservation[]; excluded: Array<{ id: string; why: string }> } {
+  const observations: ExitCostObservation[] = [];
+  const excluded: Array<{ id: string; why: string }> = [];
+  for (const r of rows) {
+    if (r.sweep_concession_bps === null || !Number.isFinite(r.sweep_concession_bps)) {
+      excluded.push({ id: r.position_id, why: "concession unmeasured" });
+      continue;
+    }
+    if (!(r.bin_step !== null && r.bin_step > 0)) {
+      excluded.push({ id: r.position_id, why: "bin_step unmeasured" });
+      continue;
+    }
+    const tvl = r.tvl_usd_at_exit ?? r.entry_tvl_usd;
+    const share =
+      tvl !== null && tvl > 0 && solUsd !== null && solUsd > 0 && r.expected_out_lamports !== null
+        ? (((r.expected_out_lamports / 1e9) * solUsd) / tvl) * 100
+        : Number.NaN;
+    observations.push({
+      label: `${r.pair_name ?? "?"}#${r.position_id.slice(0, 8)}`,
+      binStepBps: r.bin_step,
+      shareOfTvlPct: share,
+      concessionPct: r.sweep_concession_bps / 100,
+      source:
+        `${r.source}` +
+        (r.tvl_usd_at_exit === null && r.entry_tvl_usd !== null ? "; TVL = entry proxy" : "") +
+        (Number.isNaN(share) ? "; share of TVL unknown" : ""),
+    });
+  }
+  return { observations, excluded };
+}
+
+/** Least-squares slope through the origin of concession% on bin-step% — the envelope's shape, fitted. */
+export function binStepOnlySlope(observations: readonly ExitCostObservation[]): number | null {
+  let sxx = 0;
+  let sxy = 0;
+  for (const o of observations) {
+    const x = o.binStepBps / 100;
+    sxx += x * x;
+    sxy += x * o.concessionPct;
+  }
+  return sxx > 0 ? sxy / sxx : null;
+}
+
+export interface StabilityRow {
+  n: number;
+  meanSlope: number;
+  standardError: number;
+  /** standardError / meanSlope; null when the mean is not positive. */
+  relativeError: number | null;
+}
+
+/**
+ * How stable the bin-step slope is at each sample size, by bootstrap: draw `n` observations
+ * WITH replacement `draws` times, fit, and report the spread of the fitted slopes.
+ *
+ * Deterministic (seeded LCG), so the report is reproducible. Resampling from the points we
+ * have cannot reveal exits we have not seen — it measures the noise of THIS sample, which
+ * is the lower bound of the real uncertainty, and the report says so.
+ */
+export function bootstrapSlopeStability(
+  observations: readonly ExitCostObservation[],
+  sizes: readonly number[],
+  draws = 1_000,
+  seed = 1_234_567,
+): StabilityRow[] {
+  if (observations.length === 0) return [];
+  let state = seed >>> 0;
+  const next = () => {
+    state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+    return state / 4_294_967_296;
+  };
+  return sizes.map((n) => {
+    const slopes: number[] = [];
+    for (let d = 0; d < draws; d++) {
+      const sample = Array.from({ length: n }, () => observations[Math.floor(next() * observations.length)]!);
+      const s = binStepOnlySlope(sample);
+      if (s !== null) slopes.push(s);
+    }
+    const mean = slopes.reduce((a, b) => a + b, 0) / Math.max(1, slopes.length);
+    const variance = slopes.reduce((a, b) => a + (b - mean) ** 2, 0) / Math.max(1, slopes.length - 1);
+    const se = Math.sqrt(variance);
+    return { n, meanSlope: mean, standardError: se, relativeError: mean > 0 ? se / mean : null };
+  });
+}
+
+/**
+ * The smallest n at which the bootstrap relative error falls to `target`, extrapolating the
+ * 1/sqrt(n) law from the largest measured size when no measured size reaches it. Null when
+ * the error cannot be computed.
+ */
+export function observationsNeededFor(rows: readonly StabilityRow[], target: number): { n: number; extrapolated: boolean } | null {
+  const hit = rows.find((r) => r.relativeError !== null && r.relativeError <= target);
+  if (hit) return { n: hit.n, extrapolated: false };
+  const last = [...rows].reverse().find((r) => r.relativeError !== null && r.relativeError > 0);
+  if (!last || last.relativeError === null) return null;
+  return { n: Math.ceil(last.n * (last.relativeError / target) ** 2), extrapolated: true };
+}
+
 export type ExitCostFlag = "legacy" | "flat" | "fit" | "envelope";
 
 /**

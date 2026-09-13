@@ -28,6 +28,8 @@
     "backtest:quote": "node --import tsx src/backtest/runQuoteComparison.ts",
     "backtest:integrity": "node --import tsx src/backtest/runIntegrity.ts",
     "report:quant": "python scripts/generate_quant_report.py",
+    "exitcosts:backfill": "node --import tsx src/scripts/backfillExitCosts.ts",
+    "report:exitcosts": "node --import tsx src/scripts/reportExitCosts.ts",
     "test:local": "node --import tsx scripts/test-local.ts",
     "audit:report": "node --import tsx scripts/generate-audit-report.ts",
     "sweep": "node --import tsx src/scripts/sweepGuardrails.ts",

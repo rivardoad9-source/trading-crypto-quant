@@ -17,6 +17,7 @@ import {
   openLivePosition,
   type LiveOpenOutcome,
 } from "../services/liveExecution.js";
+import { recordLiveExitEconomics } from "../services/exitEconomics.js";
 import {
   assessExecutionBreaker,
   assessTokenBench,
@@ -842,6 +843,14 @@ async function settleLiveCloses(
   pending: PendingLiveClose[],
   /** Injectable for tests only; production always closes through the bridge. */
   closeLive: LiveCloser = closeLivePosition,
+  /**
+   * Records what the exit cost (`exit_economics`). Defaults to the real recorder ONLY for the
+   * real closer: an injected closer returns signatures that never touched a chain, and
+   * reading them would be a network round trip that can only come back "not found".
+   */
+  recordExit: typeof recordLiveExitEconomics | null = closeLive === closeLivePosition
+    ? recordLiveExitEconomics
+    : null,
 ): Promise<{
   closed: number;
   deferred: DeferredCloseWork[];
@@ -896,6 +905,28 @@ async function settleLiveCloses(
             console.warn(`[live] could not settle the attempt row for ${row.pair_name}:`, bookkeeping);
           }
         }
+      });
+
+      /*
+       * What the exit ACTUALLY cost, from the signatures just written. Outside the mutex (it
+       * reads the chain) and after the row is closed, so a measurement can never block or
+       * undo a close. Never throws.
+       */
+      await recordExit?.({
+        poolAddress: row.pool_address,
+        positionId: row.position_id,
+        pairName: row.pair_name,
+        mint: residual.mint,
+        notionalLamports:
+          row.virtual_sol_amount > 0 ? Math.round(row.virtual_sol_amount * 1_000_000_000) : null,
+        entryTvlUsd: row.entry_tvl ?? null,
+        poolPriceAtExit: item.exitPrice > 0 ? item.exitPrice : null,
+        residualSweep: residual.state,
+        sweepRoute: residual.route ?? null,
+        sweepSlippageBpsUsed: residual.slippageBps ?? null,
+        closeSignature,
+        sweepSignature: residual.signature,
+        ataCloseSignature: tokenAccount.signature,
       });
 
       closed++;
@@ -1091,6 +1122,8 @@ export async function forceCloseAllPositions(options: {
   closeLive?: LiveCloser;
   /** Tests only: the live-close notification. Production always uses Telegram. */
   notify?: typeof sendPositionClosed;
+  /** Tests only: the exit-economics recorder. */
+  recordExit?: typeof recordLiveExitEconomics | null;
 } = {}): Promise<ManualCloseResult> {
   /*
    * Queued on the position lock rather than skipped: an operator asking for a flat book
@@ -1104,7 +1137,13 @@ export async function forceCloseAllPositions(options: {
 
   if (pendingLiveCloses.length === 0) return result;
 
-  const settled = await settleLiveCloses(pendingLiveCloses, options.closeLive);
+  const settled = await settleLiveCloses(
+    pendingLiveCloses,
+    options.closeLive,
+    options.recordExit === undefined
+      ? options.closeLive === undefined ? recordLiveExitEconomics : null
+      : options.recordExit,
+  );
   result.closed += settled.closed;
   for (const item of pendingLiveCloses) {
     if (settled.failed.some((f) => f.positionId === item.row.position_id)) continue;

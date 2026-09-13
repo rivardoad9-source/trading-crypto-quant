@@ -2001,6 +2001,8 @@ export interface ResidualSweep {
   error: string | null;
   /** Which route sold it, when one did. Optional so rows and fixtures written before it still type. */
   route?: "jupiter" | "dlmm-pool";
+  /** The slippage bound of the rung that sold (the exit cap for the pool route). */
+  slippageBps?: number;
 }
 
 /** Whether the wallet balance after this sweep is the trade's final effect. */
@@ -2229,6 +2231,7 @@ export async function sweepResidualPairedToken(
       result.signature = await deps.swapToSol(mint, balance, slippageBps);
       result.state = "swept";
       result.route = "jupiter";
+      result.slippageBps = slippageBps;
       console.log(
         `[live] ${context.pairName}: swept ${result.amount} base units of ${mint} back to SOL ` +
           `(~${(result.estimatedLamports / LAMPORTS_PER_SOL).toFixed(6)} SOL at ${slippageBps} bps, ` +
@@ -2275,6 +2278,7 @@ export async function sweepResidualPairedToken(
       result.signature = await deps.sellInPool(mint, balance, verdict.minOutLamports);
       result.state = "swept";
       result.route = "dlmm-pool";
+      result.slippageBps = ladder[ladder.length - 1]!;
       result.error = null;
       console.log(
         `[live] ${context.pairName}: swept ${result.amount} base units of ${mint} through the ` +
