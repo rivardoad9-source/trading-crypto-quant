@@ -1,5 +1,37 @@
 # 13 Sep 2026 — V1.1 vs varian: backtest $300 / 91 hari + grid 30 hari (in/out-of-sample)
 
+> ## ⚠️ KOREKSI 13 Sep (setelah audit universe — lihat §0 di bawah)
+> Angka headline "V1.1 = +117% / PF 2.09" (benchmark) **TIDAK boleh dipakai sebagai ukuran
+> strategi yang bisa dijalankan live**. Audit menunjukkan:
+> - **9 dari 42 trade (21%) benchmark ada di `OPENAI-USDC` — mint Token-2022 dengan transfer
+>   fee 50 bps DAN transfer HOOK** → gate live sekarang MENOLAK pool ini, dan 9 trade itu
+>   menyumbang **+$167.86 = 47.7% dari seluruh net benchmark**.
+> - **35 dari 42 trade (83%) benchmark ada di pool TANPA sisi wSOL** (`USWR-USDC`, `XST-USDC`,
+>   `OPENAI-USDC`) → engine live **tidak bisa mendanai** pool begini (funnel: `noWsol`).
+>   Subset yang benar-benar bisa dieksekusi live cuma **7 trade, dan net-nya −$20.64**.
+> - Run baru (13 Sep, 70%): **0 trade** ditolak gate token-fee (bersih di sumbu itu), tapi
+>   **13 dari 32 trade (41%) masih pool USDC** yang nggak bisa didanai live. Subset SOL-side:
+>   **19 trade, net +$331.92** (70% dari headline).
+
+## §0. Audit universe: dari trade yang BENAR-BENAR terjadi
+
+Diukur dengan `scripts/auditBacktestTokens.ts` (jalur kode yang sama dengan engine:
+`fetchPoolByAddress` + `readTokenExtensions`), plus pemecahan per sisi pair dari JSON.
+
+| run | trade | net headline | trade di pool TANPA wSOL (live tolak) | trade ditolak gate token-fee | net subset SOL-side | net subset live-eligible |
+|---|---|---|---|---|---|---|
+| **8 Sep** (benchmark) | 42 | +$351.78 | **35 (83%)** | **9 (21%) — OPENAI-USDC, fee 50bps + hook** | **−$20.64** (7 trade) | **−$20.64** |
+| **13 Sep** (70%, gas .004) | 32 | +$474.62 | 13 (41%) | 0 (0%) | **+$331.92** (19 trade) | **+$331.92** |
+
+Catatan: `OPENAI-USDC` punya **transfer hook** — di live artinya setiap transfer lewat program
+pihak ketiga yang bisa menolak, dan model backtest **tidak** memodelkan itu maupun fee 0.5%-nya.
+Jadi +$167.86 dari pool itu adalah uang yang **tidak terdokumentasi apakah bisa diambil**.
+
+Kesimpulan §0: **gate token-fee tidak "membatalkan" data lama secara universal — tapi begitu
+kriteria gate dipakai untuk mengaudit, hampir separuh profit benchmark hilang.** Dan masalah
+yang lebih tua & lebih besar dari gate itu adalah **universe**: backtest menjalankan pool tanpa
+sisi wSOL yang engine live tidak bisa danai, dan di benchmark subset yang bisa dieksekusi justru MERAH.
+
 Semua dijalankan **script-only, tanpa ubah kode**: `npm run backtest:micro`, `npm run sweep:entry`,
 `npm run sweep:exits`. Nol panggilan LLM. Output mentah: `~/.hermes/cache/fm_backtest/`.
 
