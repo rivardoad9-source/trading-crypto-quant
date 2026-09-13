@@ -7,6 +7,7 @@ import { computeMaxDrawdown, computeProfitFactor } from "../services/metrics.js"
 import { WSOL_MINT } from "../config/constants.js";
 import { estimateTvlAt, type TvlModel } from "./tvlModel.js";
 import type { Bar, PoolHistory } from "./historicalData.js";
+import { exitConcessionPct, type ExitCostModel } from "./exitCost.js";
 
 /**
  * Bar-by-bar DLMM paper-trading simulation.
@@ -183,6 +184,31 @@ export interface BacktestConfig {
    */
   swapGasSolPerLeg: number;
   /**
+   * Price concession charged on EVERY exit, as a function of the pool (see `exitCost.ts`).
+   *
+   * `null` — the default — is the legacy accounting exactly: `forcedExitSlippagePct` on
+   * OUT_OF_RANGE / STOP_LOSS / RATCHET_STOP / rugged exits and NOTHING on a TAKE_PROFIT or
+   * TIMEOUT. Live does not work that way: EMBER's take-profit sold 3.95% below the pool
+   * price. Set, every exit pays the modelled concession, and a forced exit pays the WORSE
+   * of the model and `forcedExitSlippagePct`, so turning the model on can never make a
+   * forced exit cheaper than it was.
+   *
+   * With a model set, the balancing swap's EXIT leg on the paired token is no longer
+   * charged at `swapSlippagePct` — the model prices that sale, and charging both would
+   * count the same leg twice.
+   */
+  exitCostModel: ExitCostModel | null;
+  /**
+   * Whether the entry friction gate prices the exit with `exitCostModel` instead of the
+   * flat `forcedExitSlippagePct`.
+   *
+   * Separate from the model on purpose. The model changes what a close COSTS (accounting);
+   * this changes what the gate ADMITS (strategy). Rerunning the V1.1 baseline with honest
+   * costs must not silently also move the V1.1 gate, or the two effects cannot be told
+   * apart. Defaults to false; ignored while `exitCostModel` is null.
+   */
+  gateUsesExitCostModel: boolean;
+  /**
    * Bars examined after an exit to decide whether the position could actually have
    * been liquidated at the exit price.
    */
@@ -225,6 +251,8 @@ export const defaultBacktestConfig = (): BacktestConfig => ({
   // charging for it would silently rewrite every cached sweep and historical result.
   swapSlippagePct: 0,
   swapGasSolPerLeg: 0,
+  exitCostModel: null,
+  gateUsesExitCostModel: false,
   rugLookaheadBars: 24,
   rugVolumeCollapseRatio: 0.01,
 });
@@ -286,6 +314,11 @@ export interface BacktestTrade {
    * wSOL leg, which has to convert BOTH halves of the deposit instead of one.
    */
   swapCostUsd: number;
+  /**
+   * The exit price concession actually applied, in percent. 0 on a chosen exit under the
+   * legacy accounting. Optional only so trade fixtures written before it keep compiling.
+   */
+  exitConcessionPct?: number;
   /** fees + positionValueChange - gas - slippage - swap. */
   netPnlUsd: number;
   netPnlPct: number;
@@ -446,11 +479,20 @@ export function balancingSwapCost(pool: Pick<PoolHistory, "baseMint" | "quoteMin
 export function balancingSwapFrictionUsd(
   pool: Pick<PoolHistory, "baseMint" | "quoteMint">,
   notionalUsd: number,
-  config: Pick<BacktestConfig, "swapSlippagePct" | "swapGasSolPerLeg">,
+  config: Pick<BacktestConfig, "swapSlippagePct" | "swapGasSolPerLeg"> &
+    Partial<Pick<BacktestConfig, "exitCostModel">>,
   solUsd: number,
 ): number {
   const { legs, turnover } = balancingSwapCost(pool);
-  const concession = notionalUsd * turnover * (config.swapSlippagePct / 100);
+  /*
+   * With an exit-cost model, the sale of the paired TOKEN half at exit is priced by the
+   * model in `closeAt`, so it is removed here: 0.5x of notional off the round trip. What
+   * remains is every entry leg, plus — on a pool with no wSOL leg — the USDC half's way
+   * back to SOL, which the model does not see. Gas stays per leg either way: the
+   * transactions still happen.
+   */
+  const concessionTurnover = config.exitCostModel ? turnover - 0.5 : turnover;
+  const concession = notionalUsd * concessionTurnover * (config.swapSlippagePct / 100);
   const gas = legs * config.swapGasSolPerLeg * solUsd;
   return concession + gas;
 }
@@ -716,17 +758,43 @@ export function runSimulation(input: SimulationInput): BacktestResult {
       reason === "STOP_LOSS" ||
       reason === "RATCHET_STOP" ||
       liquidation.rugged;
-    const slippageFactor = forced ? 1 - config.forcedExitSlippagePct / 100 : 1;
+    /*
+     * Legacy (no model): forced exits pay the flat concession, chosen exits pay nothing.
+     * With a model, every exit pays it, and a forced exit never pays LESS than before.
+     */
+    let concessionPct = forced ? config.forcedExitSlippagePct : 0;
+    if (config.exitCostModel) {
+      const modelled = exitConcessionPct(
+        config.exitCostModel,
+        pos.pool.binStep,
+        pos.notionalUsd,
+        pos.modelledTvlUsd,
+      );
+      concessionPct = forced ? Math.max(modelled, config.forcedExitSlippagePct) : modelled;
+    }
+    const slippageFactor = 1 - concessionPct / 100;
     const realisedRatio = Math.max(0, liquidation.realisableRatio * slippageFactor);
 
     const r = pos.entryRatio > 0 ? realisedRatio / pos.entryRatio : 1;
+    const grossRatio = pos.entryRatio > 0 ? liquidation.realisableRatio / pos.entryRatio : 1;
+
+    /*
+     * KNOWN DEFECT, KEPT ON THE LEGACY PATH ON PURPOSE (found 13 Sep 2026). Without a
+     * model, the position value is taken at the HAIRCUT ratio `r` and the same haircut is
+     * then subtracted again as `slippageCostUsd` — so every forced exit was charged its
+     * slippage TWICE. That made published figures PESSIMISTIC on forced exits, by exactly
+     * `totalSlippageCostUsd`. It stays here because fixing it would move every cached
+     * sweep and every quoted figure with no flag to reproduce them; the model path below
+     * counts the concession once (value at the GROSS ratio, concession charged separately),
+     * and the integrity report prints the legacy over-charge beside the new numbers.
+     */
+    const valueRatio = config.exitCostModel ? grossRatio : r;
 
     // The number that actually moves the balance. NOT the divergence-vs-hold figure.
-    const positionValueChangeUsd = pos.notionalUsd * lpValueReturnFraction(r);
-    const divergenceVsHoldUsd = pos.notionalUsd * impermanentLossFraction(r);
+    const positionValueChangeUsd = pos.notionalUsd * lpValueReturnFraction(valueRatio);
+    const divergenceVsHoldUsd = pos.notionalUsd * impermanentLossFraction(valueRatio);
 
-    const grossRatio = pos.entryRatio > 0 ? liquidation.realisableRatio / pos.entryRatio : 1;
-    const slippageCostUsd = forced
+    const slippageCostUsd = concessionPct > 0
       ? Math.abs(
           pos.notionalUsd * (lpValueReturnFraction(grossRatio) - lpValueReturnFraction(r)),
         )
@@ -776,6 +844,7 @@ export function runSimulation(input: SimulationInput): BacktestResult {
       gasCostUsd,
       slippageCostUsd,
       swapCostUsd,
+      exitConcessionPct: concessionPct,
       netPnlUsd,
       netPnlPct,
       netPnlSol: solUsd > 0 ? netPnlUsd / solUsd : 0,
@@ -1013,11 +1082,17 @@ export function runSimulation(input: SimulationInput): BacktestResult {
         gasRoundTripUsd +
         balancingSwapFrictionUsd(pool, prospectiveNotional, config, solUsdForSizing ?? 0);
 
+      // The V1.1 gate prices the exit flat; the model reaches it only when asked to.
+      const gateExitSlippagePct =
+        config.exitCostModel && config.gateUsesExitCostModel
+          ? exitConcessionPct(config.exitCostModel, pool.binStep, prospectiveNotional, tvl)
+          : config.forcedExitSlippagePct;
+
       const breakeven = assessBreakeven({
         notionalUsd: prospectiveNotional,
         feeTvlRatio24h: feeTvl,
         gasCostRoundTripUsd: entryFrictionUsd,
-        slippagePct: config.forcedExitSlippagePct,
+        slippagePct: gateExitSlippagePct,
         minCoverageRatio: config.minFeeCostCoverage,
       });
       if (!breakeven.passes) {

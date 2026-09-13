@@ -26,6 +26,7 @@
     "backtest:micro": "node --import tsx src/backtest/runMicroCapital.ts",
     "backtest:annual": "node --import tsx src/backtest/runAnnual.ts",
     "backtest:quote": "node --import tsx src/backtest/runQuoteComparison.ts",
+    "backtest:integrity": "node --import tsx src/backtest/runIntegrity.ts",
     "report:quant": "python scripts/generate_quant_report.py",
     "test:local": "node --import tsx scripts/test-local.ts",
     "audit:report": "node --import tsx scripts/generate-audit-report.ts",
