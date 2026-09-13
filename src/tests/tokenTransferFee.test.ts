@@ -281,4 +281,22 @@ describe("the screen in the funnel, where it has to be", () => {
     assert.match(agent, /token-fee \$\{byKind\.transferFee\}/);
     assert.match(agent, /execTransferFeeRejected: byKind\.transferFee,/);
   });
+
+  it("sits behind an operator switch, and says so on the boot line when off", () => {
+    /*
+     * 13 Sep 2026: the operator asked for this gate OFF ("follow the formula that worked
+     * before; the first trade ran without a guard"). The switch is explicit rather than a
+     * bps number cranked to infinity, because hook and non-transferable refusals have no
+     * number at all — and because "it is off" has to be a fact you can READ, not infer
+     * from a cycle that happens to pass. Both halves are asserted here: the call site is
+     * guarded, and the boot line names the disabled state.
+     */
+    assert.match(agent, /if \(env\.LIVE_TOKEN_FEE_SCREEN_ENABLED\) \{/);
+
+    const guard = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "..", "services", "executionGuard.ts"),
+      "utf8",
+    );
+    assert.match(guard, /token fees: SCREEN OFF/);
+  });
 });

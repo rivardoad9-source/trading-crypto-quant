@@ -1750,18 +1750,20 @@ async function seekNewEntry(): Promise<EntrySummary> {
        * three are the same shape of hazard.
        */
       const pairedMint = pool.baseMint === WSOL_MINT ? pool.quoteMint : pool.baseMint;
-      const feeVerdict = await assessTokenFeeScreen(
-        pairedMint,
-        env.LIVE_MAX_TOKEN_TRANSFER_FEE_BPS,
-      );
-      if (feeVerdict.blocked) {
-        summary.executionRejected.push({
-          pairName: pool.pairName,
-          poolAddress: pool.address,
-          kind: "transferFee",
-          reason: feeVerdict.reason ?? "the paired token carries a Token-2022 transfer fee",
-        });
-        continue;
+      if (env.LIVE_TOKEN_FEE_SCREEN_ENABLED) {
+        const feeVerdict = await assessTokenFeeScreen(
+          pairedMint,
+          env.LIVE_MAX_TOKEN_TRANSFER_FEE_BPS,
+        );
+        if (feeVerdict.blocked) {
+          summary.executionRejected.push({
+            pairName: pool.pairName,
+            poolAddress: pool.address,
+            kind: "transferFee",
+            reason: feeVerdict.reason ?? "the paired token carries a Token-2022 transfer fee",
+          });
+          continue;
+        }
       }
 
       executable.push(pool);

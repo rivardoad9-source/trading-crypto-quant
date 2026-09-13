@@ -438,8 +438,9 @@ export function describeExecutionGuard(): string {
    * to infer from a rejected cycle — the same reason the width cap and the denylist ride
    * on this line. Added after 13 Sep 2026, when a 3% fee mint reached the open path.
    */
-  const tokenScreen =
-    env.LIVE_MAX_TOKEN_TRANSFER_FEE_BPS === 0
+  const tokenScreen = !env.LIVE_TOKEN_FEE_SCREEN_ENABLED
+    ? "token fees: SCREEN OFF (operator switch — transfer fee/hook/non-transferable allowed)"
+    : env.LIVE_MAX_TOKEN_TRANSFER_FEE_BPS === 0
       ? "token fees: ANY transfer fee refused (plus hooks and non-transferable mints)"
       : `token fees: up to ${env.LIVE_MAX_TOKEN_TRANSFER_FEE_BPS} bps accepted`;
 
