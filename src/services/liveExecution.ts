@@ -41,10 +41,11 @@ import {
   dlmmExecutor,
   maxDepositLamports,
   executeJupiterSwap,
+  exitSlippageCapBps,
   getConnection,
   getJupiterQuote,
   isSlippageRejection,
-  resolveSlippageBps,
+  resolveExitSlippageBps,
   closeEmptyTokenAccount,
   type CloseTokenAccountOutcome,
   onchainConfig,
@@ -1839,6 +1840,13 @@ export async function openLivePosition(params: {
           inputMint: pairedMint.toBase58(),
           outputMint: WSOL_MINT,
           amountLamports: Number(current),
+          /*
+           * An EXIT leg: this swap exists to put the wallet back into SOL, and the same
+           * 50 bps entry bound that governs a fresh entry must not be what strands the
+           * token here. 13 Sep 2026 is the worked example — a residual sale refused at
+           * 0.5% and finished by hand while the price moved.
+           */
+          leg: "exit",
         }, "auto-unwind after a failed open");
         rescueSignature = rescue.result.signature;
       }
@@ -2006,12 +2014,35 @@ export interface ResidualSweepDeps {
   resolvePairedMint(): Promise<string>;
   /** Null when the balance could not be READ; 0n only when it is genuinely zero. */
   readBalance(mint: string): Promise<bigint | null>;
-  /** Estimated SOL out, in lamports. Read-only. */
-  quoteToSol(mint: string, amount: bigint): Promise<number>;
-  /** Sells `amount` to SOL and returns the CONFIRMED signature, or throws. */
-  swapToSol(mint: string, amount: bigint): Promise<string>;
+  /** Estimated SOL out, in lamports. Read-only. `slippageBps` defaults to the exit cap. */
+  quoteToSol(mint: string, amount: bigint, slippageBps?: number): Promise<number>;
+  /**
+   * Sells `amount` to SOL and returns the CONFIRMED signature, or throws.
+   *
+   * `slippageBps` is the EXIT-leg bound for THIS attempt — the sweep walks a ladder, so a
+   * failure at 0.5% is retried wider rather than repeated at the same width.
+   */
+  swapToSol(mint: string, amount: bigint, slippageBps?: number): Promise<string>;
   /** Pages the operator. Its own failure is swallowed by the caller. */
   alert(message: string): Promise<unknown>;
+}
+
+/**
+ * The slippage ladder the residual sale walks, in basis points.
+ *
+ * WHY A LADDER AND NOT ONE NUMBER (13 Sep 2026). A close returned 1,568 EMBER, the residual
+ * sale was refused at the 50 bps ENTRY bound, and the engine retried — three times, at the
+ * same 0.5% — while the price moved. The operator sold it by hand. Each rung here is a
+ * FRESH quote at a wider bound, so a sale into a thin pool can complete instead of being
+ * refused for being 0.6% off. It stops at the first success, and the last rung is always
+ * the configured cap (`EXIT_MAX_SLIPPAGE_BPS`, hard-capped at 500 bps).
+ */
+export const SWEEP_SLIPPAGE_LADDER_BPS = [50, 150, 300] as const;
+
+/** The ladder, filtered to the configured exit cap, always ending AT the cap. */
+export function sweepSlippageLadder(exitCapBps: number): number[] {
+  const cap = Math.max(1, Math.floor(exitCapBps));
+  return [...SWEEP_SLIPPAGE_LADDER_BPS.filter((bps) => bps < cap), cap];
 }
 
 /**
@@ -2127,21 +2158,41 @@ export async function sweepResidualPairedToken(
     return result;
   }
 
-  try {
-    result.signature = await deps.swapToSol(mint, balance);
-    result.state = "swept";
-    console.log(
-      `[live] ${context.pairName}: swept ${result.amount} base units of ${mint} back to SOL ` +
-        `(~${(result.estimatedLamports / LAMPORTS_PER_SOL).toFixed(6)} SOL, ${result.signature})`,
-    );
-  } catch (err) {
+  const ladder = sweepSlippageLadder(exitSlippageCapBps());
+  let lastError: string | null = null;
+  for (let rung = 0; rung < ladder.length; rung += 1) {
+    const slippageBps = ladder[rung]!;
+    try {
+      result.signature = await deps.swapToSol(mint, balance, slippageBps);
+      result.state = "swept";
+      console.log(
+        `[live] ${context.pairName}: swept ${result.amount} base units of ${mint} back to SOL ` +
+          `(~${(result.estimatedLamports / LAMPORTS_PER_SOL).toFixed(6)} SOL at ${slippageBps} bps, ` +
+          `${result.signature})`,
+      );
+      break;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+      result.error = lastError;
+      const next = ladder[rung + 1];
+      console.warn(
+        `[live] ${context.pairName}: the residual sale of ${mint} was refused at ` +
+          `${slippageBps} bps slippage (attempt ${rung + 1}/${ladder.length}): ${lastError}` +
+          (next === undefined
+            ? " — this was the widest bound; the token needs a hand sale"
+            : ` — retrying with a FRESH quote at ${next} bps`),
+      );
+    }
+  }
+
+  if (result.state !== "swept") {
     result.state = "failed";
-    result.error = err instanceof Error ? err.message : String(err);
     await page(
       `RESIDUAL TOKEN NOT SWEPT — ${result.amount} base units of ${mint} ` +
         `(~${(result.estimatedLamports / LAMPORTS_PER_SOL).toFixed(6)} SOL) left in the ` +
-        `wallet; the sell back to SOL failed: ${result.error}. Check the chain before ` +
-        `selling: the swap's outcome may be ambiguous.`,
+        `wallet; the sell back to SOL failed at every bound up to ${ladder[ladder.length - 1]} bps: ` +
+        `${lastError ?? result.error}. Check the chain before selling: the swap's outcome may ` +
+        `be ambiguous.`,
     );
   }
 
@@ -2174,20 +2225,22 @@ export function defaultResidualSweepDeps(
       if (shared.tokenProgram === null) return null;
       return readTokenBalanceOrNull(auth.wallet, new PublicKey(mint), shared.tokenProgram);
     },
-    async quoteToSol(mint, amount) {
+    async quoteToSol(mint, amount, slippageBps) {
       const quote = await getJupiterQuote({
         inputMint: mint,
         outputMint: WSOL_MINT,
         amountLamports: Number(amount),
-        slippageBps: resolveSlippageBps(auth),
+        slippageBps: resolveExitSlippageBps(slippageBps),
       });
       return Number(quote.outAmount);
     },
-    async swapToSol(mint, amount) {
+    async swapToSol(mint, amount, slippageBps) {
       const sold = await executeJupiterSwapFreshQuote(auth, {
         inputMint: mint,
         outputMint: WSOL_MINT,
         amountLamports: Number(amount),
+        ...(slippageBps === undefined ? {} : { slippageBps }),
+        leg: "exit",
       }, "residual sale after an exit");
       return sold.result.signature;
     },
@@ -2713,3 +2766,21 @@ export function describeLiveExecutionBlockers(): string[] {
 }
 
 export type { ExecutionAuthorization };
+
+/*
+ * The slippage bounds, re-exported through the bridge (13 Sep 2026).
+ *
+ * WHY HERE. `onchainExecutor.test.ts` pins the list of files allowed to import the executor,
+ * and that list IS the security boundary — every addition widens who can move funds. A test
+ * that wants to assert the EXIT-leg bound is not a reason to widen it: re-exporting the two
+ * pure resolvers through the bridge keeps the importer list exactly as reviewed, and the
+ * test reaches them the same way the engine does.
+ */
+export {
+  HARD_MAX_SLIPPAGE_BPS,
+  HARD_MAX_EXIT_SLIPPAGE_BPS,
+  exitSlippageCapBps,
+  onchainConfig,
+  resolveExitSlippageBps,
+  resolveSlippageBps,
+} from "./onchainExecutor.js";
