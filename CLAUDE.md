@@ -1099,6 +1099,55 @@ it is kept as **the template**, so its defaults propagate. A dry run needs no ke
 box — it inspects the position from `SOLANA_WALLET_ADDRESS` or `--owner` — and it refuses
 a position that still holds liquidity, because `closePosition` does not withdraw.
 
+### The exit's last resort, and a close that reads the chain first (13 Sep 2026)
+
+**Residual sale.** After Jupiter refuses at every rung of `SWEEP_SLIPPAGE_LADDER_BPS`,
+`sweepResidualPairedToken` sells straight into the pool the position just left
+(`dlmmExecutor.quotePoolSaleToSol` / `sellToSolInPool`). `assessPoolSaleQuote` refuses —
+BEFORE signing — a pool quote below Jupiter's pre-ladder estimate less the exit cap, and
+fails closed with no estimate: the route runs when the market is already bad, and selling
+into a worse one would be the weaker second swap path the ladder exists to avoid. The
+floor is fixed by the bridge and never re-derived on a rebuild. Only after that fails is the
+operator paged, with mint, amount, value, the Jupiter error and the pool error. The deps
+are optional: a harness without them keeps ladder-then-page exactly. `route` records which
+one sold.
+
+**State-aware close.** Rebuilding after blockhash expiry is safe for the SIGNATURE, not the
+STATE: an attempt can confirm in the gap the poll missed. `closeLivePosition` reads the
+position by address first; ABSENT means the close already happened, so nothing is sent and
+`findLastSuccessfulSignature` supplies the chain's own close signature — or it THROWS rather
+than invent one (row stays ACTIVE, next tick reads again). The executor asks the same
+question before every close rebuild (`closeRebuildDecision`: only `absent` stops;
+`unreadable` rebuilds, because a timeout is not evidence the position is gone). A position
+with no liquidity AND no fees whose withdrawal builds zero transactions is closed for rent
+instead of throwing on every tick. `src/tests/exitPathHardening.test.ts`.
+**Still unproven by a funded exit.**
+
+### Backtest integrity: the live-eligible arm, the exit cost model, and a legacy double count
+
+`npm run backtest:integrity` is the runner to quote. Every published figure before it had
+the balancing swap free, a TAKE_PROFIT exit free, and a universe live cannot enter.
+
+- **Live-eligible arm** (`src/backtest/liveEligibility.ts`): wSOL leg AND the paired mint
+  passes the token screen, judged by `readTokenExtensions` + `assessTokenFeeScreen` — the live
+  functions, no second decoder, no second policy. Stored per pool at ingest
+  (`annotateTokens`), cached per mint in `.cache/token_extensions.json`; FAILED reads are not
+  cached. Unread = NOT eligible. Every runner prints (a) eligible, (b) full, (c) the gap.
+- **Exit cost** (`src/backtest/exitCost.ts`): concession = f(bin_step, notional/TVL),
+  calibrated on MANLET (80) / EMBER (200) / NEARKAT (400, transfer fee removed). Three
+  confounded points, so it ships as a BAND: `fit` (least squares, negative coefficients
+  dropped) and `envelope` (worst observed per bin-step %). Trust a conclusion only where both
+  agree.
+- `exitCostModel` (accounting) and `gateUsesExitCostModel` (strategy) are SEPARATE switches,
+  both default off; with a model, the balancing swap's token exit leg is not charged twice.
+- **Legacy double count, kept on purpose.** Without a model the engine values a forced exit
+  at the haircut ratio AND subtracts the haircut again as `slippageCostUsd`, so published
+  figures over-charged forced exits by exactly `totalSlippageCostUsd` (pessimistic). Fixing it
+  would move every cached result with no flag to reproduce them; the model path counts once,
+  and a test pins both. The 8 Sep benchmark still reproduces bit-for-bit.
+- `sweep:entry` / `sweep:exits` take `--days --capital --sizepct --concurrent --gas`
+  (+ `--swapslip --swapgas --exitcost`); absent flags build a config `deepEqual` to before.
+
 ## Commands
 
 ```bash
@@ -1120,6 +1169,7 @@ npm run audit:report     # backtest JSON -> reports/backtest-audit.html (print t
 npm run backtest         # 30-day replay of the live formula; --days --pools --refresh --tp etc.
 npm run backtest:annual  # 365-day replay of the LIVE V1.1 guardrails + daily returns export
 npm run backtest:quote   # SOL-quoted vs USDC-quoted pools, same window/rules; --ingest-only=sol|usdc
+npm run backtest:integrity # V1.1 + TP/gate variants: live-eligible vs full, old vs new costs, 2 windows; --dataset=<cache>
 npm run report:quant     # Python: QuantStats-style tear sheet (HTML + PDF + PNG) from that export
 npm run dlmm:once        # one screen -> decide -> monitor cycle (monitor included)
 npm run research:once    # one macro research run
