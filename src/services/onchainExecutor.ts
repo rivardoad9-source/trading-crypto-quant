@@ -66,6 +66,27 @@ import { getPriorityFeeEstimateSafe } from "./solana.js";
 export const HARD_MAX_SLIPPAGE_BPS = 50 as const;
 
 /**
+ * Absolute ceiling on slippage for an EXIT leg (the residual sale after a close, and the
+ * auto-unwind after a failed open), in basis points. 500 bps = 5%.
+ *
+ * WHY A SECOND, WIDER CAP — 13 Sep 2026, real money, and the operator had to sell by hand.
+ *
+ * `HARD_MAX_SLIPPAGE_BPS` (50) bounds what an ENTRY may pay, and that asymmetry is the
+ * whole point: refusing a bad entry costs nothing, while a refused EXIT leaves the
+ * position's value sitting in the wallet as a memecoin nothing monitors. On 13 Sep 2026
+ * an EMBER-SOL close returned 1,568 EMBER; the residual sale was refused at the 50 bps
+ * bound — the route's own program rejected it — the ten-minute self-heal retried at the
+ * SAME bound and failed identically, and the operator sold it by hand while the price
+ * moved. The engine had the intent (`executeJupiterSwapFreshQuote` already re-quotes on a
+ * slippage refusal) but not the room: three re-quotes at 0.5% is 0.5% three times.
+ *
+ * 500 bps is bounded and auditable: on a $180 notional a worst-case fill costs ~$9, which
+ * is real money but strictly better than an unsold token in a market that moves 10% in an
+ * hour. Entries NEVER consult this constant.
+ */
+export const HARD_MAX_EXIT_SLIPPAGE_BPS = 500 as const;
+
+/**
  * Absolute ceiling on the DLMM ACTIVE-BIN tolerance, in basis points. 1000 bps = 10%.
  *
  * A DIFFERENT QUANTITY FROM `HARD_MAX_SLIPPAGE_BPS`, and conflating the two is the
@@ -121,6 +142,16 @@ const OnchainSchema = z.object({
   /** Slippage bound in bps. Clamped down to HARD_MAX_SLIPPAGE_BPS; never up. */
   ONCHAIN_MAX_SLIPPAGE_BPS: numeric(HARD_MAX_SLIPPAGE_BPS),
   /**
+   * Slippage bound for EXIT legs only, in bps. Clamped down to
+   * HARD_MAX_EXIT_SLIPPAGE_BPS; never up.
+   *
+   * 300 bps (3%) by default. A sale that must happen is not a trade that can be refused:
+   * on 13 Sep 2026 a residual sale of 1,568 EMBER was refused at the 50 bps ENTRY bound,
+   * the retry loop repeated the same refusal, and the operator had to sell by hand. Widening
+   * this knob does not touch entries, entries still ride ONCHAIN_MAX_SLIPPAGE_BPS.
+   */
+  EXIT_MAX_SLIPPAGE_BPS: numeric(300),
+  /**
    * DLMM active-bin tolerance in bps. Clamped down to
    * HARD_MAX_ACTIVE_BIN_SLIPPAGE_BPS; never up.
    *
@@ -162,6 +193,13 @@ export type OnchainConfig = {
   readonly armed: boolean;
   readonly maxLamportsPerTx: number;
   readonly maxSlippageBps: number;
+  /**
+   * The EXIT-leg slippage bound. A SEPARATE FIELD from `maxSlippageBps` on purpose: they
+   * bound different decisions, and the 13 Sep 2026 incident is what happens when one knob
+   * has to serve both (a residual sale refused at the ENTRY bound, retried at the same
+   * bound, and finished by hand).
+   */
+  readonly exitMaxSlippageBps: number;
   readonly maxActiveBinSlippageBps: number;
   readonly computeUnitLimit: number;
   readonly minPriorityMicroLamports: number;
@@ -177,6 +215,11 @@ export function resolveOnchainConfig(source: NodeJS.ProcessEnv = process.env): O
   // Clamped DOWN only. A configured 300 bps silently becomes 50, because the point of
   // a hard cap is that no configuration can widen it.
   const slippage = Math.max(1, Math.min(parsed.ONCHAIN_MAX_SLIPPAGE_BPS, HARD_MAX_SLIPPAGE_BPS));
+  // The exit bound, clamped down to ITS OWN (wider) hard cap. Never up.
+  const exitSlippage = Math.max(
+    1,
+    Math.min(parsed.EXIT_MAX_SLIPPAGE_BPS, HARD_MAX_EXIT_SLIPPAGE_BPS),
+  );
   const binSlippage = Math.max(
     1,
     Math.min(parsed.ONCHAIN_MAX_ACTIVE_BIN_SLIPPAGE_BPS, HARD_MAX_ACTIVE_BIN_SLIPPAGE_BPS),
@@ -186,6 +229,7 @@ export function resolveOnchainConfig(source: NodeJS.ProcessEnv = process.env): O
     armed: parsed.ONCHAIN_EXECUTION_ARMED,
     maxLamportsPerTx: parsed.ONCHAIN_MAX_LAMPORTS_PER_TX,
     maxSlippageBps: slippage,
+    exitMaxSlippageBps: exitSlippage,
     maxActiveBinSlippageBps: binSlippage,
     computeUnitLimit: parsed.ONCHAIN_COMPUTE_UNIT_LIMIT,
     minPriorityMicroLamports: parsed.ONCHAIN_MIN_PRIORITY_MICRO_LAMPORTS,
@@ -369,6 +413,35 @@ export function resolveSlippageBps(auth: ExecutionAuthorization, requestedBps?: 
     throw new ExecutionLimitError("slippage must be a positive number of basis points");
   }
   return Math.min(Math.floor(requested), auth.maxSlippageBps, HARD_MAX_SLIPPAGE_BPS);
+}
+
+/**
+ * The same clamp, for an EXIT leg, against ITS OWN bound.
+ *
+ * `HARD_MAX_SLIPPAGE_BPS` (50) is deliberately NOT consulted here, and `auth.maxSlippageBps`
+ * is not either: both describe what an ENTRY may pay. Refusing an entry costs nothing;
+ * refusing an exit strands the position's value. See `HARD_MAX_EXIT_SLIPPAGE_BPS`.
+ *
+ * Resolved from `EXIT_MAX_SLIPPAGE_BPS` (default 300), clamped down to the hard exit cap and
+ * never widened by a caller: a requested 5,000 bps settles at the cap, not at 5,000.
+ */
+export function resolveExitSlippageBps(
+  requestedBps?: number,
+  config: Pick<OnchainConfig, "exitMaxSlippageBps"> = onchainConfig,
+): number {
+  const cap = Math.max(1, Math.min(config.exitMaxSlippageBps, HARD_MAX_EXIT_SLIPPAGE_BPS));
+  const requested = requestedBps ?? cap;
+  if (!Number.isFinite(requested) || requested <= 0) {
+    throw new ExecutionLimitError("exit slippage must be a positive number of basis points");
+  }
+  return Math.min(Math.floor(requested), cap);
+}
+
+/** The configured exit bound, for a caller that needs the cap itself (the sweep ladder). */
+export function exitSlippageCapBps(
+  config: Pick<OnchainConfig, "exitMaxSlippageBps"> = onchainConfig,
+): number {
+  return Math.max(1, Math.min(config.exitMaxSlippageBps, HARD_MAX_EXIT_SLIPPAGE_BPS));
 }
 
 /**
@@ -1283,12 +1356,24 @@ export async function executeJupiterSwap(
     outputMint: string;
     amountLamports: number;
     slippageBps?: number;
+    /**
+     * Which side of the trade this swap is. Defaults to `"entry"`.
+     *
+     * `"exit"` resolves the bound from `EXIT_MAX_SLIPPAGE_BPS` (see
+     * `HARD_MAX_EXIT_SLIPPAGE_BPS`) instead of the 50 bps entry bound. Set it for the
+     * residual sale after a close and for the auto-unwind after a failed open: both put
+     * capital BACK into SOL, and a refusal there strands tokens in a moving market.
+     */
+    leg?: "entry" | "exit";
     config?: OnchainConfig;
     onAttempt?: (info: { attempt: number; signature: string; plan: PriorityFeePlan }) => void;
   },
 ): Promise<{ result: SendResult; quote: JupiterQuote }> {
   const config = params.config ?? onchainConfig;
-  const slippageBps = resolveSlippageBps(auth, params.slippageBps);
+  const slippageBps =
+    params.leg === "exit"
+      ? resolveExitSlippageBps(params.slippageBps, config)
+      : resolveSlippageBps(auth, params.slippageBps);
 
   if (params.inputMint === WSOL_MINT) {
     assertWithinSpendLimit(auth, params.amountLamports, "jupiter swap");

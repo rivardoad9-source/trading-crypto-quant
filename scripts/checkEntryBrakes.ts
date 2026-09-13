@@ -17,7 +17,13 @@ import {
   countUnresolvedOrphanAttempts,
   sumFailedAttemptCost,
 } from "../src/database/repositories.js";
-import { describeLiveExecutionBlockers } from "../src/services/liveExecution.js";
+import {
+  describeLiveExecutionBlockers,
+  exitSlippageCapBps,
+  onchainConfig,
+  resolveSlippageBps,
+  sweepSlippageLadder,
+} from "../src/services/liveExecution.js";
 
 function main(): void {
   const live = isLiveExecutionActive();
@@ -59,6 +65,17 @@ function main(): void {
     `ukuran posisi    : capital ${liveMicroCapital.capitalSol} SOL - reserve ` +
       `${liveMicroCapital.minReserveSol} SOL = deployable ${liveMicroCapital.deployableSol} SOL, ` +
       `maks ${liveMicroCapital.maxPositionSol} SOL/posisi, ${liveMicroCapital.maxConcurrentPositions} posisi`,
+  );
+
+  /*
+   * The slippage bounds, both of them. Added 13 Sep 2026 with the EXIT-leg split: an operator
+   * asking "why did the sale get refused" needs to see the bound the sale was held to, and
+   * the two numbers must be visibly different or the split has silently collapsed.
+   */
+  const ladder = sweepSlippageLadder(exitSlippageCapBps());
+  console.log(
+    `slippage         : entry max ${resolveSlippageBps({ maxSlippageBps: onchainConfig.maxSlippageBps } as never)} bps ` +
+      `| exit max ${exitSlippageCapBps()} bps | ladder sisa token ${ladder.join(" -> ")} bps`,
   );
 
   const blockers = describeLiveExecutionBlockers();
