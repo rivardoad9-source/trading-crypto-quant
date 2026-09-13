@@ -1,0 +1,119 @@
+TASK BRIEF — 13 Sep 2026 (Hermes) — P0: Token-2022 transfer-fee mints are unscreened
+Repo: trading-crypto-quant (server ~/flowmetrix-ai-agent)
+Incident: docs/incidents/… (to be written by whoever implements; raw evidence in this file)
+
+====================================================================
+WHAT HAPPENED (13 Sep 2026 08:01:55 WIB, real money, 1 attempt)
+====================================================================
+Attempt id=5 in `live_execution_attempts`, pair NEARKAT-SOL.
+
+  pool    J3wZVx37wfEpGNjBHiJyuGZf948jsFe3toCiMkD4D1oz   (bin_step 400 = 4%/bin)
+  mint    6UtY9iTZMQQ5QZVrbzFnNaJntV7oySm9k97mvwnuZcxr   ← Token-2022, TransferFeeConfig
+  flow    swap 0.9 SOL -> NEARKAT        sig 5ZKh1EetUfWimNwjtCX7XYbrA7bpDrAUQo4yksbHtXwuK7DBqRAxUNtJfZHwN48P6oupCwREV7xjnjT458mr7vs2   -0.901586 SOL
+          engine then failed to read the post-swap token balance
+          auto-unwind sell NEARKAT -> SOL sig WVwNrBwMBoYFAkavVn2FRgj11bmABrcK5jpb6t3z1PMi236VUVT9nB9qrrxY3msWAe1nbufetZfZ2XCiB3zhFJn   +0.822476 SOL
+  cost    0.079110 SOL (-8.77% of the 0.9 SOL swap). unwind='clean', position_address=NULL.
+
+Wallet afterwards 2.965856655 SOL, zero tokens (verified on-chain + fm_chain_sweep-style
+scan). Nothing is stranded. The guards behaved: clean unwind, failed-cost row written,
+address banked. This brief is NOT about that failure being mishandled.
+
+The failure message is the familiar one — `the swap confirmed but no token balance could
+be read` (same string as the 10 Sep KNOTS incident). The read is:
+`readTokenBalanceOrNull()` (src/services/liveExecution.ts ~828) — ONE call to
+getTokenAccountBalance(ata, "confirmed"); on error one getAccountInfo(ata, "confirmed");
+anything unreadable -> null -> open aborts. There is no retry and no second source.
+
+====================================================================
+FINDING 1 (the real one) — the token is a Token-2022 mint with a 3% TRANSFER FEE,
+and nothing in the funnel screens for it.
+====================================================================
+Decoded on-chain (getAccountInfo of the mint, 13 Sep 2026, slot ~446575021):
+
+  owner program : TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb  (Token-2022)
+  extensions    : 1  = TransferFeeConfig  -> older AND newer fee = 300 bps = 3.00%
+                  18 = MetadataPointer, 19 = TokenMetadata
+  the wallet's ATA 657NASjTZQ6LMvr44W3iiNTzvraf3EqxmXgKnrGEqsTv carried
+  `extensions: [immutableOwner, transferFeeAmount{withheldAmount: 576097857}]`
+
+A transfer fee is charged on EVERY transfer of the token, both legs of a round trip.
+Compare with what our own loss says: buy 0.9 SOL → 3% withheld on delivery, sell back →
+3% withheld on the way out, plus bin_step 400 spread and priority fees = the observed
+8.77%. Arithmetically consistent. TP is +5%; a 3% fee paid twice is ~6% before any
+spread — this whole CLASS of pool cannot clear the strategy, no matter how good the
+momentum is.
+
+Why the gates let it through:
+  - the friction gate (meteora.ts ~840-863) models `gasCostRoundTripUsd + slippageUsd`
+    ONLY. `expectedFee24hUsd / roundTripCostUsd` knows nothing about a token-level tax.
+  - anti-rug, volatility, coverage and the micro/size gates are all price/liquidity/
+    authority checks; none reads mint extensions.
+  - `grep -rn "transferFee\|TransferFeeConfig" src/ --include=*.ts` returns NOTHING
+    outside comments. There is no Token-2022 awareness anywhere on the entry path.
+    (liveExecution.ts ~2152 handles Token-2022 for the WALLET LISTING after a close —
+    the entry path is the gap.)
+
+Task 1.1 — screen it out at the funnel, inside `isLiveExecutionActive()` so paper stays
+byte-identical. Read the mint's account (the screener already has the mint; one
+`getAccountInfo` per candidate, and/or take the extensions GMGN/Helius already hand out)
+and REJECT when the Token-2022 `TransferFeeConfig` extension is present. Fail CLOSED:
+an unreadable mint account is a rejection, not a pass — same rule anti-rug already uses.
+Log it like the other gates: `[guard] skipped <PAIR>: Token-2022 transfer fee (300 bps)`.
+Threshold: reject any fee > 0 for now; if you want it tunable, add
+`LIVE_MAX_TOKEN_TRANSFER_FEE_BPS` (default 0) rather than hard-coding a rate.
+
+Task 1.2 — if the operator later wants to trade fee-bearing mints, the fee has to enter
+the cost model instead: `roundTripCostUsd += notionalUsd * 2 * (bps/10000)` in
+`frictionGate`/meteora.ts, so the 2.5x coverage requirement is tested against the real
+round-trip cost. Do NOT do this without sign-off — the operator has frozen TP/SL/gate
+parameters (commit 78ccd52) and this is a gate the backtest was validated against.
+Task 1.1 alone removes the class; 1.2 is the escape hatch if the operator ever wants it.
+
+====================================================================
+FINDING 2 — the post-swap balance read is a single, unretried call.
+====================================================================
+At 01:01:55 the engine could not read the ATA it had just funded. The ATA definitely
+exists (its close was attempted seconds later and the Token-2022 program rejected it for
+a non-zero withheld-fee balance — proof the account was there). Two candidate causes, and
+the fix covers both:
+  (a) read-after-write lag on the RPC: the swap's destination ATA is created inside the
+      swap tx; a read against another replica/second later can answer
+      `Invalid param: could not find account`, and `readTokenBalanceOrNull` treats
+      "primary read failed + getAccountInfo threw" as an unknown balance -> abort.
+  (b) a token-program mismatch on the derived ATA (a classic-Token ATA derived for a
+      Token-2022 mint is a DIFFERENT, empty address, and reads exactly like (a)).
+      NOTE: this run derived the right address (657NASjTZ… is the real Token-2022 ATA,
+      confirmed by getTokenAccountsByOwner), so (a) is the likelier cause here — but (b)
+      is one wrong argument away and produces the identical symptom, so assert it.
+
+Task 2.1 — in the post-swap path, retry the read (3 attempts, ~1.5s/3s backoff) and
+confirm with a second source (`getParsedTokenAccountsByOwner(owner, {mint})` across BOTH
+token programs) before declaring "no token balance could be read". A confirmed swap whose
+output we cannot see should be a measurement problem, not an abort — 0.079 SOL is what
+the abort cost.
+Task 2.2 — assert `getAssociatedTokenAddressSync(mint, owner, true, tokenProgramId)` is
+called with the TOKEN PROGRAM OF THE POOL'S MINT (resolve it from the mint account, do
+not assume Tokenkeg…). A unit test with a Token-2022 mint that goes red if the classic
+program is passed.
+Task 2.3 — the residual sweep/ATA close should recognise the 0x23 "withheld fee balance
+is zero" refusal as a DISTINCT, expected outcome for fee-bearing tokens (harvest-then-
+close, or record `not-empty` and page), instead of a generic failed close. Today it
+logged `~0.002 SOL of rent stays locked; not paged`; that is acceptable, but it should
+not look like a mystery if it recurs.
+
+====================================================================
+STATE / CONSTRAINTS
+====================================================================
+- Engine healthy: pm2 `flowmetrix-engine` online, /api/health ok, 0 active positions,
+  wallet clean, NO orphan (unwind='clean'), nothing for the operator to sell by hand.
+- SIDE EFFECT the operator must know: `FailedCostBreakerError` now holds NEW entries for
+  24h from the attempt (0.079110 > LIVE_MAX_FAILED_COST_SOL=0.05) — it clears itself
+  ~14 Sep 08:01 WIB. NEARKAT pool + mint are benched 168h (~20 Sep) by the post-swap
+  breaker. Do not "fix" either by hand.
+- Test suite baseline on this armed box: 845 tests / 845 pass / 0 fail. Keep it green.
+- Do NOT change TP/SL/MAX_POSITION_AGE/bin-step policy (operator decision, 78ccd52).
+- Paper mode must stay byte-identical: put every new screen inside
+  `isLiveExecutionActive()`.
+- Evidence for the implementer: this file, `data/flowmetrix.db` row id=5, the two
+  signatures above, and the mint itself (extensions are readable with a single
+  getAccountInfo).
