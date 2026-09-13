@@ -26,6 +26,7 @@ import {
   isPoolDenied,
   poolDenylist,
 } from "../services/executionGuard.js";
+import { assessTokenFeeScreen } from "../services/tokenExtensions.js";
 import { WSOL_MINT, MAX_CANDIDATE_POOLS, POSITION_STATUS, type PositionStatus } from "../config/constants.js";
 import {
   assessBreakeven,
@@ -1341,8 +1342,21 @@ async function closeAllPositionsLocked(options: {
  * `tokenBench` is separate from `breaker` for the same reason: "this pool failed" and "a
  * SIBLING pool of this token failed" lead to different actions, and a pool with a clean
  * record of its own being skipped is unreadable unless the funnel can say which it was.
+ *
+ * `transferFee` (13 Sep 2026) is a fact about the TOKEN, and the only one of these that
+ * can make a pool impossible to profit from no matter how it moves: a Token-2022 mint
+ * that taxes every transfer charges that tax on both legs of the round trip, so a 3% fee
+ * is ~6% of the notional against a 5% take-profit. Counted apart from the rest because
+ * the operator's answer to it is not a setting to change — it is "that token is not a
+ * candidate, ever".
  */
-export type ExecutionBlockKind = "denylist" | "breaker" | "tokenBench" | "noWsol" | "binCap";
+export type ExecutionBlockKind =
+  | "denylist"
+  | "breaker"
+  | "tokenBench"
+  | "noWsol"
+  | "binCap"
+  | "transferFee";
 
 /** Tallies execution refusals per gate. Every kind is present, zero included. */
 export function countExecutionBlocks(
@@ -1354,6 +1368,7 @@ export function countExecutionBlocks(
     tokenBench: 0,
     noWsol: 0,
     binCap: 0,
+    transferFee: 0,
   };
   for (const r of rejected) out[r.kind] += 1;
   return out;
@@ -1716,6 +1731,39 @@ async function seekNewEntry(): Promise<EntrySummary> {
         }
       }
 
+      /*
+       * THE TOKEN-2022 TRANSFER-FEE SCREEN — 13 Sep 2026, 0.079110 SOL.
+       *
+       * The one gate here that reads the CHAIN rather than config or history, and it is
+       * placed LAST on purpose: it costs a `getAccountInfo` per pool, so it only runs for
+       * pools that would otherwise be executable (typically a handful per cycle, and the
+       * module caches the answer per mint because one token usually has several sibling
+       * pools).
+       *
+       * On 13 Sep 2026 a Token-2022 mint with a 3% transfer fee cleared every gate, was
+       * elected, and cost 8.77% of a 0.9 SOL swap when the open failed after the
+       * balancing swap and the sell-back returned 0.822476 of the 0.901586 SOL that had
+       * gone out. The fee is charged on BOTH legs and the take-profit is 5%, so the pool
+       * was never profitable at any momentum — the funnel simply had nothing that looked
+       * at the mint's extensions. `assessTokenFeeScreen` also refuses a mint it cannot
+       * read, a transfer hook, and a non-transferable mint; see the module for why all
+       * three are the same shape of hazard.
+       */
+      const pairedMint = pool.baseMint === WSOL_MINT ? pool.quoteMint : pool.baseMint;
+      const feeVerdict = await assessTokenFeeScreen(
+        pairedMint,
+        env.LIVE_MAX_TOKEN_TRANSFER_FEE_BPS,
+      );
+      if (feeVerdict.blocked) {
+        summary.executionRejected.push({
+          pairName: pool.pairName,
+          poolAddress: pool.address,
+          kind: "transferFee",
+          reason: feeVerdict.reason ?? "the paired token carries a Token-2022 transfer fee",
+        });
+        continue;
+      }
+
       executable.push(pool);
     }
 
@@ -1743,6 +1791,7 @@ async function seekNewEntry(): Promise<EntrySummary> {
           `locked out, ${summary.executionRejected.length} unexecutable ` +
           `(${byKind.binCap} over LIVE_MAX_POSITION_BINS=${maxLivePositionBins()}, ` +
           `${byKind.noWsol} with no wSOL side, ` +
+          `${byKind.transferFee} on a token that charges a transfer fee, ` +
           `${byKind.breaker} benched by the execution breaker, ` +
           `${byKind.denylist} on the operator denylist)`
         : summary.cooldownRejected.length > 0 && held.length === summary.cooldownRejected.length
@@ -2387,7 +2436,7 @@ function recordFunnel(entry: EntrySummary, monitor: MonitorSummary, durationMs: 
       `cooldown -${entry.cooldownRejected.length} -> ` +
       `exec-guard -${entry.executionRejected.length}` +
       (entry.executionRejected.length > 0
-        ? ` (bin-cap ${byKind.binCap}, no-wsol ${byKind.noWsol}, breaker ${byKind.breaker}, denylist ${byKind.denylist})`
+        ? ` (bin-cap ${byKind.binCap}, no-wsol ${byKind.noWsol}, token-fee ${byKind.transferFee}, breaker ${byKind.breaker}, denylist ${byKind.denylist})`
         : "") +
       ` -> candidates ${entry.candidates} -> ` +
       `antirug ${entry.safeCandidates}/-${entry.rugRejected.length} -> ` +
@@ -2413,6 +2462,7 @@ function recordFunnel(entry: EntrySummary, monitor: MonitorSummary, durationMs: 
       execBinCapRejected: byKind.binCap,
       execNoWsolRejected: byKind.noWsol,
       execTokenBenchRejected: byKind.tokenBench,
+      execTransferFeeRejected: byKind.transferFee,
       antirugPassed: entry.safeCandidates,
       antirugRejected: entry.rugRejected.length,
       volatilityRejected: entry.volatilityRejected.length,

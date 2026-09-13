@@ -432,8 +432,19 @@ export function describeExecutionGuard(): string {
         (env.LIVE_MAX_POSITION_BINS <= 70 ? " (NARROW ONLY - the wide path is benched)" : "")
       : "1400 bins (the DLMM maximum; no operator cap)";
 
+  /*
+   * The Token-2022 token screen. Printed even at its default so "any transfer fee is
+   * refused" is a STATED policy on the boot line rather than a behaviour an operator has
+   * to infer from a rejected cycle — the same reason the width cap and the denylist ride
+   * on this line. Added after 13 Sep 2026, when a 3% fee mint reached the open path.
+   */
+  const tokenScreen =
+    env.LIVE_MAX_TOKEN_TRANSFER_FEE_BPS === 0
+      ? "token fees: ANY transfer fee refused (plus hooks and non-transferable mints)"
+      : `token fees: up to ${env.LIVE_MAX_TOKEN_TRANSFER_FEE_BPS} bps accepted`;
+
   return (
     `[guard] execution breaker: ${breaker}; operator denylist: ${denylist}; ` +
-    `live width cap: ${cap}`
+    `live width cap: ${cap}; ${tokenScreen}`
   );
 }

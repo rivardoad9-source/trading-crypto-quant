@@ -161,6 +161,13 @@ export function initDatabase(): void {
    */
   addColumnIfMissing("pool_execution_failures", "token_mint", "TEXT");
   addColumnIfMissing("scan_funnel_cycles", "exec_token_bench_rejected", "INTEGER DEFAULT 0");
+  /*
+   * Refused for a Token-2022 transfer fee / hook / non-transferable mint (13 Sep 2026).
+   * Added as its own column rather than folded into the antirug counters because the
+   * answer it gives the operator is different in kind: the anti-rug screen says "this
+   * token may be a rug", this says "this token's economics cannot clear the strategy".
+   */
+  addColumnIfMissing("scan_funnel_cycles", "exec_transfer_fee_rejected", "INTEGER DEFAULT 0");
 
   initialised = true;
   console.log(`[db] ready at ${dbPath}`);

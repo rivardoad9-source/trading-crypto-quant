@@ -444,6 +444,21 @@ const EnvSchema = z
     LIVE_FAILED_COST_WINDOW_HOURS: numeric(24),
 
     /**
+     * The largest Token-2022 TRANSFER FEE (basis points) a pool's paired mint may carry
+     * and still be opened. Default 0: any transfer fee at all is refused.
+     *
+     * A transfer fee is charged on every transfer of the token, so a round trip pays it
+     * twice. On 13 Sep 2026 a 300 bps (3%) mint reached `openLivePosition`: the balancing
+     * swap went out, the position never opened, and the sell-back returned 0.822476 of
+     * the 0.901586 SOL that had just left — 8.77% of the swap, against a 5% take-profit.
+     * The ENGINE still cannot profit from that pool at any momentum; refusing it at the
+     * funnel is the fix, and this is the knob an operator would raise to accept a
+     * KNOWN, small tax instead. Raising it does not change the take-profit, so a value
+     * anywhere near 500 bps makes the strategy arithmetically unable to win.
+     */
+    LIVE_MAX_TOKEN_TRANSFER_FEE_BPS: numeric(0),
+
+    /**
      * Drift thresholds for the periodic wallet-vs-book reconciliation, in percent of
      * the book and in absolute SOL. EITHER being exceeded raises the alert.
      *
@@ -680,6 +695,20 @@ const EnvSchema = z
         message:
           "LIVE_MAX_FAILED_COST_SOL must be positive. Use Infinity to disable the " +
           "failed-attempt cost breaker; zero would refuse every entry.",
+      });
+    }
+    /*
+     * 0 is the shipped and correct value here (no transfer fee tolerated); the bound
+     * only rejects a number that cannot mean anything. At 10000 bps the fee would be the
+     * entire notional, and anything above that is a typo, not a policy.
+     */
+    if (cfg.LIVE_MAX_TOKEN_TRANSFER_FEE_BPS < 0 || cfg.LIVE_MAX_TOKEN_TRANSFER_FEE_BPS >= 10_000) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["LIVE_MAX_TOKEN_TRANSFER_FEE_BPS"],
+        message:
+          "LIVE_MAX_TOKEN_TRANSFER_FEE_BPS must be between 0 and 9999. 0 refuses every " +
+          "token that charges a transfer fee, which is the shipped policy.",
       });
     }
   });
