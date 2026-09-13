@@ -1148,6 +1148,27 @@ the balancing swap free, a TAKE_PROFIT exit free, and a universe live cannot ent
 - `sweep:entry` / `sweep:exits` take `--days --capital --sizepct --concurrent --gas`
   (+ `--swapslip --swapgas --exitcost`); absent flags build a config `deepEqual` to before.
 
+### `exit_economics` and the per-window universe (14 Sep 2026)
+
+**Every live close writes what its exit actually cost** (`src/services/exitEconomics.ts`), from
+transaction meta of the stored signatures — never from `wallet_lamports_before/after`. Written in
+`settleLiveCloses` after the row is closed, outside the mutex, never throwing; one write path. An
+unswept, unreadable or unmeasured value is NULL with a note, never 0. Insert-if-absent on
+`position_id`, so the backfill is idempotent and never overwrites a live measurement. Failed-open
+signatures for the CSV backfill live in `docs/incidents/known-failed-opens.json`, NOT in `src/`: a
+base58 signature is secret-key-shaped and `src/` is scanned for those. `report:exitcosts` only
+reports a refit; the constants in `exitCost.ts` change by human decision (the bootstrap said ~20
+observations for 25% relative error on 14 Sep).
+
+**`--per-window-universe`** (`src/backtest/windowUniverse.ts`) picks each window's pools from fees
+INSIDE it. Three traps it has already fallen into, all producing zero-trade windows that read as
+results: ranking candidates by lifetime volume (fills with SOL-USDC-scale majors — survivors must
+take the strategy's TVL band and the cap is split per cohort); fitting k per window (old windows keep
+only old survivors, k 2.6-4.3 — one k from the newest window serves all); and holding every
+candidate's bars in memory (killed on a 6 GB box — bars live in `.cache/window_bars/<address>.json`).
+Flag off, `main` runs the published path unchanged. See
+`docs/backtests/2026-09-14-exit-observability-and-window-universe.md`.
+
 ## Commands
 
 ```bash
@@ -1170,6 +1191,9 @@ npm run backtest         # 30-day replay of the live formula; --days --pools --r
 npm run backtest:annual  # 365-day replay of the LIVE V1.1 guardrails + daily returns export
 npm run backtest:quote   # SOL-quoted vs USDC-quoted pools, same window/rules; --ingest-only=sol|usdc
 npm run backtest:integrity # V1.1 + TP/gate variants: live-eligible vs full, old vs new costs, 2 windows; --dataset=<cache>
+                           #   --per-window-universe [--windows=3 --candidates=N --ingest-only --refresh]
+npm run exitcosts:backfill # exit_economics from stored signatures (DB, or --from=csv:exports/trades.csv); idempotent
+npm run report:exitcosts   # exit-cost refit vs shipped constants + bootstrap n; NEVER edits exitCost.ts
 npm run report:quant     # Python: QuantStats-style tear sheet (HTML + PDF + PNG) from that export
 npm run dlmm:once        # one screen -> decide -> monitor cycle (monitor included)
 npm run research:once    # one macro research run
