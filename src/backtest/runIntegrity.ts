@@ -31,7 +31,10 @@ import { runSimulation, type BacktestConfig, type BacktestResult } from "./engin
 import {
   BACKTEST_CAVEATS,
   FREE_TIER_HISTORY_DAYS,
+  SOL_USDC_POOL,
+  fetchHourlyBars,
   loadHistoricalData,
+  type Bar,
   type HistoricalDataset,
   type PoolHistory,
 } from "./historicalData.js";
@@ -65,6 +68,15 @@ import {
   type Scored,
 } from "./sweepHarness.js";
 import { renderTable } from "./report.js";
+import { buildPointInTimeUniverse } from "./universe.js";
+import {
+  loadWindowDataset,
+  universeCoverage,
+  windowsEndingAt,
+  type CacheOutcome,
+  type WindowDataset,
+  type WindowSpec,
+} from "./windowUniverse.js";
 import type { DlmmPool } from "../services/meteora.js";
 import { readFileSync } from "node:fs";
 
@@ -237,6 +249,16 @@ async function main(): Promise<void> {
     );
   }
 
+  const perWindowUniverse = flags.has("per-window-universe");
+  const ingestOnly = flags.has("ingest-only");
+  const policy = { maxTransferFeeBps: env.LIVE_MAX_TOKEN_TRANSFER_FEE_BPS };
+
+  if (perWindowUniverse) {
+    await runPerWindowUniverse({ flags, num, days, windowsWanted, ingestOnly, accountFlags, gasSol, swapSlippagePct, swapGasSolPerLeg, policy });
+    return;
+  }
+  if (ingestOnly) throw new Error("--ingest-only is only meaningful with --per-window-universe");
+
   const datasetPath = flags.get("dataset");
   const dataset: HistoricalDataset = datasetPath
     ? loadDatasetFile(datasetPath)
@@ -286,7 +308,6 @@ async function main(): Promise<void> {
   );
   if (tvlModel.samples === 0) throw new Error("[integrity] TVL model could not be calibrated");
 
-  const policy = { maxTransferFeeBps: env.LIVE_MAX_TOKEN_TRANSFER_FEE_BPS };
   const partition: EligibilityPartition = await partitionLiveEligible(dataset.pools, policy);
   const eligibleSet = new Set(partition.eligible.map((p) => p.address));
 
@@ -603,6 +624,287 @@ async function main(): Promise<void> {
     "utf8",
   );
   console.log(`\n[integrity] wrote ${REPORT_PATH} and ${SUMMARY_PATH}`);
+}
+
+/* ------------------------------------------------------------------ */
+/* --per-window-universe                                               */
+/* ------------------------------------------------------------------ */
+
+const WINDOW_SUMMARY_PATH = "backtest_window_universe_summary.json";
+const WINDOW_REPORT_PATH = "backtest_window_universe_report.txt";
+
+/**
+ * Each window judged on a universe picked from activity INSIDE it (see `windowUniverse.ts`).
+ *
+ * Deliberately a separate path rather than a branch threaded through `main`: with the flag
+ * off, `main` runs exactly the code that produced the published figures. Windows are
+ * reported side by side and never averaged; a window short of the bar says so.
+ */
+async function runPerWindowUniverse(ctx: {
+  flags: Map<string, string>;
+  num: (k: string, d: number) => number;
+  days: number;
+  windowsWanted: number;
+  ingestOnly: boolean;
+  accountFlags: Map<string, string>;
+  gasSol: number;
+  swapSlippagePct: number;
+  swapGasSolPerLeg: number;
+  policy: { maxTransferFeeBps: number };
+}): Promise<void> {
+  const n = ctx.num("pools", 16) + ctx.num("deadpools", 16);
+  const candidatesCap = ctx.num("candidates", n * 3);
+  const specs = windowsEndingAt(Math.floor(Date.now() / 1000), ctx.days, ctx.windowsWanted);
+  /*
+   * One fetch per pool per run, as deep as the OLDEST window: the windows share most
+   * candidates, and each fetch pages back through a 4-second rate limit.
+   */
+  const oldestBars = Math.ceil(((Date.now() / 1000 - (specs[specs.length - 1]?.start ?? 0)) / 3600) * 1.05);
+  const barMemo = new Map<string, Promise<Bar[]>>();
+  const fetchBarsOnce = (address: string): Promise<Bar[]> => {
+    let hit = barMemo.get(address);
+    if (!hit) {
+      hit = fetchHourlyBars(address, oldestBars);
+      barMemo.set(address, hit);
+      hit.catch(() => barMemo.delete(address));
+    }
+    return hit;
+  };
+
+  const loaded: Array<{ label: string; spec: WindowSpec; dataset: WindowDataset; cache: CacheOutcome }> = [];
+  for (const [i, spec] of specs.entries()) {
+    const { dataset, cache, cachePath } = await loadWindowDataset({
+      window: spec,
+      n,
+      candidatesCap,
+      solUsdPool: SOL_USDC_POOL,
+      refresh: ctx.flags.has("refresh"),
+      tvlBand: { minUsd: env.MIN_TVL_USD, maxUsd: env.MAX_TVL_USD },
+      deps: {
+        buildUniverse: (daysBack) => buildPointInTimeUniverse({ windowDays: daysBack, survivorPages: 3, cohortPages: 40 }),
+        fetchBars: (address) => fetchBarsOnce(address),
+        log: (line) => console.log(line),
+        nowMs: () => Date.now(),
+      },
+    });
+    const { rpcReads, failures } = await annotateTokenScreens(dataset.pools);
+    writeFileSync(resolve(process.cwd(), cachePath), JSON.stringify(dataset), "utf8");
+    console.log(
+      `[integrity] W${i + 1} ${dataset.window.start}->${dataset.window.end}: cache ${cache} · ${dataset.pools.length}/${n} pools ` +
+        `from ${dataset.selection.candidates} candidates · token reads ${rpcReads} (${failures} unreadable) · ${cachePath}`,
+    );
+    loaded.push({ label: `W${i + 1}`, spec, dataset, cache });
+  }
+  if (ctx.ingestOnly) {
+    console.log("[integrity] --ingest-only: caches written, no analysis run");
+    return;
+  }
+
+  const profile = resolveBacktestProfile({
+    overrides: readProfileOverrides(ctx.accountFlags),
+    windowStartSolUsd: loaded[loaded.length - 1]?.dataset.solUsdBars[0]?.c ?? null,
+    defaultGasSolPerTransaction: ctx.gasSol,
+  });
+  const baseConfig = liveV11Config(profile.options);
+  const calibration = calibrateExitCostModel(LIVE_EXIT_OBSERVATIONS);
+  const ladder = costLadder({
+    swapSlippagePct: ctx.swapSlippagePct,
+    swapGasSolPerLeg: ctx.swapGasSolPerLeg,
+    forcedExitSlippagePct: baseConfig.forcedExitSlippagePct,
+    fit: calibration.fit,
+    envelope: calibration.envelope,
+  }).filter((c) => c.key === "old" || c.key === "fit" || c.key === "envelope");
+
+  type WindowCell = { window: string; cost: string; variant: string; eligible: ArmRun; full: ArmRun };
+  const cells: WindowCell[] = [];
+  const meta: Array<{
+    label: string;
+    window: WindowDataset["window"];
+    cache: CacheOutcome;
+    k: number | null;
+    coverage: { withData: number; n: number };
+    selection: WindowDataset["selection"];
+    universe: number;
+    eligiblePools: number;
+  }> = [];
+
+  for (const w of loaded) {
+    const k = w.dataset.selection.k;
+    // The same k the universe was selected with, so the gates cannot disagree with the selection.
+    const tvlModel: TvlModel = { medianK: k ?? 0, p25K: k ?? 0, p75K: k ?? 0, samples: k === null ? 0 : 1, perPoolK: {} };
+    const partition = await partitionLiveEligible(w.dataset.pools, ctx.policy);
+    const eligible = new Set(partition.eligible.map((p) => p.address));
+    meta.push({
+      label: w.label,
+      window: w.dataset.window,
+      cache: w.cache,
+      k,
+      coverage: universeCoverage(w.dataset.pools, n, w.spec),
+      selection: w.dataset.selection,
+      universe: w.dataset.pools.length,
+      eligiblePools: partition.eligible.length,
+    });
+    if (k === null || w.dataset.pools.length === 0) continue;
+
+    for (const cost of ladder) {
+      const costConfig: BacktestConfig = {
+        ...baseConfig,
+        swapSlippagePct: cost.swapSlippagePct,
+        swapGasSolPerLeg: cost.swapGasSolPerLeg,
+        exitCostModel: cost.exitCostModel,
+      };
+      for (const v of VARIANTS) {
+        if (v.key === "gatecost" && !cost.exitCostModel) continue;
+        const config = v.apply(costConfig);
+        const tag = `${w.label}-${cost.key}-${v.key}`;
+        cells.push({
+          window: w.label,
+          cost: cost.key,
+          variant: v.key,
+          eligible: runArm(w.dataset.pools.filter((p) => eligible.has(p.address)), w.dataset.solUsdBars, tvlModel, config, `${tag}-eligible`),
+          full: runArm(w.dataset.pools, w.dataset.solUsdBars, tvlModel, config, `${tag}-full`),
+        });
+      }
+    }
+  }
+
+  const find = (w: string, c: string, v: string) => cells.find((x) => x.window === w && x.cost === c && x.variant === v);
+  const out: string[] = [];
+  const h = (t: string) => out.push("", "═".repeat(96), t, "═".repeat(96), "");
+
+  h("BACKTEST INTEGRITY — UNIVERSE PER WINDOW (dipilih dari aktivitas di dalam window)");
+  out.push(
+    ...describeBacktestProfile(profile),
+    `Universe        : top ${n} per window by in-window fees, from up to ${candidatesCap} candidates, ` +
+      `modelled TVL band $${env.MIN_TVL_USD}-$${env.MAX_TVL_USD}`,
+    `Swap (baru)     : ${ctx.swapSlippagePct}%/kaki + ${ctx.swapGasSolPerLeg} SOL gas/kaki · exit model fit & envelope`,
+    "",
+    renderTable(
+      [
+        { header: "Window" },
+        { header: "Periode" },
+        { header: "Cache" },
+        { header: "Kandidat", align: "right" },
+        { header: "Universe", align: "right" },
+        { header: "Coverage", align: "right" },
+        { header: "Live-elig", align: "right" },
+        { header: "k", align: "right" },
+        { header: "Ditolak: lahir sesudah / <24 bar / band TVL / di luar top N" },
+      ],
+      meta.map((m) => [
+        m.label,
+        `${m.window.start} -> ${m.window.end}`,
+        m.cache,
+        String(m.selection.candidates),
+        String(m.universe),
+        `${m.coverage.withData}/${m.coverage.n}`,
+        String(m.eligiblePools),
+        m.k === null ? "—" : m.k.toFixed(3),
+        `${m.selection.rejected.bornAfterWindow} / ${m.selection.rejected.noBarsInWindow} / ${m.selection.rejected.tvlBand} / ${m.selection.rejected.belowTopN}`,
+      ]),
+    ),
+  );
+
+  for (const costKey of ["old", "fit", "envelope"]) {
+    h(`PER WINDOW · ${costKey === "old" ? "akuntansi LAMA (swap gratis, exit flat paksa saja)" : `akuntansi baru, exit ${costKey}`} — TIDAK dirata-rata`);
+    for (const w of loaded) {
+      const rows: string[][] = [];
+      for (const v of VARIANTS) {
+        const c = find(w.label, costKey, v.key);
+        const base = find(w.label, costKey, "base");
+        if (!c || !base) continue;
+        const e = figures(c.eligible);
+        const f = figures(c.full);
+        rows.push([
+          v.label,
+          String(e.trades),
+          usd(e.netPnlUsd),
+          v.key === "base" ? "—" : signed(e.netPnlUsd - figures(base.eligible).netPnlUsd),
+          String(f.trades),
+          usd(f.netPnlUsd),
+          signed(f.netPnlUsd - e.netPnlUsd),
+          `${c.eligible.inS?.trades ?? 0}/${c.eligible.outS?.trades ?? 0}`,
+          c.eligible.inS?.payoff == null ? "—" : c.eligible.inS.payoff.toFixed(2),
+          c.eligible.outS?.payoff == null ? "—" : c.eligible.outS.payoff.toFixed(2),
+          c.eligible.inS ? signed(c.eligible.inS.expectancyUsd) : "—",
+          c.eligible.outS ? signed(c.eligible.outS.expectancyUsd) : "—",
+          c.eligible.oosStatus,
+        ]);
+      }
+      out.push(`-- ${w.label} ${w.dataset.window.start} -> ${w.dataset.window.end} --`);
+      out.push(
+        rows.length === 0
+          ? "(tidak ada pool atau k untuk window ini — belum bisa diverifikasi)"
+          : renderTable(
+              [
+                { header: "Varian" },
+                { header: "elig trd", align: "right" },
+                { header: "elig net", align: "right" },
+                { header: "Δ vs base", align: "right" },
+                { header: "full trd", align: "right" },
+                { header: "full net", align: "right" },
+                { header: "selisih", align: "right" },
+                { header: "IS/OOS trd", align: "right" },
+                { header: "IS payoff", align: "right" },
+                { header: "OOS payoff", align: "right" },
+                { header: "IS exp", align: "right" },
+                { header: "OOS exp", align: "right" },
+                { header: "bar (elig)" },
+              ],
+              rows,
+            ),
+        "",
+      );
+    }
+  }
+
+  h("JAWABAN PER VARIAN — naik di SEMUA window DAN lolos bar di SEMUA window?");
+  const answers: Array<{ cost: string; variant: string; per: Array<{ window: string; delta: number | null; status: string }>; answer: string }> = [];
+  for (const costKey of ["fit", "envelope"]) {
+    for (const v of VARIANTS.filter((x) => x.key !== "base")) {
+      const per = loaded.map((w) => {
+        const c = find(w.label, costKey, v.key);
+        const base = find(w.label, costKey, "base");
+        return {
+          window: w.label,
+          delta: c && base ? figures(c.eligible).netPnlUsd - figures(base.eligible).netPnlUsd : null,
+          status: c ? c.eligible.oosStatus : "belum bisa diverifikasi",
+        };
+      });
+      const answer = per.some((p) => p.delta === null || p.status === "belum bisa diverifikasi")
+        ? "BELUM BISA DIVERIFIKASI"
+        : per.every((p) => (p.delta ?? 0) > 0 && p.status === "lolos")
+          ? "YA"
+          : "TIDAK";
+      answers.push({ cost: costKey, variant: v.key, per, answer });
+      out.push(
+        `${costKey.padEnd(8)} ${v.label.padEnd(32)} ` +
+          per.map((p) => `${p.window} ${p.delta === null ? "—" : signed(p.delta)} (${p.status})`).join(" · ") +
+          `  ->  ${answer}`,
+      );
+    }
+  }
+  out.push(
+    "",
+    "Bar = payoff > 1 DAN expectancy > 0 di kedua paruh window, minimal 8 trade per paruh.",
+    "k = rasio TVL/volume HARI INI dipakai untuk window lama. Universe dipilih dengan fee di window (bukan hasil strategi).",
+    "Kandidat dibatasi lifetime volume; pool mati yang lahir sebelum walk urut-pembuatan tidak terlihat.",
+  );
+
+  const report = out.join("\n");
+  console.log(report);
+  writeFileSync(resolve(process.cwd(), WINDOW_REPORT_PATH), report, "utf8");
+  const strip = (a: ArmRun) => ({ pools: a.pools, summary: a.result?.summary ?? null, inSample: a.inS, outOfSample: a.outS, oosStatus: a.oosStatus });
+  writeFileSync(
+    resolve(process.cwd(), WINDOW_SUMMARY_PATH),
+    JSON.stringify(
+      { generatedAt: new Date().toISOString(), n, candidatesCap, profile, windows: meta, cells: cells.map((c) => ({ ...c, eligible: strip(c.eligible), full: strip(c.full) })), answers, report },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+  console.log(`\n[integrity] wrote ${WINDOW_REPORT_PATH} and ${WINDOW_SUMMARY_PATH}`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
