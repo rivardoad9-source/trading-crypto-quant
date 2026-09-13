@@ -403,6 +403,56 @@ export async function getRawAccount(address: string): Promise<RawAccount | null>
   };
 }
 
+/** The parts of a confirmed transaction's meta the exit-economics ledger reads. */
+export interface TransactionMetaReading {
+  /** Account keys in message order, static keys first; index 0 is the fee payer. */
+  accountKeys: string[];
+  fee: number;
+  err: unknown;
+  preBalances: number[];
+  postBalances: number[];
+  preTokenBalances: Array<{ accountIndex: number; mint: string; owner?: string; uiTokenAmount: { amount: string; decimals: number } }>;
+  postTokenBalances: Array<{ accountIndex: number; mint: string; owner?: string; uiTokenAmount: { amount: string; decimals: number } }>;
+}
+
+/**
+ * Reads a transaction's meta, or null when the node has no record of the signature.
+ * Throws on a transport or RPC error — "not found" and "could not ask" are different facts.
+ * Read-only; signs nothing.
+ */
+export async function getTransactionMeta(signature: string): Promise<TransactionMetaReading | null> {
+  const res = await rpc<{
+    transaction: { message: { accountKeys: Array<string | { pubkey: string }> } };
+    meta: {
+      fee: number;
+      err: unknown;
+      preBalances: number[];
+      postBalances: number[];
+      preTokenBalances?: TransactionMetaReading["preTokenBalances"];
+      postTokenBalances?: TransactionMetaReading["postTokenBalances"];
+      loadedAddresses?: { writable?: string[]; readonly?: string[] };
+    } | null;
+  } | null>("getTransaction", [
+    signature,
+    { encoding: "json", commitment: "confirmed", maxSupportedTransactionVersion: 0 },
+  ]);
+  if (!res || !res.meta) return null;
+  const staticKeys = res.transaction.message.accountKeys.map((k) => (typeof k === "string" ? k : k.pubkey));
+  return {
+    accountKeys: [
+      ...staticKeys,
+      ...(res.meta.loadedAddresses?.writable ?? []),
+      ...(res.meta.loadedAddresses?.readonly ?? []),
+    ],
+    fee: res.meta.fee,
+    err: res.meta.err,
+    preBalances: res.meta.preBalances,
+    postBalances: res.meta.postBalances,
+    preTokenBalances: res.meta.preTokenBalances ?? [],
+    postTokenBalances: res.meta.postTokenBalances ?? [],
+  };
+}
+
 /* ------------------------------------------------------------------ */
 /* Holder concentration                                                */
 /* ------------------------------------------------------------------ */

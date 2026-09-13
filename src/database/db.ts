@@ -168,6 +168,36 @@ export function initDatabase(): void {
    * token may be a rug", this says "this token's economics cannot clear the strategy".
    */
   addColumnIfMissing("scan_funnel_cycles", "exec_transfer_fee_rejected", "INTEGER DEFAULT 0");
+  /*
+   * What a live exit ACTUALLY cost, one row per closed position (13 Sep 2026). The exit
+   * cost model in `src/backtest/exitCost.ts` stood on three hand-collected points; this is
+   * where the rest accumulate. A new TABLE rather than columns on simulated_positions: a
+   * measurement can be backfilled or re-derived without touching the trade row, and a NULL
+   * here ("not measured") must never be confused with a column that did not exist yet.
+   * UNIQUE(position_id) is what makes the backfill idempotent.
+   */
+  db.exec(`CREATE TABLE IF NOT EXISTS exit_economics (
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    position_id              TEXT NOT NULL UNIQUE,
+    pair_name                TEXT,
+    mint                     TEXT,
+    bin_step                 INTEGER,
+    notional_lamports        INTEGER,
+    tvl_usd_at_exit          REAL,
+    entry_tvl_usd            REAL,
+    pool_price_at_exit       REAL,
+    sweep_route              TEXT,
+    sweep_slippage_bps_used  INTEGER,
+    sweep_in_amount          TEXT,
+    sweep_out_lamports       INTEGER,
+    expected_out_lamports    INTEGER,
+    exit_fee_lamports        INTEGER,
+    exit_cost_bps            REAL,
+    sweep_concession_bps     REAL,
+    source                   TEXT NOT NULL,
+    measured_at              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    notes                    TEXT
+  )`);
 
   initialised = true;
   console.log(`[db] ready at ${dbPath}`);

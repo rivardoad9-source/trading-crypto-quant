@@ -1,0 +1,15 @@
+{
+  "_why": "Failed live opens with both legs on record, for `npm run exitcosts:backfill -- --from=csv:...` off the live host (the DB backfill reads live_execution_attempts itself). Kept out of src/ because a base58 signature is the same shape as a secret key, and src/ is scanned for those.",
+  "failedOpens": [
+    {
+      "positionId": "attempt-5",
+      "poolAddress": "J3wZVx37wfEpGNjBHiJyuGZf948jsFe3toCiMkD4D1oz",
+      "pairName": "NEARKAT-SOL",
+      "mint": "6UtY9iTZMQQ5QZVrbzFnNaJntV7oySm9k97mvwnuZcxr",
+      "swapSignature": "5ZKh1EetUfWimNwjtCX7XYbrA7bpDrAUQo4yksbHtXwuK7DBqRAxUNtJfZHwN48P6oupCwREV7xjnjT458mr7vs2",
+      "unwindSignature": "WVwNrBwMBoYFAkavVn2FRgj11bmABrcK5jpb6t3z1PMi236VUVT9nB9qrrxY3msWAe1nbufetZfZ2XCiB3zhFJn",
+      "entryTvlUsd": null,
+      "source": "docs/incidents/2026-09-13-token2022-transfer-fee-nearkat.md (live_execution_attempts id 5)"
+    }
+  ]
+}

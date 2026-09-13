@@ -1,4 +1,5 @@
 import { db } from "./db.js";
+import type { ExitEconomicsRow } from "../services/exitEconomics.js";
 import {
   CLOSED_STATUSES,
   COOLDOWN_STATUSES,
@@ -1336,4 +1337,58 @@ export function clearLiveExecutionAttempts(olderThanHours = 0): number {
           .run(`-${olderThanHours} hours`)
       : db.prepare(`DELETE FROM live_execution_attempts`).run();
   return result.changes;
+}
+
+/* ------------------------------------------------------------------ */
+/* Exit economics                                                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Writes one exit measurement unless the position already has one. Returns whether a row
+ * was written. Insert-if-absent, never upsert: a live measurement taken at the close is
+ * better evidence than a later backfill, and running the backfill twice must add nothing.
+ */
+export function insertExitEconomicsIfAbsent(row: ExitEconomicsRow): boolean {
+  const result = db
+    .prepare(
+      `INSERT OR IGNORE INTO exit_economics (
+         position_id, pair_name, mint, bin_step, notional_lamports, tvl_usd_at_exit,
+         entry_tvl_usd, pool_price_at_exit, sweep_route, sweep_slippage_bps_used,
+         sweep_in_amount, sweep_out_lamports, expected_out_lamports, exit_fee_lamports,
+         exit_cost_bps, sweep_concession_bps, source, notes
+       ) VALUES (
+         @positionId, @pairName, @mint, @binStep, @notionalLamports, @tvlUsdAtExit,
+         @entryTvlUsd, @poolPriceAtExit, @sweepRoute, @sweepSlippageBpsUsed,
+         @sweepInAmount, @sweepOutLamports, @expectedOutLamports, @exitFeeLamports,
+         @exitCostBps, @sweepConcessionBps, @source, @notes
+       )`,
+    )
+    .run({ ...row, notes: row.notes.length ? row.notes.join(" | ") : null });
+  return result.changes > 0;
+}
+
+export interface ExitEconomicsDbRow {
+  position_id: string;
+  pair_name: string | null;
+  mint: string | null;
+  bin_step: number | null;
+  notional_lamports: number | null;
+  tvl_usd_at_exit: number | null;
+  entry_tvl_usd: number | null;
+  pool_price_at_exit: number | null;
+  sweep_route: string | null;
+  sweep_slippage_bps_used: number | null;
+  sweep_in_amount: string | null;
+  sweep_out_lamports: number | null;
+  expected_out_lamports: number | null;
+  exit_fee_lamports: number | null;
+  exit_cost_bps: number | null;
+  sweep_concession_bps: number | null;
+  source: string;
+  measured_at: string;
+  notes: string | null;
+}
+
+export function listExitEconomics(): ExitEconomicsDbRow[] {
+  return db.prepare(`SELECT * FROM exit_economics ORDER BY measured_at, id`).all() as ExitEconomicsDbRow[];
 }
