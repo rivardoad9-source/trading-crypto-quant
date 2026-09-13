@@ -58,6 +58,7 @@ import {
   solSide,
   type ExecutionAuthorization,
   type OnchainConfig,
+  closeRebuildDecision,
 } from "../services/onchainExecutor.js";
 
 const srcDir = fileURLToPath(new URL("..", import.meta.url));
@@ -1991,5 +1992,19 @@ describe("onchain executor — the WIDE funding path proves it can pay before it
       0,
       "a chunk is still built from the bound-once deposit",
     );
+  });
+});
+
+describe("closeRebuildDecision — a close is rebuilt only while the position still exists", () => {
+  it("stops ONLY on an absent account; present or unreadable rebuilds as before", () => {
+    assert.equal(closeRebuildDecision("absent"), "stop-already-closed");
+    assert.equal(closeRebuildDecision("funded"), "rebuild");
+    assert.equal(closeRebuildDecision("empty"), "rebuild");
+    /*
+     * The asymmetry is the point. Stopping on "unreadable" would abandon an open position
+     * because an RPC timed out; rebuilding on "absent" sends a close the program must refuse
+     * and leaves the row ACTIVE for a position that no longer exists.
+     */
+    assert.equal(closeRebuildDecision("unreadable"), "rebuild");
   });
 });

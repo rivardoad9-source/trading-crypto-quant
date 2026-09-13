@@ -1673,6 +1673,80 @@ export interface DlmmExecutor {
     auth: ExecutionAuthorization,
     params: CloseOrphanPositionParams,
   ): Promise<OrphanPositionOutcome>;
+  /**
+   * What the chain holds at a position address RIGHT NOW: gone, an empty account, or one
+   * still holding liquidity or fees. Read-only, by address (no owner-index lag). Throws
+   * when it cannot tell — "unreadable" is the caller's to decide, never guessed here.
+   */
+  readPositionState(
+    auth: ExecutionAuthorization,
+    params: ClosePositionParams,
+  ): Promise<PositionChainState>;
+  /**
+   * The last-resort residual sale: quote selling `amount` of the paired token for SOL
+   * DIRECTLY in the position's own pool. Read-only.
+   */
+  quotePoolSaleToSol(params: PoolSaleParams): Promise<PoolSaleQuote>;
+  /**
+   * Sells in that pool with a FIXED minimum out, supplied by the caller from a quote it
+   * has already judged. The floor is not re-derived on a rebuild: a retry that silently
+   * lowered it would sell below what was approved.
+   */
+  sellToSolInPool(
+    auth: ExecutionAuthorization,
+    params: PoolSaleParams & { minOutLamports: string },
+  ): Promise<SendResult>;
+}
+
+/** What `readPositionState` found. */
+export type PositionChainState = "absent" | "empty" | "funded";
+
+export interface PoolSaleParams {
+  poolAddress: string;
+  /** The paired token being sold. The pool's OTHER side must be wSOL, or it is refused. */
+  mint: string;
+  /** Base units, as a decimal string — it can exceed 2^53. */
+  amount: string;
+  /** Exit-leg bound for the quote; clamped by `resolveExitSlippageBps`. */
+  slippageBps?: number;
+}
+
+export interface PoolSaleQuote {
+  /** Lamports of SOL the pool quotes for the whole amount. */
+  outLamports: string;
+  /** `outLamports` less the slippage bound, as the SDK computes it. */
+  minOutLamports: string;
+  slippageBps: number;
+}
+
+/**
+ * Whether a close transaction may be REBUILT after its blockhash expired, given what the
+ * chain now says about the position.
+ *
+ * WHY (13 Sep 2026). A live close needed blockhash-expired rebuilds 1-4/8 and 1-3/8 before
+ * landing. Rebuilding is safe for the SIGNATURE — an expired blockhash cannot land — but
+ * not for the STATE: the previous attempt can have confirmed in the gap the confirmation
+ * poll missed. Rebuilding then sends a withdraw-and-close against an account that no
+ * longer exists, the program refuses it, the close is reported FAILED, the row stays
+ * ACTIVE, and every later tick retries a close of a position that is already gone.
+ *
+ * An absent account is the one fact that settles it: this sequence's job is to close the
+ * account, and it is closed. Anything else — present, or unreadable — rebuilds exactly as
+ * before, because "the RPC did not answer" is not evidence the close landed, and stopping
+ * on it would abandon a position that is still open.
+ */
+export function closeRebuildDecision(
+  state: PositionChainState | "unreadable",
+): "stop-already-closed" | "rebuild" {
+  return state === "absent" ? "stop-already-closed" : "rebuild";
+}
+
+/** Thrown from inside a builder to end a sequence whose goal the chain already reached. */
+class SequenceAlreadySettled extends Error {
+  constructor() {
+    super("the chain already reflects this sequence's outcome");
+    this.name = "SequenceAlreadySettled";
+  }
 }
 
 /*
@@ -2513,17 +2587,31 @@ async function sendSequentially(
      * build produces the same bytes.
      */
     rebuildableRejection?: (logs: string[] | null, message: string) => boolean;
+    /**
+     * Asked before EVERY rebuild (attempt > 0), before any bytes are built. Answering
+     * "stop" ends the sequence as already settled: the signatures of this slot's earlier
+     * attempts are looked up, any that confirmed are recorded as landed, and nothing
+     * further is sent. See `closeRebuildDecision` — only the close uses it.
+     */
+    beforeRebuild?: (index: number, attempt: number) => Promise<"proceed" | "stop">;
   },
 ): Promise<SendResult[]> {
   const landed: SendResult[] = [];
 
   for (const [index, original] of transactions.entries()) {
     const label = `dlmm ${context.operation} ${index + 1}/${transactions.length}`;
+    const attemptSignatures: string[] = [];
     try {
       landed.push(
         await sendAndConfirm(
           auth,
           async ({ blockhash, plan, attempt }) => {
+            if (attempt > 0 && context.beforeRebuild) {
+              if ((await context.beforeRebuild(index, attempt)) === "stop") {
+                throw new SequenceAlreadySettled();
+              }
+            }
+
             let source = original;
 
             if (attempt > 0 && context.rebuild) {
@@ -2560,16 +2648,73 @@ async function sendSequentially(
               prepared?.requestedUnits ?? null,
             );
           },
-          { label, rebuildableRejection: context.rebuildableRejection },
+          {
+            label,
+            rebuildableRejection: context.rebuildableRejection,
+            onAttempt: ({ signature }) => attemptSignatures.push(signature),
+          },
         ),
       );
     } catch (err) {
+      if (err instanceof SequenceAlreadySettled) {
+        /*
+         * The chain already holds the outcome. Record what can be PROVEN landed — an
+         * earlier attempt of this slot whose signature the cluster reports confirmed —
+         * and send nothing more. Nothing is invented: a slot whose signatures cannot be
+         * found contributes no signature, and the caller decides what that means.
+         */
+        const statuses = await getConnection()
+          .getSignatureStatuses(attemptSignatures, { searchTransactionHistory: true })
+          .catch(() => null);
+        statuses?.value.forEach((status, i) => {
+          if (status && status.err === null && attemptSignatures[i]) {
+            landed.push({
+              signature: attemptSignatures[i]!,
+              slot: status.slot ?? null,
+              buildAttempts: i + 1,
+              priorityMicroLamports: 0,
+            });
+          }
+        });
+        console.warn(
+          `[onchain] ${label}: NOT rebuilding — the chain says this operation's outcome ` +
+            `already happened (${landed.length} signature(s) confirmed); nothing more sent`,
+        );
+        return landed;
+      }
       if (landed.length === 0) throw err;
       throw new DlmmPartialExecutionError(context.operation, context.position, landed, err);
     }
   }
 
   return landed;
+}
+
+/** `closeRebuildDecision`'s input, read by address. A read that throws is "unreadable". */
+async function positionStateOrUnreadable(
+  pool: DlmmPool,
+  owner: PublicKey,
+  positionAddress: string,
+): Promise<PositionChainState | "unreadable"> {
+  try {
+    const position = await readPositionDirect(pool, owner, positionAddress);
+    if (position === null) return "absent";
+    return positionHoldsValue(position.positionData) ? "funded" : "empty";
+  } catch {
+    return "unreadable";
+  }
+}
+
+/**
+ * The newest CONFIRMED, successful signature that touched `address`, or null.
+ *
+ * For a position account that no longer exists, that is the transaction that closed it —
+ * which is how a close that landed while the engine believed it failed is recorded with
+ * the chain's own signature instead of an invented one.
+ */
+export async function findLastSuccessfulSignature(address: string): Promise<string | null> {
+  const sigs = await getConnection().getSignaturesForAddress(new PublicKey(address), { limit: 10 }, "confirmed");
+  return sigs.find((s) => s.err === null)?.signature ?? null;
 }
 
 /**
@@ -2806,11 +2951,41 @@ async function withdrawClaimAndClose(
     shouldClaimAndClose: true,
   });
 
+  /*
+   * Before any REBUILD of a close transaction, ask the chain whether the close already
+   * happened. See `closeRebuildDecision` — this is the state-aware half of the retry.
+   */
+  const beforeRebuild = async (): Promise<"proceed" | "stop"> => {
+    const state = await positionStateOrUnreadable(pool, auth.wallet, address);
+    return closeRebuildDecision(state) === "stop-already-closed" ? "stop" : "proceed";
+  };
+
   if (transactions.length === 0) {
-    throw new DlmmExecutionError(`position ${address} produced no close transaction`);
+    /*
+     * Nothing to withdraw. Before 13 Sep 2026 this threw unconditionally, so a position
+     * already emptied by an earlier, partly-landed close could never be closed by the
+     * engine: every tick rebuilt the same empty withdrawal and failed the same way, with
+     * the row ACTIVE. When the account genuinely holds NO value — no liquidity AND no
+     * fees, the same test the orphan recovery uses — closing it is the rent refund only
+     * and loses nothing. When it still holds anything, the throw stands: closing would
+     * discard what is in it.
+     */
+    if (positionHoldsValue(position.positionData)) {
+      throw new DlmmExecutionError(`position ${address} produced no close transaction`);
+    }
+    console.warn(
+      `[onchain/dlmm] ${address}: holds no liquidity and no fees; closing the empty ` +
+        `account for its rent instead of withdrawing`,
+    );
+    const closeTx = await pool.closePosition({ owner: auth.wallet, position });
+    return sendSequentially(auth, [closeTx], {
+      operation: `${operation} (empty account)`,
+      position: address,
+      beforeRebuild,
+    });
   }
 
-  return sendSequentially(auth, transactions, { operation, position: address });
+  return sendSequentially(auth, transactions, { operation, position: address, beforeRebuild });
 }
 
 export const dlmmExecutor: DlmmExecutor = {
@@ -3522,4 +3697,83 @@ export const dlmmExecutor: DlmmExecutor = {
     const sent = await withdrawClaimAndClose(auth, pool, position, "closeOrphanPosition");
     return { state: "closed", ...held, signatures: sent.map((s) => s.signature) };
   },
+
+  async readPositionState(
+    auth: ExecutionAuthorization,
+    params: ClosePositionParams,
+  ): Promise<PositionChainState> {
+    const pool = await openPool(params.poolAddress);
+    const position = await readPositionDirect(pool, auth.wallet, params.positionAddress);
+    if (position === null) return "absent";
+    return positionHoldsValue(position.positionData) ? "funded" : "empty";
+  },
+
+  async quotePoolSaleToSol(params: PoolSaleParams): Promise<PoolSaleQuote> {
+    const pool = await openPool(params.poolAddress);
+    const { swapForY } = poolSaleSide(pool, params);
+    const slippageBps = resolveExitSlippageBps(params.slippageBps);
+    const binArrays = await pool.getBinArrayForSwap(swapForY);
+    // isPartialFill false: a pool that cannot absorb the whole amount throws, never half-quotes.
+    const quote = pool.swapQuote(new BN(params.amount), swapForY, new BN(slippageBps), binArrays);
+    return {
+      outLamports: quote.outAmount.toString(),
+      minOutLamports: quote.minOutAmount.toString(),
+      slippageBps,
+    };
+  },
+
+  async sellToSolInPool(
+    auth: ExecutionAuthorization,
+    params: PoolSaleParams & { minOutLamports: string },
+  ): Promise<SendResult> {
+    const pool = await openPool(params.poolAddress);
+    const { swapForY, mint, wsol } = poolSaleSide(pool, params);
+    const minOut = new BN(params.minOutLamports);
+    if (minOut.lten(0)) {
+      throw new DlmmExecutionError(
+        `refusing a pool sale of ${params.mint} with a minimum out of ${params.minOutLamports} ` +
+          `lamports — a sale with no floor is not an exit, it is a donation`,
+      );
+    }
+
+    // Selling a token moves SOL TO the wallet; there is no spend to bound beyond the fee.
+    return sendAndConfirm(
+      auth,
+      async ({ blockhash, plan }) => {
+        // Bin arrays are re-read per build: the route through the book moves; the floor does not.
+        const binArrays = await pool.getBinArrayForSwap(swapForY);
+        const route = pool.swapQuote(new BN(params.amount), swapForY, new BN(resolveExitSlippageBps(params.slippageBps)), binArrays);
+        const tx = await pool.swap({
+          inToken: mint,
+          outToken: wsol,
+          inAmount: new BN(params.amount),
+          minOutAmount: minOut,
+          lbPair: pool.pubkey,
+          user: auth.wallet,
+          binArraysPubkey: route.binArraysPubkey,
+        });
+        return asVersionedTransaction(tx, blockhash, plan, auth.wallet, []);
+      },
+      { label: `dlmm pool sale of ${params.mint}` },
+    );
+  },
 };
+
+/** Which way a pool sale of the paired token runs; refuses a pool with no wSOL side. */
+function poolSaleSide(
+  pool: DlmmPool,
+  params: PoolSaleParams,
+): { swapForY: boolean; mint: PublicKey; wsol: PublicKey } {
+  const mint = new PublicKey(params.mint);
+  const wsol = new PublicKey(WSOL_MINT);
+  if (pool.tokenX.publicKey.equals(mint) && pool.tokenY.publicKey.equals(wsol)) {
+    return { swapForY: true, mint, wsol };
+  }
+  if (pool.tokenY.publicKey.equals(mint) && pool.tokenX.publicKey.equals(wsol)) {
+    return { swapForY: false, mint, wsol };
+  }
+  throw new DlmmExecutionError(
+    `pool ${params.poolAddress} does not pair ${params.mint} with wSOL; refusing to sell ` +
+      `through it`,
+  );
+}

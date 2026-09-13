@@ -47,7 +47,9 @@ import {
   isSlippageRejection,
   resolveExitSlippageBps,
   closeEmptyTokenAccount,
+  findLastSuccessfulSignature,
   type CloseTokenAccountOutcome,
+  type PositionChainState,
   onchainConfig,
   quoteOpenCost,
   rehearseOpenPosition,
@@ -1997,6 +1999,8 @@ export interface ResidualSweep {
   /** The confirmed sell, when there was one. */
   signature: string | null;
   error: string | null;
+  /** Which route sold it, when one did. Optional so rows and fixtures written before it still type. */
+  route?: "jupiter" | "dlmm-pool";
 }
 
 /** Whether the wallet balance after this sweep is the trade's final effect. */
@@ -2025,6 +2029,65 @@ export interface ResidualSweepDeps {
   swapToSol(mint: string, amount: bigint, slippageBps?: number): Promise<string>;
   /** Pages the operator. Its own failure is swallowed by the caller. */
   alert(message: string): Promise<unknown>;
+  /**
+   * The LAST RESORT, after every Jupiter rung failed: quote selling `amount` straight into
+   * the pool the position just left. Optional so a caller without a pool (and every
+   * existing test harness) keeps the ladder-then-page behaviour exactly.
+   */
+  quotePoolSale?(mint: string, amount: bigint): Promise<{ outLamports: number; minOutLamports: number }>;
+  /** Sells into that pool with a FIXED minimum out; returns the confirmed signature or throws. */
+  sellInPool?(mint: string, amount: bigint, minOutLamports: number): Promise<string>;
+}
+
+export interface PoolSaleVerdict {
+  ok: boolean;
+  /** The floor the sale is sent with. 0 when refused. */
+  minOutLamports: number;
+  reason: string | null;
+}
+
+/**
+ * Whether the pool's own quote is fit to sell into, and at what floor.
+ *
+ * WHY THIS CHECK EXISTS. The pool route runs only after Jupiter refused the sale at every
+ * bound up to the exit cap — i.e. when the market is already moving or thin. Jupiter's
+ * quote, taken before the ladder, is the best independent reading of what the token is
+ * worth. A pool quoting LESS than that by more than the exit cap is not a fallback, it is
+ * a worse market than the one just refused, and selling into it would be the weaker second
+ * swap path this route must not be. So it is refused before anything is signed.
+ *
+ * The floor is the STRICTER of the pool's own slippage-bounded minimum and the market
+ * estimate less the cap. Both are at or below the pool's quoted out once the check passes,
+ * so the floor never demands more than the pool says it will pay.
+ *
+ * A market estimate that is missing or non-positive fails CLOSED: with nothing to judge the
+ * pool against, the pool's word alone is not enough to sell on.
+ */
+export function assessPoolSaleQuote(input: {
+  quoteOutLamports: number;
+  quoteMinOutLamports: number;
+  marketEstimateLamports: number | null;
+  capBps: number;
+}): PoolSaleVerdict {
+  const { quoteOutLamports, quoteMinOutLamports, marketEstimateLamports, capBps } = input;
+  if (marketEstimateLamports === null || !(marketEstimateLamports > 0)) {
+    return { ok: false, minOutLamports: 0, reason: "no market estimate to judge the pool quote against" };
+  }
+  if (!(quoteOutLamports > 0) || !Number.isFinite(quoteOutLamports)) {
+    return { ok: false, minOutLamports: 0, reason: `the pool quoted ${quoteOutLamports} lamports out` };
+  }
+  const cap = Math.max(0, Math.min(10_000, Math.floor(capBps)));
+  const marketFloor = Math.floor((marketEstimateLamports * (10_000 - cap)) / 10_000);
+  if (quoteOutLamports < marketFloor) {
+    return {
+      ok: false,
+      minOutLamports: 0,
+      reason:
+        `the pool quotes ${quoteOutLamports} lamports, below the market estimate ` +
+        `${marketEstimateLamports} less the ${cap} bps exit cap (${marketFloor})`,
+    };
+  }
+  return { ok: true, minOutLamports: Math.max(Math.floor(quoteMinOutLamports), marketFloor), reason: null };
 }
 
 /**
@@ -2165,6 +2228,7 @@ export async function sweepResidualPairedToken(
     try {
       result.signature = await deps.swapToSol(mint, balance, slippageBps);
       result.state = "swept";
+      result.route = "jupiter";
       console.log(
         `[live] ${context.pairName}: swept ${result.amount} base units of ${mint} back to SOL ` +
           `(~${(result.estimatedLamports / LAMPORTS_PER_SOL).toFixed(6)} SOL at ${slippageBps} bps, ` +
@@ -2185,14 +2249,55 @@ export async function sweepResidualPairedToken(
     }
   }
 
+  /*
+   * LAST RESORT: the pool the position just left. It still holds the other side of this
+   * token (the position was withdrawn from it seconds ago), so it is the one venue known
+   * to have a book for it even when Jupiter's routes refuse. Judged against Jupiter's own
+   * estimate by `assessPoolSaleQuote` BEFORE anything is signed, and sold with a fixed floor.
+   */
+  const jupiterError = lastError ?? result.error;
+  let poolError: string | null = null;
+  if (result.state !== "swept" && deps.quotePoolSale && deps.sellInPool) {
+    try {
+      const quote = await deps.quotePoolSale(mint, balance);
+      const verdict = assessPoolSaleQuote({
+        quoteOutLamports: quote.outLamports,
+        quoteMinOutLamports: quote.minOutLamports,
+        marketEstimateLamports: result.estimatedLamports,
+        capBps: ladder[ladder.length - 1]!,
+      });
+      if (!verdict.ok) throw new Error(`refused before signing: ${verdict.reason}`);
+      console.warn(
+        `[live] ${context.pairName}: Jupiter refused the residual sale at every bound; selling ` +
+          `${result.amount} base units of ${mint} directly into the pool (quote ${quote.outLamports} ` +
+          `lamports, floor ${verdict.minOutLamports})`,
+      );
+      result.signature = await deps.sellInPool(mint, balance, verdict.minOutLamports);
+      result.state = "swept";
+      result.route = "dlmm-pool";
+      result.error = null;
+      console.log(
+        `[live] ${context.pairName}: swept ${result.amount} base units of ${mint} through the ` +
+          `pool (${result.signature})`,
+      );
+    } catch (err) {
+      poolError = err instanceof Error ? err.message : String(err);
+      result.error = `jupiter: ${jupiterError} | pool: ${poolError}`;
+    }
+  }
+
   if (result.state !== "swept") {
     result.state = "failed";
+    // Amount, mint and value FIRST: `sendError` truncates, and those are what a human needs.
     await page(
       `RESIDUAL TOKEN NOT SWEPT — ${result.amount} base units of ${mint} ` +
         `(~${(result.estimatedLamports / LAMPORTS_PER_SOL).toFixed(6)} SOL) left in the ` +
         `wallet; the sell back to SOL failed at every bound up to ${ladder[ladder.length - 1]} bps: ` +
-        `${lastError ?? result.error}. Check the chain before selling: the swap's outcome may ` +
-        `be ambiguous.`,
+        `${jupiterError}.` +
+        (deps.quotePoolSale && deps.sellInPool
+          ? ` The direct pool sale failed too: ${poolError}.`
+          : " No pool route was available.") +
+        ` Check the chain before selling: the swap's outcome may be ambiguous.`,
     );
   }
 
@@ -2245,6 +2350,25 @@ export function defaultResidualSweepDeps(
       return sold.result.signature;
     },
     alert: (message) => sendError("closeLivePosition/residual", new Error(message)),
+    async quotePoolSale(mint, amount) {
+      const quote = await dlmmExecutor.quotePoolSaleToSol({
+        poolAddress,
+        mint,
+        amount: amount.toString(),
+        slippageBps: exitSlippageCapBps(),
+      });
+      return { outLamports: Number(quote.outLamports), minOutLamports: Number(quote.minOutLamports) };
+    },
+    async sellInPool(mint, amount, minOutLamports) {
+      const sold = await dlmmExecutor.sellToSolInPool(auth, {
+        poolAddress,
+        mint,
+        amount: amount.toString(),
+        slippageBps: exitSlippageCapBps(),
+        minOutLamports: String(minOutLamports),
+      });
+      return sold.signature;
+    },
   };
 }
 
@@ -2286,6 +2410,13 @@ export interface LiveCloseDeps {
   /** Every non-zero token balance the wallet holds, SPL Token AND Token-2022. Throws on failure. */
   listTokenBalances(): Promise<TokenBalanceReading[]>;
   readWalletLamports(): Promise<number | null>;
+  /**
+   * The position account's state on-chain, read by ADDRESS. Optional so existing harnesses
+   * keep the old behaviour (no precheck). Throwing means "unreadable".
+   */
+  readPositionState?(params: { poolAddress: string; positionAddress: string }): Promise<PositionChainState>;
+  /** The newest successful signature on the position address — its close, once it is gone. */
+  findCloseSignature?(positionAddress: string): Promise<string | null>;
 }
 
 function defaultLiveCloseDeps(poolAddress: string): LiveCloseDeps {
@@ -2307,6 +2438,8 @@ function defaultLiveCloseDeps(poolAddress: string): LiveCloseDeps {
     },
     listTokenBalances: () => listWalletTokenBalances(auth.wallet),
     readWalletLamports,
+    readPositionState: (p) => dlmmExecutor.readPositionState(auth, p),
+    findCloseSignature: (positionAddress) => findLastSuccessfulSignature(positionAddress),
   };
 }
 
@@ -2574,10 +2707,55 @@ export async function closeLivePosition(
   },
   deps: LiveCloseDeps = defaultLiveCloseDeps(params.poolAddress),
 ): Promise<LiveCloseOutcome> {
-  const signatures = await deps.closeOnChain({
-    poolAddress: params.poolAddress,
-    positionAddress: params.positionAddress,
-  });
+  const target = { poolAddress: params.poolAddress, positionAddress: params.positionAddress };
+
+  /*
+   * STATE BEFORE ACTION (13 Sep 2026). A close can land while the engine records it as
+   * failed — a confirmation poll that gave up, an RPC error after broadcast — and the row
+   * then stays ACTIVE, so the next tick sends a SECOND close for an account that no longer
+   * exists. The program refuses it, the row stays ACTIVE forever, and the residual token the
+   * first close returned is never swept. So the account is read first, by address:
+   *
+   *   absent     the close already happened. Nothing is sent; the chain's own newest
+   *              signature on the address is recorded as the close. If that cannot be read
+   *              the call THROWS rather than invent one — the row stays ACTIVE and the next
+   *              tick looks again, which costs a read, not a transaction.
+   *   otherwise  close as before. "Unreadable" also closes as before: an RPC that did not
+   *              answer is not evidence the position is gone.
+   */
+  let state: PositionChainState | "unreadable" = "unreadable";
+  if (deps.readPositionState) {
+    try {
+      state = await deps.readPositionState(target);
+    } catch {
+      state = "unreadable";
+    }
+  }
+
+  let signatures: string[];
+  if (state === "absent") {
+    let found: string | null = null;
+    try {
+      found = deps.findCloseSignature ? await deps.findCloseSignature(params.positionAddress) : null;
+    } catch {
+      found = null;
+    }
+    if (!found) {
+      throw new Error(
+        `position ${params.positionAddress} is already GONE on-chain but its closing signature ` +
+          `could not be read; NOT sending a second close. The row stays active and the next ` +
+          `check reads the chain again.`,
+      );
+    }
+    console.warn(
+      `[live] ${params.pairName}: position ${params.positionAddress} was already closed on-chain ` +
+        `(${found}) — an earlier close landed while it was reported failed; recording that close ` +
+        `instead of sending another`,
+    );
+    signatures = [found];
+  } else {
+    signatures = await deps.closeOnChain(target);
+  }
 
   const closeSignature = signatures.at(-1);
   if (!closeSignature) throw new Error("closePosition returned no signature");
