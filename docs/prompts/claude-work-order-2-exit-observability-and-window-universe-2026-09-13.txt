@@ -1,0 +1,84 @@
+WORK ORDER #2 untuk Claude Code (LOKAL) — 13 Sep 2026
+Repo: ~/flowmetrix-ai-agent (branch dari `main` yang sekarang, ujungnya `b115a71`).
+Branch baru: work/exit-observability-and-window-universe
+Kerjain DUA hal aja: **A. Exit-cost observability** dan **B. Universe per window**.
+Jangan kerjain yang lain (P2 dashboard, gate, TP: JANGAN).
+
+KONTEKS (angka hari ini, jangan diukur ulang):
+- Trade live: 5 closed, semua TP, buku +$49.14; 2 attempt gagal −0.093927 SOL.
+- Model biaya exit kita cuma berdiri di **3 observasi** (MANLET bin_step 80 → 0.60%;
+  EMBER bin_step 200 → 3.95%; NEARKAT bin_step 400 → 1.43% per kaki). Itu terlalu tipis
+  buat mutusin TP/gate. Tugas A bikin observasinya jadi terkumpul otomatis tiap trade.
+- Window-2 di `npm run backtest:integrity` **kosong (7 pool, 0 trade)** karena universe-nya
+  dipilih dari pool yang aktif di sekitar window TERBARU. Tugas B benerin itu.
+- Skema yang sudah ada: `simulated_positions` punya `entry_price, exit_price, entry_tvl,
+  deposited_sol_lamports, deposited_paired_amount, close_signature, swap_signature,
+  sweep_signature, ata_close_signature, residual_sweep, wallet_lamports_before/after`.
+  Yang BELUM ada: `bin_step`, harga pool saat exit, harga FILL exit, rung slippage yang
+  kepakai, route sweep, SOL yang benar-benar keluar, fee exit. Itu yang ditambah.
+
+== A. EXIT-COST OBSERVABILITY ==
+A1. Tabel baru `exit_economics` (bikin lewat pola migrasi yang sudah ada di `src/database/db.ts`,
+    `CREATE TABLE IF NOT EXISTS`), satu row per posisi live yang ditutup. Kolom minimal:
+    `position_id, pair_name, mint, bin_step, notional_lamports, tvl_usd_at_exit,
+    pool_price_at_exit, sweep_route ('jupiter'|'dlmm-pool'|null), sweep_slippage_bps_used,
+    sweep_in_amount, sweep_out_lamports, expected_out_lamports (nilai di harga pool),
+    exit_fee_lamports (total fee tx exit), exit_cost_bps, source ('live'|'backfill'),
+    measured_at, notes`.
+A2. Tiap close live HARUS nulis row ini SETELAH sweep selesai, di jalur yang sama dengan
+    penulisan row posisi (jangan bikin jalur kedua yang lebih lemah). Aturan hitung:
+    - `expected_out_lamports` = nilai token yang disapu di HARGA POOL saat exit (sebelum impact).
+    - `exit_cost_bps` = (expected_out − sweep_out) / notional × 10.000, per kaki; kalau sweep
+      nggak jalan (dust/gagal) → null + `notes` yang jelasin, JANGAN nol.
+    - `exit_fee_lamports` dari tx meta signature yang sudah tersimpan
+      (`close_signature`, `sweep_signature`, `ata_close_signature`): jumlahkan `meta.fee` +
+      delta priority fee kalau kebaca. JANGAN pakai delta wallet `wallet_lamports_before/after`
+      — itu sudah terbukti nggak final untuk posisi yang ditutup.
+    - Kalau ada tx yang nggak kebaca: tulis row dengan null + `notes` (contoh "tx meta X
+      unreadable: <err>"). Jangan pernah nulis angka yang nggak terukur.
+A3. Backfill: `npm run exitcosts:backfill` — baca 5 posisi live yang sudah ditutup + 1 failed
+    open NEARKAT (dari signature yang sudah tersimpan), parse tx meta via RPC, tulis row
+    `source='backfill'`. Idempoten (jalan 2x nggak dobel). Ini langsung ngasih ~6 titik
+    kalibrasi tanpa nunggu trade baru.
+A4. Report: `npm run report:exitcosts` — cetak tabel kalibrasi (bin_step, notional/TVL,
+    observed bps, fit, envelope) + refit konstanta `src/backtest/exitCost.ts` dan CETAK
+    perbandingannya dengan konstanta sekarang (fit = a·bin_step% + b·TVL%, envelope = c·bin_step%).
+    JANGAN auto-edit konstantanya — cuma laporkan, biar keputusan ganti konstanta ada di manusia.
+    Plus: berapa observasi yang dibutuhin sampai fit stabil (bootstrapping sederhana, mis.
+    std error vs n) — biar kita tau kapan angkanya layak dipakai.
+A5. Test: parser tx meta + derivasi dengan meta sintetis; idempotensi backfill; kasus tx
+    nggak kebaca → null + notes (bukan angka); kasus sweep gagal → null, bukan 0.
+
+== B. UNIVERSE PER WINDOW ==
+B1. Flag `--per-window-universe` di `runIntegrity` (DEFAULT OFF, supaya run lama tetap
+    reproducible bit-identik). Nyala = universe dipilih dari AKTIVITAS DI DALAM window itu
+    (top N by volume/fee di window tsb, N sama dengan sekarang), bukan dari pool yang aktif
+    di sekitar window terbaru.
+B2. Cache per window: `.cache/historical_data_window_<start>_<end>.json`. Ingest wajib
+    RESUME-ABLE (kalau cache ada dan `--refresh` nggak dikasih, pakai cache) dan cetak
+    progress per pool. Tambah mode `--ingest-only` (cuma fetch + simpan cache, tanpa analisis)
+    supaya ingest panjang bisa dijalankan di background.
+B3. `--windows=3` + `--per-window-universe` → laporan PER WINDOW (jangan dirata-rata):
+    trade, net live-eligible, net full universe, selisih, IS/OOS split, status bar
+    (payoff > 1 DAN expectancy > 0 di kedua paruh, minimal 8 trade per paruh).
+    Tambah kolom "universe coverage": berapa pool di universe window itu yang benar-benar
+    punya data di window tsb (biar kelihatan kalau window-nya terlalu tua untuk sampelnya).
+B4. Kalau satu window nggak memenuhi bar, tulis "belum bisa diverifikasi" — jangan dianggap
+    menang dan jangan rata-ratakan dengan window lain.
+B5. Test: pemilihan universe per window dengan data sintetis (pool yang lahir setelah window
+    tidak ikut keambil); flag OFF → hasil identik dengan sekarang; cache hit/miss.
+
+== ATURAN (sama seperti work order #1) ==
+- JANGAN deploy, JANGAN restart pm2, JANGAN ubah `.env`, JANGAN kirim transaksi.
+- Jangan ubah nilai default di `src/config/env.ts` / `src/services/onchainExecutor.ts`, dan
+  jangan sentuh test baseline V1.1. Semua variasi lewat flag.
+- JANGAN tambah file yang meng-import `src/services/onchainExecutor.ts` (allowlist di
+  `onchainExecutor.test.ts` = boundary keamanan). Butuh sesuatu? Lewat bridge `liveExecution.ts`.
+- `npm run typecheck` + `npm test` WAJIB hijau (baseline sekarang **926/926 pass, 0 fail**).
+- Output file: `backtest_*_summary.json` / `backtest_micro_capital_report.txt` (pola lain
+  ke-ignore .gitignore).
+- Laporan: Indonesia, tabel, angka mentah + section "yang gw nggak bisa klaim".
+- Commit kecil dengan pesan yang jelasin KENAPA. Push ke branch, jangan main.
+
+PRIORITAS: **A dulu** (A1–A5), karena itu yang bikin keputusan TP/gate bisa dipercaya.
+B nyusul. Kalau harus milih satu: A2 + A3 (tulis otomatis + backfill 6 titik).
