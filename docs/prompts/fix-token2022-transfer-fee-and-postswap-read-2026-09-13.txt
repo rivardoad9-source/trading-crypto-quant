@@ -1,5 +1,20 @@
 TASK BRIEF — 13 Sep 2026 (Hermes) — P0: Token-2022 transfer-fee mints are unscreened
 Repo: trading-crypto-quant (server ~/flowmetrix-ai-agent)
+
+>>> STATUS: IMPLEMENTED + DEPLOYED 13 Sep 2026 08:29 WIB by Hermes (no local Claude
+>>> available). Commit: this push. Incident write-up:
+>>> docs/incidents/2026-09-13-token2022-transfer-fee-nearkat.md. Reading this as a task
+>>> list? Don't — it is a record. What shipped: Task 1.1 (funnel screen, new
+>>> `transferFee` bucket + `exec_transfer_fee_rejected` column +
+>>> `LIVE_MAX_TOKEN_TRANSFER_FEE_BPS`, default 0, fail-closed, hook + non-transferable
+>>> also refused) and Tasks 2.1/2.2 (`readPostSwapTokenBalance`: 3 attempts + the
+>>> wallet-wide token listing as a second source; the ATA derivation already passed the
+>>> pool's own token program, now asserted). Task 1.2 (folding the fee into the friction
+>>> gate's cost model) was deliberately NOT done — it needs operator sign-off because the
+>>> V1.1 gate parameters are frozen. Task 2.3 partially: the 0x23 withheld-fee refusal is
+>>> still a generic failed close, but it no longer looks like a mystery (logged with the
+>>> reason, rent noted). Verification: 871/871 tests, typecheck clean, real-mint check via
+>>> scripts/verifyTokenFee.ts (NEARKAT → REFUSED 300 bps; EMBER/MANLET → allowed).
 Incident: docs/incidents/… (to be written by whoever implements; raw evidence in this file)
 
 ====================================================================

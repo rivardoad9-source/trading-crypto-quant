@@ -746,6 +746,15 @@ export interface ScanFunnelRecord {
    * the failure the funnel ordering fix of 8 Sep 2026 was about.
    */
   execTokenBenchRejected: number;
+  /**
+   * Refused because the paired mint charges a Token-2022 transfer fee (or carries a
+   * transfer hook / non-transferable flag) — 13 Sep 2026.
+   *
+   * Its own bucket, and read before an operator touches any threshold: this is the one
+   * gate that says "the strategy cannot profit from this pool at any price move", so a
+   * non-zero count here is a fact about the TOKEN UNIVERSE rather than about a setting.
+   */
+  execTransferFeeRejected: number;
   antirugPassed: number;
   antirugRejected: number;
   volatilityRejected: number;
@@ -778,7 +787,7 @@ export function recordScanFunnel(record: ScanFunnelRecord): void {
        scanned, screen_rejections, screener_candidates, held_excluded,
        candidates, cooldown_rejected, execution_rejected,
        exec_denylist_rejected, exec_breaker_rejected, exec_bincap_rejected,
-       exec_no_wsol_rejected, exec_token_bench_rejected,
+       exec_no_wsol_rejected, exec_token_bench_rejected, exec_transfer_fee_rejected,
        antirug_passed, antirug_rejected, volatility_rejected,
        coverage_rejected, micro_rejected, reached_decision, opened,
        skip_reason, positions_checked, positions_closed, duration_ms
@@ -786,7 +795,7 @@ export function recordScanFunnel(record: ScanFunnelRecord): void {
        @scanned, @screenRejections, @screenerCandidates, @heldExcluded,
        @candidates, @cooldownRejected, @executionRejected,
        @execDenylistRejected, @execBreakerRejected, @execBinCapRejected,
-       @execNoWsolRejected, @execTokenBenchRejected,
+       @execNoWsolRejected, @execTokenBenchRejected, @execTransferFeeRejected,
        @antirugPassed, @antirugRejected, @volatilityRejected,
        @coverageRejected, @microRejected, @reachedDecision, @opened,
        @skipReason, @positionsChecked, @positionsClosed, @durationMs
@@ -814,6 +823,7 @@ interface RawFunnelRow {
   exec_bincap_rejected: number | null;
   exec_no_wsol_rejected: number | null;
   exec_token_bench_rejected: number | null;
+  exec_transfer_fee_rejected: number | null;
   antirug_passed: number;
   antirug_rejected: number;
   volatility_rejected: number;
@@ -852,6 +862,7 @@ export function getScanFunnel(limit = 100): ScanFunnelRow[] {
     execBinCapRejected: r.exec_bincap_rejected ?? 0,
     execNoWsolRejected: r.exec_no_wsol_rejected ?? 0,
     execTokenBenchRejected: r.exec_token_bench_rejected ?? 0,
+    execTransferFeeRejected: r.exec_transfer_fee_rejected ?? 0,
     antirugPassed: r.antirug_passed,
     antirugRejected: r.antirug_rejected,
     volatilityRejected: r.volatility_rejected,

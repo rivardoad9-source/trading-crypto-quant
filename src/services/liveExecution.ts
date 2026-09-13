@@ -852,6 +852,112 @@ async function readTokenBalanceOrNull(
 }
 
 /**
+ * The POST-SWAP balance read — retried, and confirmed by a second source.
+ *
+ * 13 Sep 2026: `NEARKAT-SOL`'s balancing swap CONFIRMED, the very next read of the
+ * token account answered `Invalid param: could not find account`, the single unretried
+ * attempt below was taken as "nothing arrived", the open aborted, and the auto-unwind
+ * sold the tokens back for 0.822476 of the 0.901586 SOL that had just left the wallet —
+ * 0.079110 SOL of real money, 8.77% of the swap, spent to learn that an ATA created
+ * inside a confirmed swap transaction can briefly be invisible to the next read.
+ *
+ * The account did exist: seconds later the engine tried to CLOSE it and the Token-2022
+ * program refused because it still held a withheld-fee balance. So this is a measurement
+ * problem, not a chain problem, and the abort was the expensive reaction to it.
+ *
+ * Three attempts with a short backoff, then the wallet's FULL token list as an
+ * independent second source (both token programs, one call). A genuine zero is still a
+ * zero and still aborts the open the way it must — the point is only that "the read did
+ * not answer" stops being reported as "the swap delivered nothing".
+ *
+ * Never throws: the caller already has an unwind for a zero balance, and a read failure
+ * here must not become a different exception that skips it.
+ */
+export interface PostSwapReadDeps {
+  readPaired: (
+    owner: PublicKey,
+    mint: PublicKey,
+    tokenProgramId: PublicKey,
+  ) => Promise<bigint | null>;
+  listBalances: (owner: PublicKey) => Promise<TokenBalanceReading[]>;
+  sleep: (ms: number) => Promise<void>;
+}
+
+const POST_SWAP_READ_ATTEMPTS = 3;
+/**
+ * 1.5s then 3s. The swap's destination account is created INSIDE the swap transaction,
+ * so the gap being waited out is one node's propagation lag — seconds, not confirmations.
+ */
+const POST_SWAP_READ_DELAYS_MS = [1500, 3000];
+
+function defaultPostSwapReadDeps(): PostSwapReadDeps {
+  return {
+    readPaired: (owner, mint, tokenProgramId) =>
+      readTokenBalanceOrNull(owner, mint, tokenProgramId),
+    listBalances: (owner) => listWalletTokenBalances(owner),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  };
+}
+
+export async function readPostSwapTokenBalance(
+  owner: PublicKey,
+  mint: PublicKey,
+  tokenProgramId: PublicKey,
+  deps: PostSwapReadDeps = defaultPostSwapReadDeps(),
+): Promise<bigint> {
+  for (let attempt = 1; attempt <= POST_SWAP_READ_ATTEMPTS; attempt += 1) {
+    let read: bigint | null = null;
+    try {
+      read = await deps.readPaired(owner, mint, tokenProgramId);
+    } catch (err) {
+      console.warn(
+        `[live] post-swap balance read ${attempt}/${POST_SWAP_READ_ATTEMPTS} threw: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    if (read !== null && read > 0n) return read;
+
+    if (attempt < POST_SWAP_READ_ATTEMPTS) {
+      const delay = POST_SWAP_READ_DELAYS_MS[attempt - 1] ?? 3000;
+      console.warn(
+        `[live] post-swap balance for ${mint.toBase58()} read as ` +
+          `${read === null ? "unreadable" : "zero"} on attempt ${attempt}/` +
+          `${POST_SWAP_READ_ATTEMPTS}; retrying in ${delay}ms`,
+      );
+      try {
+        await deps.sleep(delay);
+      } catch {
+        // A sleep that cannot be taken must not end the loop's evidence gathering.
+      }
+    }
+  }
+
+  /*
+   * The second source, and it answers a different question from the retries: not "what
+   * does this ATA hold" but "what does the WALLET hold". If the two disagree the wallet
+   * is right — it is the account the deposit is funded from.
+   */
+  try {
+    const listed = await deps.listBalances(owner);
+    const hit = listed.find((b) => b.mint === mint.toBase58());
+    if (hit) {
+      console.log(
+        `[live] the paired-token read never answered for ${mint.toBase58()}, but the ` +
+          `wallet's own token listing shows ${hit.amount} base unit(s) — using it`,
+      );
+      return BigInt(hit.amount);
+    }
+  } catch (err) {
+    console.warn(
+      `[live] the wallet's token listing also failed: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  return 0n;
+}
+
+/**
  * The wallet's lamports, for reconciliation bookkeeping only.
  *
  * NEVER throws and never returns 0 as a stand-in: a balance that could not be read is
@@ -1590,12 +1696,17 @@ export async function openLivePosition(params: {
    * leaves no record that the pool cost anything, which is precisely the combination
    * the breaker exists to notice. A zero balance now falls into the catch as well, so
    * the rescue at least RE-READS the chain before concluding there is nothing to sell.
+   *
+   * 13 Sep 2026: the read itself is no longer a single attempt. `readPostSwapTokenBalance`
+   * retries three times and then asks the wallet's full token listing, because that
+   * evening one unretried read of an ATA the swap had just created cost 0.079110 SOL of
+   * real money in a forced round trip. A zero from that function is now a measured zero.
    */
   let pairedAmount = 0n;
 
   try {
     // The chain, not the quote.
-    pairedAmount = await readTokenBalance(auth.wallet, pairedMint, pairedTokenProgram);
+    pairedAmount = await readPostSwapTokenBalance(auth.wallet, pairedMint, pairedTokenProgram);
 
     if (pairedAmount === 0n) {
       throw new Error("the swap confirmed but no token balance could be read");

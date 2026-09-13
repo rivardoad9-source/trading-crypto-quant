@@ -366,6 +366,44 @@ export async function getMintAuthorities(mint: string): Promise<MintAuthorities>
 }
 
 /* ------------------------------------------------------------------ */
+/* Raw account bytes                                                   */
+/* ------------------------------------------------------------------ */
+
+export interface RawAccount {
+  /** The program that owns the account — for a mint, its token program. */
+  owner: string;
+  data: Uint8Array;
+  lamports: number;
+}
+
+/**
+ * An account's raw bytes and owning program, or null when it does not exist.
+ *
+ * The RAW view, not `jsonParsed`, is what the Token-2022 extension screen reads: the
+ * mint's extension layout is fixed by the token program rather than by the provider's
+ * parser, so decoding it here keeps the answer ours. See `services/tokenExtensions.ts`
+ * for why the entry path needs it at all (13 Sep 2026, a 3% transfer-fee mint elected
+ * and the round trip costing 8.77%).
+ *
+ * Null means "no such account", which is a different fact from a thrown error: a mint
+ * that does not exist and a node that did not answer must not read the same.
+ */
+export async function getRawAccount(address: string): Promise<RawAccount | null> {
+  const res = await rpc<{
+    value: { owner: string; lamports: number; data: [string, string] } | null;
+  }>("getAccountInfo", [address, { encoding: "base64" }]);
+
+  const value = res.value;
+  if (!value) return null;
+
+  return {
+    owner: value.owner,
+    lamports: value.lamports,
+    data: Buffer.from(value.data[0], "base64"),
+  };
+}
+
+/* ------------------------------------------------------------------ */
 /* Holder concentration                                                */
 /* ------------------------------------------------------------------ */
 

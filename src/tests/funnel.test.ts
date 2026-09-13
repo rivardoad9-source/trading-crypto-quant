@@ -57,6 +57,7 @@ const hermesCycle = {
   execBinCapRejected: 26,
   execNoWsolRejected: 0,
   execTokenBenchRejected: 0,
+  execTransferFeeRejected: 0,
   antirugPassed: 0,
   antirugRejected: 4,
   volatilityRejected: 0,
@@ -103,7 +104,8 @@ describe("entry funnel — the stages have to add up", () => {
         row.execBreakerRejected +
         row.execBinCapRejected +
         row.execNoWsolRejected +
-        row.execTokenBenchRejected,
+        row.execTokenBenchRejected +
+        row.execTransferFeeRejected,
       row.executionRejected,
       "the per-gate counts disagree with the total",
     );
@@ -143,7 +145,8 @@ describe("entry funnel — the stages have to add up", () => {
         row.execBreakerRejected +
         row.execBinCapRejected +
         row.execNoWsolRejected +
-        row.execTokenBenchRejected,
+        row.execTokenBenchRejected +
+        row.execTransferFeeRejected,
       row.executionRejected,
       "the per-gate counts disagree with the total",
     );
@@ -187,6 +190,9 @@ describe("entry funnel — the stages have to add up", () => {
       tokenBench: 0,
       noWsol: 1,
       binCap: 2,
+      // A token that taxes every transfer cannot clear the take-profit at any momentum,
+      // which is a different answer for the operator than any of the gates above.
+      transferFee: 0,
     });
 
     // Empty input still names every gate: a missing key would render as "undefined" in
@@ -197,6 +203,7 @@ describe("entry funnel — the stages have to add up", () => {
       tokenBench: 0,
       noWsol: 0,
       binCap: 0,
+      transferFee: 0,
     });
   });
 });
