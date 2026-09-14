@@ -444,6 +444,23 @@ const EnvSchema = z
     LIVE_FAILED_COST_WINDOW_HOURS: numeric(24),
 
     /**
+     * TOKEN CONCENTRATION (14 Sep 2026). Four of the first five live trades were one token
+     * (EMBER) inside ~21 hours: every one of them rode the same price move, so the sample
+     * that reads as "5 wins" is closer to one bet taken four times. This gate counts
+     * CONFIRMED live opens per paired-token mint (`live_execution_attempts`, outcome
+     * `opened`) inside the window and flags a candidate whose token has reached the limit.
+     *
+     * "report" (default) only logs and records the flag — the engine's entries are
+     * unchanged, because the operator is holding config frozen while the live sample
+     * grows, and this rule would have refused two of those four EMBER trades, both
+     * winners. "enforce" removes flagged pools before the LLM sees the list.
+     */
+    LIVE_TOKEN_CONCENTRATION_MODE: z.enum(["report", "enforce"]).default("report"),
+    /** Confirmed live opens per token allowed inside the window; the next one is flagged. */
+    LIVE_MAX_ENTRIES_PER_TOKEN: numeric(2),
+    LIVE_TOKEN_ENTRY_WINDOW_HOURS: numeric(24),
+
+    /**
      * The largest Token-2022 TRANSFER FEE (basis points) a pool's paired mint may carry
      * and still be opened. Default 0: any transfer fee at all is refused.
      *
@@ -706,6 +723,22 @@ const EnvSchema = z
      * it would block every entry the moment one lamport of failure was measured, while
      * reading like "no budget configured".
      */
+    if (!Number.isInteger(cfg.LIVE_MAX_ENTRIES_PER_TOKEN) || cfg.LIVE_MAX_ENTRIES_PER_TOKEN < 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["LIVE_MAX_ENTRIES_PER_TOKEN"],
+        message:
+          "LIVE_MAX_ENTRIES_PER_TOKEN must be a whole number of at least 1; zero would flag " +
+          "every token. Use LIVE_TOKEN_CONCENTRATION_MODE=report to keep the gate advisory.",
+      });
+    }
+    if (!(cfg.LIVE_TOKEN_ENTRY_WINDOW_HOURS > 0)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["LIVE_TOKEN_ENTRY_WINDOW_HOURS"],
+        message: "LIVE_TOKEN_ENTRY_WINDOW_HOURS must be positive.",
+      });
+    }
     if (cfg.LIVE_MAX_FAILED_COST_SOL <= 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

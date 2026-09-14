@@ -756,6 +756,17 @@ export interface ScanFunnelRecord {
    * non-zero count here is a fact about the TOKEN UNIVERSE rather than about a setting.
    */
   execTransferFeeRejected: number;
+  /** Removed by the token-concentration gate in ENFORCE mode (part of `executionRejected`). Absent = 0. */
+  execTokenConcentrationRejected?: number;
+  /** Flagged by that gate in either mode; in report mode, the entries it WOULD have refused. Absent = 0. */
+  concentrationFlagged?: number;
+  /** Pools on the list the LLM decided over; null when no decision was reached. */
+  shortlistSize?: number | null;
+  llmPickPool?: string | null;
+  llmPickPair?: string | null;
+  /** The shadow rule's pick on the SAME shortlist: highest fee/TVL. */
+  rulePickPool?: string | null;
+  rulePickPair?: string | null;
   antirugPassed: number;
   antirugRejected: number;
   volatilityRejected: number;
@@ -789,6 +800,8 @@ export function recordScanFunnel(record: ScanFunnelRecord): void {
        candidates, cooldown_rejected, execution_rejected,
        exec_denylist_rejected, exec_breaker_rejected, exec_bincap_rejected,
        exec_no_wsol_rejected, exec_token_bench_rejected, exec_transfer_fee_rejected,
+       exec_token_concentration_rejected, concentration_flagged,
+       shortlist_size, llm_pick_pool, llm_pick_pair, rule_pick_pool, rule_pick_pair,
        antirug_passed, antirug_rejected, volatility_rejected,
        coverage_rejected, micro_rejected, reached_decision, opened,
        skip_reason, positions_checked, positions_closed, duration_ms
@@ -797,12 +810,21 @@ export function recordScanFunnel(record: ScanFunnelRecord): void {
        @candidates, @cooldownRejected, @executionRejected,
        @execDenylistRejected, @execBreakerRejected, @execBinCapRejected,
        @execNoWsolRejected, @execTokenBenchRejected, @execTransferFeeRejected,
+       @execTokenConcentrationRejected, @concentrationFlagged,
+       @shortlistSize, @llmPickPool, @llmPickPair, @rulePickPool, @rulePickPair,
        @antirugPassed, @antirugRejected, @volatilityRejected,
        @coverageRejected, @microRejected, @reachedDecision, @opened,
        @skipReason, @positionsChecked, @positionsClosed, @durationMs
      )`,
   ).run({
     ...record,
+    execTokenConcentrationRejected: record.execTokenConcentrationRejected ?? 0,
+    concentrationFlagged: record.concentrationFlagged ?? 0,
+    shortlistSize: record.shortlistSize ?? null,
+    llmPickPool: record.llmPickPool ?? null,
+    llmPickPair: record.llmPickPair ?? null,
+    rulePickPool: record.rulePickPool ?? null,
+    rulePickPair: record.rulePickPair ?? null,
     screenRejections: JSON.stringify(record.screenRejections),
     reachedDecision: record.reachedDecision ? 1 : 0,
     opened: record.opened ? 1 : 0,
@@ -825,6 +847,13 @@ interface RawFunnelRow {
   exec_no_wsol_rejected: number | null;
   exec_token_bench_rejected: number | null;
   exec_transfer_fee_rejected: number | null;
+  exec_token_concentration_rejected?: number | null;
+  concentration_flagged?: number | null;
+  shortlist_size?: number | null;
+  llm_pick_pool?: string | null;
+  llm_pick_pair?: string | null;
+  rule_pick_pool?: string | null;
+  rule_pick_pair?: string | null;
   antirug_passed: number;
   antirug_rejected: number;
   volatility_rejected: number;
@@ -864,6 +893,13 @@ export function getScanFunnel(limit = 100): ScanFunnelRow[] {
     execNoWsolRejected: r.exec_no_wsol_rejected ?? 0,
     execTokenBenchRejected: r.exec_token_bench_rejected ?? 0,
     execTransferFeeRejected: r.exec_transfer_fee_rejected ?? 0,
+    execTokenConcentrationRejected: r.exec_token_concentration_rejected ?? 0,
+    concentrationFlagged: r.concentration_flagged ?? 0,
+    shortlistSize: r.shortlist_size ?? null,
+    llmPickPool: r.llm_pick_pool ?? null,
+    llmPickPair: r.llm_pick_pair ?? null,
+    rulePickPool: r.rule_pick_pool ?? null,
+    rulePickPair: r.rule_pick_pair ?? null,
     antirugPassed: r.antirug_passed,
     antirugRejected: r.antirug_rejected,
     volatilityRejected: r.volatility_rejected,
@@ -1264,6 +1300,34 @@ export function settleOpenedLiveAttempt(positionAddress: string, walletLamportsA
     )
     .run({ after: Math.round(walletLamportsAfter), position: positionAddress });
   return info.changes;
+}
+
+/**
+ * Confirmed live opens inside the last `hours`, for the token-concentration gate
+ * (`services/tokenConcentration.ts`). Only `outcome = 'opened'`: a failed attempt is the
+ * execution breaker's business, and counting it here would bench a token twice for one fault.
+ */
+export function listRecentOpenedAttempts(hours: number): Array<{
+  attemptedAt: string;
+  poolAddress: string;
+  tokenMint: string | null;
+  pairName: string | null;
+}> {
+  return db
+    .prepare(
+      `SELECT attempted_at AS attemptedAt, pool_address AS poolAddress,
+              token_mint AS tokenMint, pair_name AS pairName
+       FROM live_execution_attempts
+       WHERE outcome = 'opened'
+         AND datetime(attempted_at) >= datetime('now', ?)
+       ORDER BY datetime(attempted_at)`,
+    )
+    .all(`-${hours} hours`) as Array<{
+    attemptedAt: string;
+    poolAddress: string;
+    tokenMint: string | null;
+    pairName: string | null;
+  }>;
 }
 
 export function sumFailedAttemptCost(hours: number): FailedAttemptCost {
