@@ -55,6 +55,38 @@ export interface WindowSelection {
   selected: Array<WindowCandidate & { inWindowFeesUsd: number; inWindowBars: number }>;
   /** Why each candidate was not selected, keyed by reason. */
   rejected: Record<"bornAfterWindow" | "noBarsInWindow" | "tvlBand" | "belowTopN", number>;
+  /**
+   * `rejected.tvlBand` split by side. The band rejected 79 of W2's and 71 of W3's candidates
+   * in the 14 Sep run; whether they were too SMALL or too LARGE decides what would fix it
+   * (a deeper dead-cohort walk finds small pools; it cannot shrink a SOL-USDC-scale one).
+   */
+  tvlBandDetail: { belowMin: number; aboveMax: number };
+}
+
+/**
+ * How far the candidate list reaches. Stored with the partial file and the dataset, so a run
+ * asking for a wider reach than the cache was built with re-picks instead of silently hitting
+ * a narrower cache.
+ */
+export interface IngestParams {
+  candidatesCap: number;
+  survivorPages: number;
+  cohortPages: number;
+}
+
+/** What the 14 Sep run hardcoded; a cache without recorded params was built with these pages. */
+export const LEGACY_INGEST_PAGES = { survivorPages: 12, cohortPages: 40 } as const;
+
+/** Defaults of `--candidates` / `--survivor-pages` / `--cohort-pages` on the per-window path. */
+export const DEFAULT_INGEST_PARAMS: IngestParams = { candidatesCap: 200, ...LEGACY_INGEST_PAGES };
+
+/** True when a list built with `have` already reaches at least as far as `want` asks. */
+export function ingestCovers(have: IngestParams, want: IngestParams): boolean {
+  return (
+    have.candidatesCap >= want.candidatesCap &&
+    have.survivorPages >= want.survivorPages &&
+    have.cohortPages >= want.cohortPages
+  );
 }
 
 const median = (xs: number[]): number => {
@@ -80,6 +112,7 @@ export function selectWindowUniverse(input: {
   tvlBand?: { minUsd: number; maxUsd: number; k: number };
 }): WindowSelection {
   const rejected: WindowSelection["rejected"] = { bornAfterWindow: 0, noBarsInWindow: 0, tvlBand: 0, belowTopN: 0 };
+  const tvlBandDetail = { belowMin: 0, aboveMax: 0 };
   const ranked: WindowSelection["selected"] = [];
 
   for (const c of input.candidates) {
@@ -101,6 +134,8 @@ export function selectWindowUniverse(input: {
       const modelledTvl = input.tvlBand.k * median(daily);
       if (modelledTvl < input.tvlBand.minUsd || modelledTvl > input.tvlBand.maxUsd) {
         rejected.tvlBand++;
+        if (modelledTvl < input.tvlBand.minUsd) tvlBandDetail.belowMin++;
+        else tvlBandDetail.aboveMax++;
         continue;
       }
     }
@@ -110,7 +145,7 @@ export function selectWindowUniverse(input: {
   ranked.sort((a, b) => b.inWindowFeesUsd - a.inWindowFeesUsd || a.pool.address.localeCompare(b.pool.address));
   const selected = ranked.slice(0, Math.max(0, input.n));
   rejected.belowTopN = ranked.length - selected.length;
-  return { selected, rejected };
+  return { selected, rejected, tvlBandDetail };
 }
 
 /* ------------------------------------------------------------------ */
@@ -118,7 +153,7 @@ export function selectWindowUniverse(input: {
 /* ------------------------------------------------------------------ */
 
 export interface WindowIngestDeps {
-  buildUniverse(windowDaysBack: number): Promise<UniverseResult>;
+  buildUniverse(windowDaysBack: number, pages: { survivorPages: number; cohortPages: number }): Promise<UniverseResult>;
   fetchBars(address: string, barsWanted: number): Promise<Bar[]>;
   log(line: string): void;
   nowMs(): number;
@@ -126,8 +161,91 @@ export interface WindowIngestDeps {
 
 export interface WindowDataset extends HistoricalDataset {
   window: { start: string; end: string; startSec: number; endSec: number };
-  selection: { candidates: number; rejected: WindowSelection["rejected"]; n: number; k: number | null };
+  selection: {
+    candidates: number;
+    rejected: WindowSelection["rejected"];
+    n: number;
+    k: number | null;
+    /** Absent on datasets written before 14 Sep's work order #3. */
+    tvlBandDetail?: WindowSelection["tvlBandDetail"];
+    /** Candidates whose bars could not be fetched; they never reach the selection. */
+    fetchFailed?: number;
+    ingest?: IngestParams;
+  };
 }
+
+/**
+ * The params a cached file was built with. Legacy files predate recording them; they were
+ * built with the then-default cap `n x 3` (96 at n = 32) and the 12 / 40 pages. A walk that
+ * came back short of its cap left fewer candidates, so the cap is the larger of the two.
+ */
+const recordedIngest = (recorded: IngestParams | undefined, candidateCount: number, n: number): IngestParams =>
+  recorded ?? { candidatesCap: Math.max(candidateCount, n * 3), ...LEGACY_INGEST_PAGES };
+
+export interface WindowFunnel {
+  candidates: number;
+  used: number;
+  fetchFailed: number;
+  rejected: WindowSelection["rejected"];
+  tvlBandDetail: WindowSelection["tvlBandDetail"] | null;
+  coverage: { withData: number; n: number };
+  /** candidates = used + rejections + fetch failures; false means a bug or a torn cache, and is printed. */
+  reconciles: boolean;
+  /** The listing walk returned fewer candidates than the cap: the pages bound, not the cap. */
+  walkExhausted: boolean | null;
+  /** Null when the universe reached `n`: nothing binds. */
+  binding: null | { brake: WindowBrake; count: number; short: number };
+}
+
+export type WindowBrake = "bornAfterWindow" | "noBarsInWindow" | "tvlBand" | "fetchFailed";
+
+/**
+ * The window's funnel, reconciled: candidates = used + every rejection + fetch failures.
+ *
+ * When the universe is short of `n`, `binding` names the brake that removed the most
+ * candidates — the one a larger reach would have to get past — with its count. It is a
+ * FINDING about the sample; a thin window's zero trades are never a statement about the
+ * strategy. `belowTopN` is never the binding brake of a short window: a window short of `n`
+ * rejected nobody for rank.
+ */
+export function windowFunnel(dataset: WindowDataset, spec: WindowSpec): WindowFunnel {
+  const sel = dataset.selection;
+  const fetchFailed = sel.fetchFailed ?? 0;
+  const used = dataset.pools.length;
+  const coverage = universeCoverage(dataset.pools, sel.n, spec);
+  const r = sel.rejected;
+  const reconciles = used + r.bornAfterWindow + r.noBarsInWindow + r.tvlBand + r.belowTopN + fetchFailed === sel.candidates;
+  let binding: WindowFunnel["binding"] = null;
+  if (coverage.withData < sel.n) {
+    const brakes: Array<[WindowBrake, number]> = [
+      ["tvlBand", r.tvlBand],
+      ["noBarsInWindow", r.noBarsInWindow],
+      ["bornAfterWindow", r.bornAfterWindow],
+      ["fetchFailed", fetchFailed],
+    ];
+    brakes.sort((a, b) => b[1] - a[1]);
+    const [brake, count] = brakes[0]!;
+    binding = { brake, count, short: sel.n - coverage.withData };
+  }
+  return {
+    candidates: sel.candidates,
+    used,
+    fetchFailed,
+    rejected: r,
+    tvlBandDetail: sel.tvlBandDetail ?? null,
+    coverage,
+    reconciles,
+    walkExhausted: sel.ingest ? sel.candidates < sel.ingest.candidatesCap : null,
+    binding,
+  };
+}
+
+export const BRAKE_LABEL: Record<WindowBrake, string> = {
+  bornAfterWindow: "lahir sesudah window",
+  noBarsInWindow: "<24 bar di window",
+  tvlBand: "band TVL (modelled)",
+  fetchFailed: "fetch bar gagal",
+};
 
 /**
  * TVL / 24h volume, median over candidates that report both today. It is TODAY's ratio
@@ -173,14 +291,18 @@ interface PartialFile {
   window: WindowSpec;
   candidates: UniversePool[];
   failed: Record<string, string>;
+  /** Absent on partial files written before work order #3 (see `recordedIngest`). */
+  ingest?: IngestParams;
   /** Present only in partial files written before bars moved to per-pool files; migrated on read. */
   bars?: Record<string, Bar[]>;
   solUsdBars?: Bar[] | null;
 }
 
-interface BarFile {
+export interface BarFile {
   /** How deep the fetch that produced this file asked to go, in hourly bars. */
   requestedBars: number;
+  /** When that fetch ran (unix seconds); absent on files written before work order #3. */
+  fetchedAtSec?: number;
   bars: Bar[];
 }
 
@@ -202,7 +324,12 @@ const writeJson = (path: string, data: unknown): void => {
   renameSync(`${full}.tmp`, full);
 };
 
-export type CacheOutcome = "hit" | "resumed" | "fresh";
+/**
+ * `extended`: a cached candidate list was built with a narrower reach than asked for, so the
+ * universe was rebuilt and its new pools ADDED to the old list. The old candidates stay —
+ * their bars are already on disk, and a wider reach must never mean a smaller sample.
+ */
+export type CacheOutcome = "hit" | "resumed" | "extended" | "fresh";
 
 /**
  * One file per pool, shared by every window and every run.
@@ -216,17 +343,36 @@ export type CacheOutcome = "hit" | "resumed" | "fresh";
  */
 export const barFilePath = (address: string, cacheDir = ".cache"): string => `${cacheDir}/window_bars/${address}.json`;
 
+/**
+ * Whether a bar file already reaches back to `neededFromSec`.
+ *
+ * A COUNT comparison alone (`requestedBars >= barsWanted`) refetched every pool the day after
+ * a run: the oldest window start is fixed, but "hours from now back to it" grows by 24 a day,
+ * so every file on disk read as too shallow and a 2-3 hour ingest restarted from zero. What
+ * matters is the TIME the request reached: its fetch time (the last bar, for files written
+ * before `fetchedAtSec` was stored) minus the hours it asked for. An empty file with no fetch
+ * time falls back to the count rule — there is nothing to date it by.
+ */
+export function barFileReaches(file: BarFile, barsWanted: number, neededFromSec: number): boolean {
+  if (file.requestedBars >= barsWanted) return true;
+  const fetchedAt = file.fetchedAtSec ?? file.bars[file.bars.length - 1]?.t;
+  if (fetchedAt === undefined) return false;
+  return fetchedAt - file.requestedBars * 3600 <= neededFromSec;
+}
+
 async function barsFor(
   address: string,
   barsWanted: number,
+  neededFromSec: number,
+  nowSec: number,
   cacheDir: string | undefined,
   fetchBars: WindowIngestDeps["fetchBars"],
 ): Promise<{ bars: Bar[]; fromCache: boolean }> {
   const path = barFilePath(address, cacheDir);
   const hit = readJson<BarFile>(path);
-  if (hit && Array.isArray(hit.bars) && hit.requestedBars >= barsWanted) return { bars: hit.bars, fromCache: true };
+  if (hit && Array.isArray(hit.bars) && barFileReaches(hit, barsWanted, neededFromSec)) return { bars: hit.bars, fromCache: true };
   const bars = await fetchBars(address, barsWanted);
-  writeJson(path, { requestedBars: barsWanted, bars } satisfies BarFile);
+  writeJson(path, { requestedBars: barsWanted, fetchedAtSec: nowSec, bars } satisfies BarFile);
   return { bars, fromCache: false };
 }
 
@@ -240,10 +386,15 @@ export async function loadWindowDataset(input: {
   window: WindowSpec;
   n: number;
   candidatesCap: number;
+  /** Listing pages walked for today's survivors / the creation-ordered dead cohort. Default: the 14 Sep 12 / 40. */
+  survivorPages?: number;
+  cohortPages?: number;
   solUsdPool: string;
   refresh: boolean;
   cacheDir?: string;
   barsWanted?: number;
+  /** The oldest instant the bar files must reach (see `barFileReaches`). Default: this window's start. */
+  barsFromSec?: number;
   /**
    * One k for every window, fitted where it CAN be fitted: today's survivors of all ages.
    *
@@ -262,13 +413,22 @@ export async function loadWindowDataset(input: {
   const cachePath = windowCachePath(w, input.cacheDir);
   const partialPath = `${cachePath}.partial.json`;
 
+  const want: IngestParams = {
+    candidatesCap: input.candidatesCap,
+    survivorPages: input.survivorPages ?? LEGACY_INGEST_PAGES.survivorPages,
+    cohortPages: input.cohortPages ?? LEGACY_INGEST_PAGES.cohortPages,
+  };
+  const pages = { survivorPages: want.survivorPages, cohortPages: want.cohortPages };
+
   if (!input.refresh) {
     const hit = readJson<WindowDataset>(cachePath);
     const kMatches = input.kOverride == null || hit?.selection?.k === input.kOverride;
-    if (hit && Array.isArray(hit.pools) && kMatches) return { dataset: hit, cache: "hit", cachePath };
+    const reaches = hit?.selection != null && ingestCovers(recordedIngest(hit.selection.ingest, hit.selection.candidates, input.n), want);
+    if (hit && Array.isArray(hit.pools) && kMatches && reaches) return { dataset: hit, cache: "hit", cachePath };
   }
 
   let partial = input.refresh ? null : readJson<PartialFile>(partialPath);
+  let outcome: CacheOutcome = partial !== null ? "resumed" : "fresh";
   const resumed = partial !== null;
   const daysBack = Math.ceil((deps.nowMs() / 1000 - w.start) / 86_400);
   const barsWanted = input.barsWanted ?? Math.ceil(daysBack * 24 * 1.05);
@@ -285,30 +445,60 @@ export async function loadWindowDataset(input: {
     writeJson(partialPath, partial);
   }
 
+  if (partial) {
+    const have = recordedIngest(partial.ingest, partial.candidates.length, input.n);
+    if (!ingestCovers(have, want)) {
+      deps.log(
+        `[window ${day(w.start)}→${day(w.end)}] cached list reaches cap ${have.candidatesCap} / pages ${have.survivorPages}+${have.cohortPages}; ` +
+          `asked cap ${want.candidatesCap} / pages ${want.survivorPages}+${want.cohortPages} — rebuilding the universe and ADDING to the list…`,
+      );
+      const universe = await deps.buildUniverse(daysBack, pages);
+      const known = new Set(partial.candidates.map((p) => p.address));
+      const added = pickCandidates(universe.pools, w, want.candidatesCap).filter((p) => !known.has(p.address));
+      partial.candidates = [...partial.candidates, ...added];
+      partial.ingest = {
+        candidatesCap: Math.max(have.candidatesCap, want.candidatesCap),
+        survivorPages: Math.max(have.survivorPages, want.survivorPages),
+        cohortPages: Math.max(have.cohortPages, want.cohortPages),
+      };
+      writeJson(partialPath, partial);
+      outcome = "extended";
+      deps.log(`[window ${day(w.start)}] ${known.size} candidates kept from cache, +${added.length} new`);
+    }
+  }
+
   if (!partial) {
     deps.log(`[window ${day(w.start)}→${day(w.end)}] building candidate universe (${daysBack} days back)…`);
-    const universe = await deps.buildUniverse(daysBack);
+    const universe = await deps.buildUniverse(daysBack, pages);
     const candidates = pickCandidates(universe.pools, w, input.candidatesCap);
-    partial = { window: w, candidates, failed: {} };
+    partial = { window: w, candidates, failed: {}, ingest: want };
     writeJson(partialPath, partial);
   }
 
-  const solUsdBars = (await barsFor(input.solUsdPool, barsWanted, input.cacheDir, deps.fetchBars)).bars.filter(
+  const nowSec = Math.floor(deps.nowMs() / 1000);
+  const barsFromSec = input.barsFromSec ?? w.start;
+  const solUsdBars = (await barsFor(input.solUsdPool, barsWanted, barsFromSec, nowSec, input.cacheDir, deps.fetchBars)).bars.filter(
     (b) => b.t >= w.start && b.t < w.end,
   );
 
   const total = partial.candidates.length;
   // Only the in-window slice of each candidate stays in memory.
   const inWindowBars = new Map<string, Bar[]>();
+  let fromDisk = 0;
+  let fetched = 0;
+  const startedMs = deps.nowMs();
   for (const [i, pool] of partial.candidates.entries()) {
     const tag = `[window ${day(w.start)}] ${String(i + 1).padStart(3)}/${total} ${pool.pairName.padEnd(18)}`;
     // A failure recorded by an earlier run is retried: it was a fact about the network then.
     if (resumed && partial.failed[pool.address]) delete partial.failed[pool.address];
     try {
-      const { bars, fromCache } = await barsFor(pool.address, barsWanted, input.cacheDir, deps.fetchBars);
+      const { bars, fromCache } = await barsFor(pool.address, barsWanted, barsFromSec, nowSec, input.cacheDir, deps.fetchBars);
       const slice = bars.filter((b) => b.t >= w.start && b.t < w.end);
       inWindowBars.set(pool.address, slice);
-      deps.log(`${tag} ${slice.length} bars in window${fromCache ? " (cached)" : ""}`);
+      if (fromCache) fromDisk++;
+      else fetched++;
+      const elapsedMin = (deps.nowMs() - startedMs) / 60_000;
+      deps.log(`${tag} ${slice.length} bars in window${fromCache ? " (cached)" : ""} · fetched ${fetched} / cached ${fromDisk} · ${elapsedMin.toFixed(1)} min`);
     } catch (err) {
       partial.failed[pool.address] = err instanceof Error ? err.message : String(err);
       deps.log(`${tag} FAILED: ${partial.failed[pool.address]}`);
@@ -316,6 +506,8 @@ export async function loadWindowDataset(input: {
     }
   }
   writeJson(partialPath, partial);
+  const failed = partial.failed;
+  const fetchFailed = partial.candidates.filter((p) => failed[p.address] !== undefined).length;
 
   const k = input.kOverride ?? kFromCandidates(partial.candidates);
   const selection = selectWindowUniverse({
@@ -350,10 +542,18 @@ export async function loadWindowDataset(input: {
     pools,
     solUsdBars,
     window: { start: day(w.start), end: day(w.end), startSec: w.start, endSec: w.end },
-    selection: { candidates: total, rejected: selection.rejected, n: input.n, k },
+    selection: {
+      candidates: total,
+      rejected: selection.rejected,
+      n: input.n,
+      k,
+      tvlBandDetail: selection.tvlBandDetail,
+      fetchFailed,
+      ingest: partial.ingest ?? want,
+    },
   };
   writeJson(cachePath, dataset);
-  return { dataset, cache: resumed ? "resumed" : "fresh", cachePath };
+  return { dataset, cache: outcome, cachePath };
 }
 
 /** Pools in the universe that have at least a day of bars in the window, over the pools asked for. */
