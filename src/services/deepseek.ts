@@ -151,6 +151,32 @@ export interface StructuredOptions<T> extends ChatOptions {
 }
 
 /**
+ * The provider's response envelope must carry at least one choice.
+ *
+ * Reading `choices[0]` off an envelope that has none threw
+ * `TypeError: Cannot read properties of undefined (reading '0')` from OUTSIDE the
+ * retry loop, so it escaped `structuredCompletion` entirely and aborted a whole
+ * trading cycle. Five consecutive cycles died that way on 15 Sep 2026 (02:00-04:00
+ * WIB, the first of them a `Premature close` transport error) while the logs showed a
+ * stack trace pointing at this line and nothing about the cause.
+ *
+ * An envelope with no choices is a provider failure like any other: it carries no
+ * content to feed back, so it is retried and then reported as a plain Error — never
+ * as a raw TypeError that callers cannot classify.
+ */
+export function firstChoiceOrThrow(
+  res: Pick<OpenAI.Chat.ChatCompletion, "choices"> | null | undefined,
+  model: string,
+): OpenAI.Chat.ChatCompletion.Choice {
+  const choice = res?.choices?.[0];
+  if (!choice) {
+    const keys = res ? Object.keys(res).join(",") || "none" : "no response object";
+    throw new Error(`provider returned no choices (model=${model}; response keys: ${keys})`);
+  }
+  return choice;
+}
+
+/**
  * Requests JSON output and validates it against a Zod schema. On a validation
  * failure the error is fed back to the model so it can repair its own output.
  *
@@ -189,16 +215,40 @@ export async function structuredCompletion<T>(opts: StructuredOptions<T>): Promi
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     truncated = false;
 
-    const res = await client.chat.completions.create({
-      model,
-      messages,
-      response_format: { type: "json_object" },
-      ...(opts.reasoning ? {} : { temperature: opts.temperature ?? 0.2 }),
-      max_tokens: tokenBudget,
-    });
-
-    const choice = res.choices[0];
-    const raw = choice?.message?.content ?? "";
+    // The provider call AND the shape of what came back are retryable failures, not
+    // schema problems: neither carries content to feed back, and neither may escape
+    // this loop. A truncated response body or an envelope with no choices used to
+    // abort the whole trading cycle (5 consecutive cycles on 15 Sep 2026, 02:00-04:00
+    // WIB) with a stack trace that named no cause.
+    let choice: OpenAI.Chat.ChatCompletion.Choice | undefined;
+    let reasoningTokens: number | undefined;
+    let raw = "";
+    try {
+      const res = await client.chat.completions.create({
+        model,
+        messages,
+        response_format: { type: "json_object" },
+        ...(opts.reasoning ? {} : { temperature: opts.temperature ?? 0.2 }),
+        max_tokens: tokenBudget,
+      });
+      choice = firstChoiceOrThrow(res, model);
+      raw = choice.message?.content ?? "";
+      reasoningTokens = (
+        res.usage as { completion_tokens_details?: { reasoning_tokens?: number } } | undefined
+      )?.completion_tokens_details?.reasoning_tokens;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+      console.warn(`[deepseek] provider call attempt ${attempt} failed: ${lastError}`);
+      if (attempt < maxAttempts) {
+        messages.push({
+          role: "user",
+          content:
+            `The previous request returned no usable answer (${lastError}). ` +
+            `Respond again with ONLY a valid JSON object matching the required schema. No prose.`,
+        });
+      }
+      continue;
+    }
 
     try {
       // An empty answer is not a malformed-JSON problem, and reporting it as one hides
@@ -206,9 +256,6 @@ export async function structuredCompletion<T>(opts: StructuredOptions<T>): Promi
       // before it writes `content`, so a budget that runs out arrives here as "" with
       // finish_reason "length" and nothing to parse.
       if (raw.trim() === "") {
-        const reasoningTokens = (
-          res.usage as { completion_tokens_details?: { reasoning_tokens?: number } } | undefined
-        )?.completion_tokens_details?.reasoning_tokens;
         truncated = true;
         throw new Error(
           `empty completion (model=${model}, finish_reason=${choice?.finish_reason ?? "unknown"}` +
