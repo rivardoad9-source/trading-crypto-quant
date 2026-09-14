@@ -312,6 +312,170 @@ describe("an old-format partial file (bars inline) is migrated, not refetched", 
   });
 });
 
+describe("work order #3 — reach as parameters, reuse, funnel", () => {
+  it("splits TVL-band rejections into too small / too large", () => {
+    const sel = selectWindowUniverse({
+      candidates: [
+        { pool: pool("SMALL"), bars: bars(W.start, W.end, 100) }, // 2.4k/day x 0.2 = $480
+        { pool: pool("HUGE"), bars: bars(W.start, W.end, 1_000_000) },
+        { pool: pool("OK"), bars: bars(W.start, W.end, 20_000) },
+      ],
+      window: W,
+      n: 10,
+      tvlBand: { minUsd: 50_000, maxUsd: 500_000, k: 0.2 },
+    });
+    assert.equal(sel.rejected.tvlBand, 2);
+    assert.deepEqual(sel.tvlBandDetail, { belowMin: 1, aboveMax: 1 });
+  });
+
+  it("a bar file fetched YESTERDAY still reaches a fixed window start — no daily refetch of the whole cache", async () => {
+    const { barFileReaches } = await import("../backtest/windowUniverse.js");
+    const oldestStart = W.start;
+    const fetchedYesterday = NOW - DAY;
+    const requested = Math.ceil(((fetchedYesterday - oldestStart) / 3600) * 1.05);
+    const wantedToday = Math.ceil(((NOW - oldestStart) / 3600) * 1.05);
+    const file = { requestedBars: requested, fetchedAtSec: fetchedYesterday, bars: bars(oldestStart, fetchedYesterday, 1) };
+    assert.ok(requested < wantedToday, "the count rule alone would refetch it");
+    assert.equal(barFileReaches(file, wantedToday, oldestStart), true);
+    // Legacy file without fetchedAtSec: dated by its last bar.
+    assert.equal(barFileReaches({ requestedBars: requested, bars: file.bars }, wantedToday, oldestStart), true);
+    // A genuinely shallow file is refetched; an empty undated one falls back to the count rule.
+    assert.equal(barFileReaches({ requestedBars: 24, fetchedAtSec: NOW, bars: [] }, wantedToday, oldestStart), false);
+    assert.equal(barFileReaches({ requestedBars: 10, bars: [] }, wantedToday, oldestStart), false);
+    assert.equal(barFileReaches({ requestedBars: wantedToday, bars: [] }, wantedToday, oldestStart), true);
+  });
+
+  it("EXTENDS a legacy candidate list when asked for a wider reach — old candidates kept, their bars not refetched", async () => {
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    const dir = join(cacheDir, "extend");
+    const w = { start: W.start - 40 * DAY, end: W.start - 30 * DAY };
+    const born = (w.start - DAY) * 1000;
+    const partialPath = `${windowCachePath(w, dir)}.partial.json`;
+    mkdirSync(dirname(partialPath), { recursive: true });
+    // A 14 Sep-shape partial: no recorded ingest params, one candidate, its bars on disk.
+    writeFileSync(partialPath, JSON.stringify({ window: w, candidates: [pool("OLD", { createdAtMs: born })], failed: {} }));
+    const barsWanted = 5_000;
+    mkdirSync(dirname(barFilePath("OLD", dir)), { recursive: true });
+    writeFileSync(barFilePath("OLD", dir), JSON.stringify({ requestedBars: barsWanted, bars: bars(w.start, w.end, 1_000) }));
+    writeFileSync(barFilePath("SOLUSDC", dir), JSON.stringify({ requestedBars: barsWanted, bars: bars(w.start, w.end, 0) }));
+
+    const pagesSeen: Array<{ survivorPages: number; cohortPages: number }> = [];
+    const fetched: string[] = [];
+    const result = await loadWindowDataset({
+      window: w, n: 5, candidatesCap: 200, survivorPages: 12, cohortPages: 80, solUsdPool: "SOLUSDC", refresh: false, cacheDir: dir, barsWanted,
+      deps: {
+        buildUniverse: async (_days, pages) => {
+          pagesSeen.push(pages);
+          return {
+            pools: [pool("OLD", { createdAtMs: born }), pool("NEW1", { createdAtMs: born }), pool("NEW2", { createdAtMs: born, cohort: "dead-or-dormant" })],
+            survivors: 2, deadOrDormant: 1, scanned: 3, totalUniverseSize: 3,
+          };
+        },
+        fetchBars: async (a: string) => {
+          fetched.push(a);
+          return bars(w.start, w.end, 1_000);
+        },
+        log: () => undefined,
+        nowMs: () => NOW * 1000,
+      },
+    });
+    assert.equal(result.cache, "extended");
+    assert.deepEqual(pagesSeen, [{ survivorPages: 12, cohortPages: 80 }], "the flags reach the listing walk");
+    assert.deepEqual(fetched.sort(), ["NEW1", "NEW2"], "OLD and SOL/USD came from disk");
+    assert.equal(result.dataset.selection.candidates, 3);
+    assert.deepEqual(result.dataset.selection.ingest, { candidatesCap: 200, survivorPages: 12, cohortPages: 80 });
+    assert.equal(result.dataset.selection.fetchFailed, 0);
+
+    // The same reach again: a cache hit. A WIDER reach: not a hit.
+    const quiet = { buildUniverse: async () => { throw new Error("no rebuild"); }, fetchBars: async () => { throw new Error("no fetch"); }, log: () => undefined, nowMs: () => NOW * 1000 };
+    const again = await loadWindowDataset({ window: w, n: 5, candidatesCap: 200, survivorPages: 12, cohortPages: 80, solUsdPool: "SOLUSDC", refresh: false, cacheDir: dir, barsWanted, deps: quiet });
+    assert.equal(again.cache, "hit");
+    const narrower = await loadWindowDataset({ window: w, n: 5, candidatesCap: 96, solUsdPool: "SOLUSDC", refresh: false, cacheDir: dir, barsWanted, deps: quiet });
+    assert.equal(narrower.cache, "hit", "a cache built wider serves a narrower ask");
+    await assert.rejects(
+      loadWindowDataset({ window: w, n: 5, candidatesCap: 400, solUsdPool: "SOLUSDC", refresh: false, cacheDir: dir, barsWanted, deps: quiet }),
+      /no rebuild/,
+      "a wider ask than the cache reaches is never served from it",
+    );
+  });
+
+  it("the funnel reconciles, counts fetch failures, and names the binding brake with its count", async () => {
+    const { windowFunnel } = await import("../backtest/windowUniverse.js");
+    const dir = join(cacheDir, "funnel");
+    const w = { start: W.start - 60 * DAY, end: W.start - 50 * DAY };
+    const born = (w.start - DAY) * 1000;
+    const universe = [
+      pool("GOOD", { createdAtMs: born }),
+      pool("BIG1", { createdAtMs: born }),
+      pool("BIG2", { createdAtMs: born }),
+      pool("THIN", { createdAtMs: born }),
+      pool("LATE", { createdAtMs: (w.end + DAY) * 1000, cohort: "dead-or-dormant" }),
+      pool("BROKEN", { createdAtMs: born }),
+    ];
+    const result = await loadWindowDataset({
+      window: w, n: 4, candidatesCap: 10, solUsdPool: "SOLUSDC", refresh: false, cacheDir: dir,
+      tvlBand: { minUsd: 50_000, maxUsd: 500_000 },
+      kOverride: 0.2,
+      deps: {
+        buildUniverse: async () => ({ pools: universe, survivors: 6, deadOrDormant: 0, scanned: 6, totalUniverseSize: 6 }),
+        fetchBars: async (a: string) => {
+          if (a === "BROKEN") throw new Error("429");
+          if (a === "THIN") return bars(w.end - 5 * 3600, w.end, 20_000);
+          return bars(w.start, w.end, a.startsWith("BIG") ? 1_000_000 : 20_000);
+        },
+        log: () => undefined,
+        nowMs: () => NOW * 1000,
+      },
+    });
+    const f = windowFunnel(result.dataset, w);
+    // LATE is born after the window: pickCandidates drops it before the cap, so it is not a candidate.
+    assert.equal(f.candidates, 5);
+    assert.equal(f.used, 1);
+    assert.equal(f.fetchFailed, 1);
+    assert.equal(f.reconciles, true);
+    assert.deepEqual(f.tvlBandDetail, { belowMin: 0, aboveMax: 2 });
+    assert.deepEqual(f.binding, { brake: "tvlBand", count: 2, short: 3 });
+    assert.equal(f.walkExhausted, true, "5 candidates from a cap of 10");
+  });
+});
+
+describe("runIntegrity per-window path — flags, profile, halves, answers", () => {
+  it("reads --candidates / --survivor-pages / --cohort-pages, defaulting to 200 / 12 / 40", async () => {
+    const { readIngestFlags, readEndFlag } = await import("../backtest/runIntegrity.js");
+    assert.deepEqual(readIngestFlags(new Map()), { candidatesCap: 200, survivorPages: 12, cohortPages: 40 });
+    assert.deepEqual(
+      readIngestFlags(new Map([["candidates", "320"], ["survivor-pages", "20"], ["cohort-pages", "120"]])),
+      { candidatesCap: 320, survivorPages: 20, cohortPages: 120 },
+    );
+    assert.throws(() => readIngestFlags(new Map([["cohort-pages", "0"]])), /positive integer/);
+    assert.throws(() => readIngestFlags(new Map([["candidates", "1.5"]])), /positive integer/);
+    assert.equal(readEndFlag(new Map()), null);
+    assert.equal(readEndFlag(new Map([["end", "2026-09-13"]])), Date.parse("2026-09-13T00:00:00Z") / 1000);
+    assert.throws(() => readEndFlag(new Map([["end", "13/09/2026"]])), /YYYY-MM-DD/);
+  });
+
+  it("an empty half is 'sampel kosong', never a bare 0; answers are per window", async () => {
+    const { describeHalf, windowAnswer } = await import("../backtest/runIntegrity.js");
+    assert.equal(describeHalf(0, null), "sampel kosong (0 pool)");
+    assert.match(describeHalf(11, null), /^11 pool \/ 0 trd \(tipis\)$/);
+    assert.equal(windowAnswer(12, "belum bisa diverifikasi"), "BELUM BISA DIVERIFIKASI");
+    assert.equal(windowAnswer(null, "lolos"), "BELUM BISA DIVERIFIKASI");
+    assert.equal(windowAnswer(12, "lolos"), "YA");
+    assert.equal(windowAnswer(-1, "lolos"), "TIDAK");
+    assert.equal(windowAnswer(12, "gagal"), "TIDAK");
+  });
+
+  it("sizes the account from the LIVE profile via the shared resolver — no hardcoded demo account, no hardcoded pages", () => {
+    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "backtest", "runIntegrity.ts"), "utf8");
+    const perWindow = src.slice(src.indexOf("async function runPerWindowUniverse("), src.indexOf("if (process.argv[1]"));
+    assert.match(perWindow, /readProfileOverrides\(ctx\.flags\)/);
+    assert.match(perWindow, /resolveBacktestProfile\(\{\s*overrides,/);
+    assert.equal(perWindow.includes("accountFlags"), false);
+    assert.equal(/"300"|"63"/.test(perWindow), false, "the 13 Sep demo account is gone from this path");
+    assert.equal(/survivorPages: \d|cohortPages: \d/.test(perWindow), false, "pages come from flags");
+  });
+});
+
 describe("--per-window-universe is OFF by default", () => {
   it("leaves main's published path untouched unless the flag is given", () => {
     const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "backtest", "runIntegrity.ts"), "utf8");

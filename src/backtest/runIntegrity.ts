@@ -69,10 +69,14 @@ import {
 import { renderTable } from "./report.js";
 import { buildPointInTimeUniverse } from "./universe.js";
 import {
+  BRAKE_LABEL,
+  DEFAULT_INGEST_PARAMS,
   loadWindowDataset,
   universeCoverage,
+  windowFunnel,
   windowsEndingAt,
   type CacheOutcome,
+  type IngestParams,
   type WindowDataset,
   type WindowSpec,
 } from "./windowUniverse.js";
@@ -154,11 +158,13 @@ interface ArmRun {
   inS: Scored | null;
   outS: Scored | null;
   oosStatus: "lolos" | "gagal" | "belum bisa diverifikasi";
+  /** Where the halves were cut and how many pools had more than a day of bars in each. Null with no pools. */
+  split: { start: number; mid: number; end: number; inPools: number; outPools: number } | null;
 }
 
 function runArm(pools: PoolHistory[], sol: PoolHistory["bars"], tvl: TvlModel, config: BacktestConfig, label: string): ArmRun {
   if (pools.length === 0) {
-    return { pools: 0, result: null, inS: null, outS: null, oosStatus: "belum bisa diverifikasi" };
+    return { pools: 0, result: null, inS: null, outS: null, oosStatus: "belum bisa diverifikasi", split: null };
   }
   let result: BacktestResult | null = null;
   try {
@@ -174,7 +180,35 @@ function runArm(pools: PoolHistory[], sol: PoolHistory["bars"], tvl: TvlModel, c
   if (!inS || !outS || inS.trades < MIN_TRADES || outS.trades < MIN_TRADES) oosStatus = "belum bisa diverifikasi";
   else oosStatus = survivedOutOfSample(inS, outS, MIN_TRADES) ? "lolos" : "gagal";
 
-  return { pools: pools.length, result, inS, outS, oosStatus };
+  return {
+    pools: pools.length,
+    result,
+    inS,
+    outS,
+    oosStatus,
+    split: { start: split.start, mid: split.mid, end: split.end, inPools: split.inPools.length, outPools: split.outPools.length },
+  };
+}
+
+/**
+ * One half of the IS/OOS split as the report prints it. A half with no pool holding a day of
+ * bars is an EMPTY SAMPLE — its 0 trades say nothing about the strategy, and printing a bare
+ * 0 there is how W1's in-sample half read as a result in the 14 Sep run.
+ */
+export function describeHalf(pools: number, scored: Scored | null, minTrades = MIN_TRADES): string {
+  if (pools === 0) return "sampel kosong (0 pool)";
+  const trades = scored?.trades ?? 0;
+  return `${pools} pool / ${trades} trd${trades < minTrades ? " (tipis)" : ""}`;
+}
+
+/**
+ * The answer for ONE window: YA only when the variant beats base AND clears the bar there;
+ * BELUM BISA DIVERIFIKASI whenever either half is short of the bar's trade count, whatever
+ * the delta says; TIDAK otherwise.
+ */
+export function windowAnswer(delta: number | null, status: ArmRun["oosStatus"]): "YA" | "TIDAK" | "BELUM BISA DIVERIFIKASI" {
+  if (delta === null || status === "belum bisa diverifikasi") return "BELUM BISA DIVERIFIKASI";
+  return delta > 0 && status === "lolos" ? "YA" : "TIDAK";
 }
 
 const figures = (a: ArmRun) => ({
@@ -253,7 +287,7 @@ async function main(): Promise<void> {
   const policy = { maxTransferFeeBps: env.LIVE_MAX_TOKEN_TRANSFER_FEE_BPS };
 
   if (perWindowUniverse) {
-    await runPerWindowUniverse({ flags, num, days, windowsWanted, ingestOnly, accountFlags, gasSol, swapSlippagePct, swapGasSolPerLeg, policy });
+    await runPerWindowUniverse({ flags, num, days, windowsWanted, ingestOnly, gasSol, swapSlippagePct, swapGasSolPerLeg, policy });
     return;
   }
   if (ingestOnly) throw new Error("--ingest-only is only meaningful with --per-window-universe");
@@ -633,6 +667,100 @@ const WINDOW_SUMMARY_PATH = "backtest_window_universe_summary.json";
 const WINDOW_REPORT_PATH = "backtest_window_universe_report.txt";
 
 /**
+ * `--candidates` / `--survivor-pages` / `--cohort-pages`, each a positive integer. The pages
+ * were hardcoded 12 / 40 on this path; a deeper dead-cohort walk now needs no code edit.
+ */
+export function readIngestFlags(flags: ReadonlyMap<string, string>): IngestParams {
+  const int = (key: string, fallback: number): number => {
+    const raw = flags.get(key);
+    if (raw === undefined) return fallback;
+    const v = Number(raw);
+    if (!Number.isInteger(v) || v < 1) throw new Error(`--${key}=${raw} must be a positive integer`);
+    return v;
+  };
+  return {
+    candidatesCap: int("candidates", DEFAULT_INGEST_PARAMS.candidatesCap),
+    survivorPages: int("survivor-pages", DEFAULT_INGEST_PARAMS.survivorPages),
+    cohortPages: int("cohort-pages", DEFAULT_INGEST_PARAMS.cohortPages),
+  };
+}
+
+/**
+ * `--end=YYYY-MM-DD` pins the newest window's end (00:00 UTC). Without it windows end NOW,
+ * so their dates — and the cache files named after them — move every day; pinning the end
+ * is how a later run reuses an earlier run's candidate lists instead of starting new ones.
+ */
+export function readEndFlag(flags: ReadonlyMap<string, string>): number | null {
+  const raw = flags.get("end");
+  if (raw === undefined) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) throw new Error(`--end=${raw} must be YYYY-MM-DD`);
+  const ms = Date.parse(`${raw}T00:00:00Z`);
+  if (!Number.isFinite(ms)) throw new Error(`--end=${raw} is not a date`);
+  return ms / 1000;
+}
+
+/** The per-window funnel as printed before any analysis: every stage, reconciled, with the binding brake. */
+export function renderWindowFunnels(
+  windows: ReadonlyArray<{ label: string; spec: WindowSpec; dataset: WindowDataset; cache: CacheOutcome }>,
+  ctx: { ingest: IngestParams; hasProKey: boolean; nowSec: number },
+): string[] {
+  const funnels = windows.map((w) => ({ w, f: windowFunnel(w.dataset, w.spec) }));
+  const out = [
+    "",
+    `FUNNEL PER WINDOW (cap kandidat ${ctx.ingest.candidatesCap}, pages survivor ${ctx.ingest.survivorPages} / dead cohort ${ctx.ingest.cohortPages})`,
+    renderTable(
+      [
+        { header: "Window" },
+        { header: "Periode" },
+        { header: "Cache" },
+        { header: "Kandidat", align: "right" },
+        { header: "Dipakai", align: "right" },
+        { header: "Lahir sesudah", align: "right" },
+        { header: "<24 bar", align: "right" },
+        { header: "Band TVL (bawah/atas)", align: "right" },
+        { header: "Di luar top N", align: "right" },
+        { header: "Fetch gagal", align: "right" },
+        { header: "Coverage", align: "right" },
+        { header: "k", align: "right" },
+      ],
+      funnels.map(({ w, f }) => [
+        w.label,
+        `${w.dataset.window.start} -> ${w.dataset.window.end}`,
+        w.cache,
+        String(f.candidates),
+        String(f.used),
+        String(f.rejected.bornAfterWindow),
+        String(f.rejected.noBarsInWindow),
+        `${f.rejected.tvlBand}${f.tvlBandDetail ? ` (${f.tvlBandDetail.belowMin}/${f.tvlBandDetail.aboveMax})` : ""}`,
+        String(f.rejected.belowTopN),
+        String(f.fetchFailed),
+        `${f.coverage.withData}/${f.coverage.n}`,
+        w.dataset.selection.k === null ? "—" : w.dataset.selection.k.toFixed(3),
+      ]),
+    ),
+  ];
+  for (const { w, f } of funnels) {
+    if (!f.reconciles) {
+      out.push(`${w.label}: ** funnel TIDAK rekonsiliasi (kandidat ${f.candidates} != dipakai + ditolak + gagal) — cache robek atau bug, jangan pakai window ini **`);
+    }
+    if (w.spec.start < ctx.nowSec - FREE_TIER_HISTORY_DAYS * 86_400 && !ctx.hasProKey) {
+      out.push(
+        `${w.label}: mulai sebelum kedalaman data gratis ~${FREE_TIER_HISTORY_DAYS} hari — sebagian "<24 bar" di sini adalah BATAS PLAN, bukan fakta pool.`,
+      );
+    }
+    if (f.binding) {
+      out.push(
+        `${w.label}: TEMUAN — universe ${f.coverage.withData}/${f.coverage.n}, kurang ${f.binding.short}. ` +
+          `Rem pengikat: ${BRAKE_LABEL[f.binding.brake]} (${f.binding.count}). ` +
+          (f.walkExhausted ? `Walk listing cuma menghasilkan ${f.candidates} dari cap ${w.dataset.selection.ingest?.candidatesCap} kandidat (pages juga mengikat). ` : "") +
+          "Window tipis = sampel kurang, BUKAN \"tidak ada trade karena strategi\".",
+      );
+    }
+  }
+  return out;
+}
+
+/**
  * Each window judged on a universe picked from activity INSIDE it (see `windowUniverse.ts`).
  *
  * Deliberately a separate path rather than a branch threaded through `main`: with the flag
@@ -645,33 +773,48 @@ async function runPerWindowUniverse(ctx: {
   days: number;
   windowsWanted: number;
   ingestOnly: boolean;
-  accountFlags: Map<string, string>;
   gasSol: number;
   swapSlippagePct: number;
   swapGasSolPerLeg: number;
   policy: { maxTransferFeeBps: number };
 }): Promise<void> {
   const n = ctx.num("pools", 16) + ctx.num("deadpools", 16);
-  const candidatesCap = ctx.num("candidates", n * 3);
-  const specs = windowsEndingAt(Math.floor(Date.now() / 1000), ctx.days, ctx.windowsWanted);
+  const ingest = readIngestFlags(ctx.flags);
+  /*
+   * The account is the LIVE profile unless a flag says otherwise — the same resolver `main`
+   * feeds, but fed the raw flags. The 14 Sep run passed a hardcoded $300 / 63% / 1 account
+   * here, so its header read "NOT THE LIVE PROFILE" over every figure. Resolved up front
+   * (at a placeholder price) so an incomplete profile throws BEFORE a multi-hour ingest, not
+   * after it; the real resolution below sizes at the window-start SOL/USD.
+   */
+  const overrides = readProfileOverrides(ctx.flags);
+  if (!ctx.ingestOnly) {
+    resolveBacktestProfile({ overrides, windowStartSolUsd: 1, defaultGasSolPerTransaction: ctx.gasSol });
+  }
+  const endSec = readEndFlag(ctx.flags) ?? Math.floor(Date.now() / 1000);
+  const specs = windowsEndingAt(endSec, ctx.days, ctx.windowsWanted);
+  const oldestStart = specs[specs.length - 1]?.start ?? 0;
   /*
    * As deep as the OLDEST window, so the one per-pool bar file on disk serves every window
    * (the windows share most candidates, and each fetch pages through a 4-second rate limit).
    * Nothing is memoised in memory: the first version did, and was killed for low memory.
    */
-  const oldestBars = Math.ceil(((Date.now() / 1000 - (specs[specs.length - 1]?.start ?? 0)) / 3600) * 1.05);
+  const oldestBars = Math.ceil(((Date.now() / 1000 - oldestStart) / 3600) * 1.05);
 
   const loaded: Array<{ label: string; spec: WindowSpec; dataset: WindowDataset; cache: CacheOutcome }> = [];
   for (const [i, spec] of specs.entries()) {
     const { dataset, cache, cachePath } = await loadWindowDataset({
       window: spec,
       n,
-      candidatesCap,
+      candidatesCap: ingest.candidatesCap,
+      survivorPages: ingest.survivorPages,
+      cohortPages: ingest.cohortPages,
       // The newest window's candidates are today's survivors of every age: its k serves all windows.
       kOverride: i === 0 ? null : (loaded[0]?.dataset.selection.k ?? null),
       solUsdPool: SOL_USDC_POOL,
       refresh: ctx.flags.has("refresh"),
       barsWanted: oldestBars,
+      barsFromSec: oldestStart,
       tvlBand: { minUsd: env.MIN_TVL_USD, maxUsd: env.MAX_TVL_USD },
       deps: {
         /*
@@ -680,11 +823,11 @@ async function runPerWindowUniverse(ctx: {
          * and the first per-window run traded nothing in any window. Today's TVL is a fair
          * filter for SURVIVORS only (they are alive today); the dead cohort is unfiltered.
          */
-        buildUniverse: (daysBack) =>
+        buildUniverse: (daysBack, pages) =>
           buildPointInTimeUniverse({
             windowDays: daysBack,
-            survivorPages: 12,
-            cohortPages: 40,
+            survivorPages: pages.survivorPages,
+            cohortPages: pages.cohortPages,
             survivorTvlBand: { minUsd: env.MIN_TVL_USD, maxUsd: env.MAX_TVL_USD },
           }),
         fetchBars: fetchHourlyBars,
@@ -700,13 +843,19 @@ async function runPerWindowUniverse(ctx: {
     );
     loaded.push({ label: `W${i + 1}`, spec, dataset, cache });
   }
+  // The funnel BEFORE any analysis, so coverage is visible while an ingest is still the only thing that ran.
+  const funnelLines = renderWindowFunnels(
+    loaded.map((w) => ({ label: w.label, spec: w.spec, dataset: w.dataset, cache: w.cache })),
+    { ingest, hasProKey: Boolean(process.env.COINGECKO_PRO_API_KEY), nowSec: Math.floor(Date.now() / 1000) },
+  );
+  console.log(funnelLines.join("\n"));
   if (ctx.ingestOnly) {
     console.log("[integrity] --ingest-only: caches written, no analysis run");
     return;
   }
 
   const profile = resolveBacktestProfile({
-    overrides: readProfileOverrides(ctx.accountFlags),
+    overrides,
     windowStartSolUsd: loaded[loaded.length - 1]?.dataset.solUsdBars[0]?.c ?? null,
     defaultGasSolPerTransaction: ctx.gasSol,
   });
@@ -780,34 +929,12 @@ async function runPerWindowUniverse(ctx: {
   h("BACKTEST INTEGRITY — UNIVERSE PER WINDOW (dipilih dari aktivitas di dalam window)");
   out.push(
     ...describeBacktestProfile(profile),
-    `Universe        : top ${n} per window by in-window fees, from up to ${candidatesCap} candidates, ` +
+    `Universe        : top ${n} per window by in-window fees, from up to ${ingest.candidatesCap} candidates ` +
+      `(pages survivor ${ingest.survivorPages} / dead cohort ${ingest.cohortPages}), ` +
       `modelled TVL band $${env.MIN_TVL_USD}-$${env.MAX_TVL_USD}`,
     `Swap (baru)     : ${ctx.swapSlippagePct}%/kaki + ${ctx.swapGasSolPerLeg} SOL gas/kaki · exit model fit & envelope`,
-    "",
-    renderTable(
-      [
-        { header: "Window" },
-        { header: "Periode" },
-        { header: "Cache" },
-        { header: "Kandidat", align: "right" },
-        { header: "Universe", align: "right" },
-        { header: "Coverage", align: "right" },
-        { header: "Live-elig", align: "right" },
-        { header: "k", align: "right" },
-        { header: "Ditolak: lahir sesudah / <24 bar / band TVL / di luar top N" },
-      ],
-      meta.map((m) => [
-        m.label,
-        `${m.window.start} -> ${m.window.end}`,
-        m.cache,
-        String(m.selection.candidates),
-        String(m.universe),
-        `${m.coverage.withData}/${m.coverage.n}`,
-        String(m.eligiblePools),
-        m.k === null ? "—" : m.k.toFixed(3),
-        `${m.selection.rejected.bornAfterWindow} / ${m.selection.rejected.noBarsInWindow} / ${m.selection.rejected.tvlBand} / ${m.selection.rejected.belowTopN}`,
-      ]),
-    ),
+    `Live-eligible   : ${meta.map((m) => `${m.label} ${m.eligiblePools}/${m.universe}`).join(" · ")}`,
+    ...funnelLines,
   );
 
   for (const costKey of ["old", "fit", "envelope"]) {
@@ -828,7 +955,8 @@ async function runPerWindowUniverse(ctx: {
           String(f.trades),
           usd(f.netPnlUsd),
           signed(f.netPnlUsd - e.netPnlUsd),
-          `${c.eligible.inS?.trades ?? 0}/${c.eligible.outS?.trades ?? 0}`,
+          describeHalf(c.eligible.split?.inPools ?? 0, c.eligible.inS),
+          describeHalf(c.eligible.split?.outPools ?? 0, c.eligible.outS),
           c.eligible.inS?.payoff == null ? "—" : c.eligible.inS.payoff.toFixed(2),
           c.eligible.outS?.payoff == null ? "—" : c.eligible.outS.payoff.toFixed(2),
           c.eligible.inS ? signed(c.eligible.inS.expectancyUsd) : "—",
@@ -836,7 +964,19 @@ async function runPerWindowUniverse(ctx: {
           c.eligible.oosStatus,
         ]);
       }
-      out.push(`-- ${w.label} ${w.dataset.window.start} -> ${w.dataset.window.end} --`);
+      const baseCell = find(w.label, costKey, "base");
+      const s = baseCell?.eligible.split;
+      out.push(
+        `-- ${w.label} ${w.dataset.window.start} -> ${w.dataset.window.end} --` +
+          (s ? ` split live-eligible: IS ${day(s.start)} -> ${day(s.mid)} · OOS ${day(s.mid)} -> ${day(s.end)}` : ""),
+      );
+      const thin = windowFunnel(w.dataset, w.spec);
+      if (thin.binding) {
+        out.push(
+          `   TEMUAN (sampel, BUKAN hasil strategi): universe ${thin.coverage.withData}/${thin.coverage.n}; ` +
+            `rem pengikat ${BRAKE_LABEL[thin.binding.brake]} = ${thin.binding.count}.`,
+        );
+      }
       out.push(
         rows.length === 0
           ? "(tidak ada pool atau k untuk window ini — belum bisa diverifikasi)"
@@ -849,7 +989,8 @@ async function runPerWindowUniverse(ctx: {
                 { header: "full trd", align: "right" },
                 { header: "full net", align: "right" },
                 { header: "selisih", align: "right" },
-                { header: "IS/OOS trd", align: "right" },
+                { header: "IS (elig)", align: "right" },
+                { header: "OOS (elig)", align: "right" },
                 { header: "IS payoff", align: "right" },
                 { header: "OOS payoff", align: "right" },
                 { header: "IS exp", align: "right" },
@@ -863,31 +1004,39 @@ async function runPerWindowUniverse(ctx: {
     }
   }
 
-  h("JAWABAN PER VARIAN — naik di SEMUA window DAN lolos bar di SEMUA window?");
-  const answers: Array<{ cost: string; variant: string; per: Array<{ window: string; delta: number | null; status: string }>; answer: string }> = [];
+  h("JAWABAN PER VARIAN, PER WINDOW — {YA / TIDAK / BELUM BISA DIVERIFIKASI}, tidak dirata-rata");
+  const answers: Array<{
+    cost: string;
+    variant: string;
+    per: Array<{ window: string; delta: number | null; status: string; answer: ReturnType<typeof windowAnswer> }>;
+    answer: string;
+  }> = [];
   for (const costKey of ["fit", "envelope"]) {
     for (const v of VARIANTS.filter((x) => x.key !== "base")) {
       const per = loaded.map((w) => {
         const c = find(w.label, costKey, v.key);
         const base = find(w.label, costKey, "base");
-        return {
-          window: w.label,
-          delta: c && base ? figures(c.eligible).netPnlUsd - figures(base.eligible).netPnlUsd : null,
-          status: c ? c.eligible.oosStatus : "belum bisa diverifikasi",
-        };
+        const delta = c && base ? figures(c.eligible).netPnlUsd - figures(base.eligible).netPnlUsd : null;
+        const status: ArmRun["oosStatus"] = c ? c.eligible.oosStatus : "belum bisa diverifikasi";
+        return { window: w.label, delta, status, answer: windowAnswer(delta, status) };
       });
-      const answer = per.some((p) => p.delta === null || p.status === "belum bisa diverifikasi")
+      // Across windows: YA only when YA in every window; any unverifiable window keeps it unverified.
+      const answer = per.some((p) => p.answer === "BELUM BISA DIVERIFIKASI")
         ? "BELUM BISA DIVERIFIKASI"
-        : per.every((p) => (p.delta ?? 0) > 0 && p.status === "lolos")
+        : per.every((p) => p.answer === "YA")
           ? "YA"
           : "TIDAK";
       answers.push({ cost: costKey, variant: v.key, per, answer });
       out.push(
         `${costKey.padEnd(8)} ${v.label.padEnd(32)} ` +
-          per.map((p) => `${p.window} ${p.delta === null ? "—" : signed(p.delta)} (${p.status})`).join(" · ") +
-          `  ->  ${answer}`,
+          per.map((p) => `${p.window} ${p.delta === null ? "—" : signed(p.delta)} → ${p.answer}`).join(" · ") +
+          `  ||  semua window: ${answer}`,
       );
     }
+  }
+  const everyCell = answers.flatMap((a) => a.per);
+  if (everyCell.length > 0 && everyCell.every((p) => p.answer === "BELUM BISA DIVERIFIKASI")) {
+    out.push("", "** SEMUA varian di SEMUA window: BELUM BISA DIVERIFIKASI. Pertanyaan TP/gate belum terjawab oleh run ini. **");
   }
   out.push(
     "",
@@ -899,11 +1048,21 @@ async function runPerWindowUniverse(ctx: {
   const report = out.join("\n");
   console.log(report);
   writeFileSync(resolve(process.cwd(), WINDOW_REPORT_PATH), report, "utf8");
-  const strip = (a: ArmRun) => ({ pools: a.pools, summary: a.result?.summary ?? null, inSample: a.inS, outOfSample: a.outS, oosStatus: a.oosStatus });
+  const strip = (a: ArmRun) => ({ pools: a.pools, summary: a.result?.summary ?? null, inSample: a.inS, outOfSample: a.outS, oosStatus: a.oosStatus, split: a.split });
   writeFileSync(
     resolve(process.cwd(), WINDOW_SUMMARY_PATH),
     JSON.stringify(
-      { generatedAt: new Date().toISOString(), n, candidatesCap, profile, windows: meta, cells: cells.map((c) => ({ ...c, eligible: strip(c.eligible), full: strip(c.full) })), answers, report },
+      {
+        generatedAt: new Date().toISOString(),
+        n,
+        candidatesCap: ingest.candidatesCap,
+        ingest,
+        profile,
+        windows: meta.map((m) => ({ ...m, funnel: windowFunnel(loaded.find((w) => w.label === m.label)!.dataset, loaded.find((w) => w.label === m.label)!.spec) })),
+        cells: cells.map((c) => ({ ...c, eligible: strip(c.eligible), full: strip(c.full) })),
+        answers,
+        report,
+      },
       null,
       2,
     ),
