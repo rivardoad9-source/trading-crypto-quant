@@ -1,0 +1,103 @@
+WORK ORDER #3 untuk Claude Code (LOKAL) — 14 Sep 2026
+Repo: ~/flowmetrix-ai-agent (branch dari `main` yang sekarang, ujungnya `9102a96` — WO2 sudah merge).
+Branch baru: work/window-universe-scale-and-exit-cost-completeness
+Kerjain TIGA hal: **A. universe window lama cukup gede** (P0), **B. biaya exit: fee lengkap + harga saat landing** (P1),
+**C. suite hijau di Windows** (P2, opsional). Jangan kerjain yang lain.
+
+KONTEKS (angka ini HASIL UKUR — jangan diukur ulang, jangan diganti asumsi lain):
+- Baseline test di server Linux: **954 test / 954 pass / 0 fail**; `npm run typecheck` hijau (dua project).
+  Di Windows lu lapor 954/956 dengan 2 EPERM (`rmSync` di hook `after` test `exitSlippage`/`postSwapReadRetry`) — itu lingkungan.
+- Hasil per-window (WO2, `--per-window-universe --windows=3 --days=91`):
+  W1 32 pool / 14 live-eligible / 6 trade / net live-eligible +$95.35 (akuntansi lama);
+  W2 13 pool / 6 eligible / **0 trade**; W3 11 pool / 7 eligible / **0 trade**.
+  k = 0.195 dipakai untuk semua window (satu k, window terbaru yang nentuin).
+  Funnel per window (lahir-sesudah-window / <24 bar / band TVL / di luar top N): W1 0/6/47/11, W2 0/4/**79**/0, W3 0/14/**71**/0.
+  Cap kandidat sekarang: `--candidates` default `n*3` (pool 16 + deadpool 16 → 96); walk dead-cohort hardcode `cohortPages: 40`, survivor `survivorPages: 12`.
+- Karena W2/W3 cuma 13 & 11 pool, **semua 12 kombinasi varian TP/gate = "belum bisa diverifikasi"** (syarat: ≥8 trade di KEDUA paruh). Pertanyaan "naikin TP 6/8/10% atau gate 2.0x/1.5x menaikkan net live-eligible?" TIDAK bisa dijawab sampai jumlah pool window lama cukup.
+- Header run itu nyetak `Profile : NOT THE LIVE PROFILE` karena jalur per-window manggil `accountFlags` hardcode
+  `capital 300 / sizepct 63 / concurrent 1` (akun work order 13 Sep), bukan profil live.
+  `.env` server: `LIVE_CAPITAL_SOL=2.85`, `LIVE_MAX_POSITION_SOL=1.8`, `MAX_CONCURRENT_POSITIONS=3`, `MIN_TVL_USD=50000`, `MAX_TVL_USD=500000`.
+- `exit_economics` sekarang **ada 7 row di DB live** (posisi id 4–9 + NEARKAT `attempt-5`), semua `source='backfill'`.
+  Konsesi terukur: 394.9 / 180.6 / 90.4 / 152.8 bps (EMBER, bin_step 200), 143.1 bps (NEARKAT, bin_step 400), 2 NULL (MANLET dijual tangan, EMBER#8 dust).
+  Tulis otomatis (A2 WO2) BELUM pernah jalan di close sungguhan (belum deploy).
+
+== A. UNIVERSE WINDOW LAMA CUKUP GEDE (P0) ==
+A1. Skala kandidat jadi parameter, bukan hardcode: default `--candidates` naik ke ~200, dan tambah flag
+    `--survivor-pages` / `--cohort-pages` (sekarang 12/40 hardcode di jalur per-window) supaya walk dead-cohort
+    bisa lebih dalam tanpa edit kode. **Jalur LAMA (flag OFF) harus tetap byte-identik** — test yang ada
+    ("leaves main's published path untouched unless the flag is given") mengunci ini; jangan dilemahkan.
+A2. Target: **tiap window punya ≥32 pool yang benar-benar punya data di window itu** (W1 sudah 32).
+    Kalau setelah cap dinaikin masih kurang, laporan WAJIB nyebut **rem mana yang mengikat** per window
+    (lahir sesudah window / <24 bar / band TVL / di luar top N) **dengan angkanya** — rem itu ditulis sebagai
+    TEMUAN, bukan sebagai hasil. Jangan pernah nulis window tipis sebagai "tidak ada trade karena strategi".
+A3. Cache & memori: bar tetap per-pool di `.cache/window_bars/<address>.json` (jangan balik ke memori —
+    versi pertama mati kena OOM). `--ingest-only` harus aman dijalanin 2–3 jam di server 6 GB: resume-able,
+    progress per pool, dan **cetak funnel lengkap per window** (kandidat / dipakai / lahir sesudah / <24 bar /
+    band TVL / di luar top N / coverage) supaya coverage kelihatan SEBELUM analisis jalan. Flag A1 juga
+    harus berlaku di jalur ingest. Cache lama (96 kandidat) dipakai ulang, bukan difetch ulang.
+A4. Ganti `accountFlags` hardcode di jalur per-window dengan yang SUDAH ADA: `readProfileOverrides(flags)` +
+    `resolveBacktestProfile()` dari `src/backtest/liveProfile.ts` (jalur lama sudah pakai itu, dan dia yang
+    nge-handle `MAX_CONCURRENT_POSITIONS=3` vs envelope live 2.85/1.8 = 1 posisi — **jangan hitung sendiri**).
+    Jadi default run = profil LIVE (≈$285 @ SOL/USD window-start, 63.16%/posisi, 1 concurrent), header cetak
+    "LIVE (derived from …)", dan kalau ada flag yang nge-override header WAJIB bilang. JANGAN fallback diam-diam
+    ke akun demo — `BacktestProfileError` sudah ada buat itu. Kalau `.env` di mesin lu nggak punya
+    `LIVE_CAPITAL_SOL`/`LIVE_MAX_POSITION_SOL`, error itu yang muncul: itu benar, jangan ditambal.
+A5. Split IS/OOS: di W1 paruh pertama cuma 11 pool punya bar → IS selalu 0 trade. Laporkan per paruh:
+    tanggal split, jumlah pool yang punya bar di paruh itu, jumlah trade. Kalau 0 karena sampel kosong,
+    tulis "sampel kosong" — JANGAN 0 sebagai hasil. Syarat bar jangan diubah (≥8 trade/paruh, payoff > 1,
+    expectancy > 0, dua-duanya).
+A6. Jangan rata-rata window, jangan ubah konstanta `exitCost.ts`. Jawaban tiap varian tetap
+    {ya / tidak / belum bisa diverifikasi} PER WINDOW, dan kalau semua belum bisa diverifikasi, bilang begitu.
+
+== B. BIAYA EXIT: FEE LENGKAP + HARGA SAAT LANDING (P1) ==
+B1. `closeLivePosition()` SUDAH balikin `signatures: string[]` (semua tx close, lihat `liveExecution.ts` ~2764/2822),
+    tapi `settleLiveCloses` cuma motong `closeSignature` (yang terakhir) dan cuma itu yang disimpan →
+    `exit_fee_lamports` baru = fee tx close TERAKHIR. Di close multi-tx (posisi lebar) fee exit KURANG ITUNG.
+    Fix: simpan SEMUA signature close (kolom baru `close_signatures` di `exit_economics`, JSON array) dan
+    `exit_fee_lamports` = jumlah fee SEMUA tx close + sweep + ata_close. `close_signature` lama tetap = tx final
+    (jangan ubah artinya, row lama jangan diutak-atik).
+    ⚠️ Tabel `exit_economics` SUDAH ADA di DB live dengan 7 row → `CREATE TABLE IF NOT EXISTS` nggak nambah kolom.
+    Pakai pola migrasi `addColumnIfMissing` yang sudah dipakai di `src/database/db.ts`.
+B2. `pool_price_at_exit` sekarang = `pool.currentPrice` saat KEPUTUSAN exit (dlmmTraderAgent ~923), bukan saat
+    sweep LANDING — di pool bin_step 2% yang gerak ~10%/jam itu bikin konsesi keukur lawan harga basi.
+    Tambah kolom `pool_price_after_sweep` (baca sekali SETELAH sweep selesai di jalur live; null + catatan kalau
+    pool nggak kebaca) dan di `npm run report:exitcosts` tampilkan konsesi lawan DUA harga (keputusan vs landing).
+    **Jangan ubah arti `exit_cost_bps` / `sweep_concession_bps` yang lama** — kalibrasi 7 row berdiri di atas itu.
+    Tambah kolom/hitungan baru, jangan ganti yang lama.
+B3. Rute `dlmm-pool` nyimpen `slippageBps = ladder[rung terakhir]` = CAP, bukan rung yang benar-benar jual →
+    kasih catatan eksplisit (di `notes` atau kolom terpisah) biar nggak kebaca sebagai rung yang kepakai.
+B4. Row lama (`source='backfill'`) TIDAK bisa direkonstruksi (signature tx close sebelumnya nggak disimpan di
+    mana pun) → biarkan apa adanya + catatan. **Jangan upsert/overwrite row yang sudah ada** — insert-if-absent
+    (`UNIQUE(position_id)`) itu fitur, bukan bug.
+B5. Test: (a) fee = jumlah semua signature close; (b) kolom baru kena DB lama (migrasi dari tabel yang sudah ada
+    7 row); (c) landing price null → null + catatan, BUKAN 0; (d) report nampilin dua konsesi; (e) backfill tetap
+    idempoten; (f) recorder tetap dipanggil SESUDAH row posisi ditutup dan DI LUAR mutex (test source-shape yang
+    ada sekarang jangan dilemahkan), dan tetap nggak pernah throw.
+
+== C. SUITE HIJAU DI WINDOWS (P2, kalau sempat) ==
+Dua kegagalan EPERM itu teardown yang nggak hermetik (file SQLite masih kebuka saat temp dir dihapus).
+Benerin teardown-nya (tutup handle dulu) TANPA ngubah assertion. Kalau nggak bisa tanpa nyentuh test baseline
+V1.1, tinggalin dan lapor — itu bukan prioritas.
+
+== ATURAN WAJIB (sama seperti WO1/WO2) ==
+- JANGAN deploy, JANGAN restart pm2, JANGAN ubah `.env` / `.env.example` default, JANGAN kirim transaksi on-chain.
+- Jangan ubah nilai default di `src/config/env.ts` dan `src/services/onchainExecutor.ts`, jangan sentuh test
+  baseline V1.1. Semua variasi lewat flag.
+- JANGAN tambah file yang meng-import `src/services/onchainExecutor.ts` (allowlist di `onchainExecutor.test.ts`
+  = boundary keamanan). Butuh sesuatu? Lewat bridge `liveExecution.ts`.
+- String base58 panjang (86–90 char, bentuk signature) di `src/` kena test anti-secret → taruh di `docs/**/*.json`
+  (pola `docs/incidents/known-failed-opens.json`).
+- `npm run typecheck` hijau + `npm test` hijau. Baseline Linux server: 954/954 pass, 0 fail.
+- Output file: `backtest_window_universe_summary.json` + `backtest_window_universe_report.txt` (pola yang sudah
+  ke-allowlist .gitignore), laporan prosa di `docs/backtests/`.
+- Commit kecil dengan pesan yang jelasin KENAPA. Push ke branch, JANGAN main.
+- Laporan: Indonesia, tabel, angka mentah + section "yang gw nggak bisa klaim".
+
+== PEMBAGIAN KERJA (penting) ==
+Ingest 2–3 jam itu **kerjaan gw (Hermes) di server**, bukan lu. Lu cukup: implement + test sintetis +
+SATU run terbatas yang lu mampu (mis. `--windows=1 --candidates=40 --ingest-only`) sebagai bukti funnel-nya
+kepakai dan flag-nya jalan. Begitu lu push, gw jalanin ingest penuh di background + kirim tabel per window,
+dan gw yang mutusin apakah pertanyaan TP/gate sudah bisa dijawab atau belum.
+
+PRIORITAS: **A dulu** (itu yang bikin pertanyaan TP/gate bisa dijawab), lalu B (kalau harus pilih satu: B1 + B2).
+C cuma kalau sempat.
