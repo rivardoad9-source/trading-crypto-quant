@@ -693,14 +693,17 @@ export function readIngestFlags(flags: ReadonlyMap<string, string>): IngestParam
  * (default 6). On-chain costs two RPC reads per pool per grid instant, cached per pool; the model
  * default keeps every earlier per-window run reproducible.
  */
-export function readTvlFlags(flags: ReadonlyMap<string, string>): { basis: "model" | "onchain"; cadenceSec: number; concurrency: number } {
+export function readTvlFlags(flags: ReadonlyMap<string, string>): { basis: "model" | "onchain"; cadenceSec: number; concurrency: number; rps: number } {
   const basis = flags.get("tvl") ?? "model";
   if (basis !== "model" && basis !== "onchain") throw new Error(`--tvl=${basis} must be model or onchain`);
   const hours = Number(flags.get("tvl-cadence-hours") ?? 12);
   if (!Number.isInteger(hours) || hours < 1 || 24 % hours !== 0) throw new Error(`--tvl-cadence-hours=${flags.get("tvl-cadence-hours")} must divide 24 (1,2,3,4,6,8,12,24)`);
   const concurrency = Number(flags.get("tvl-concurrency") ?? 6);
   if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 32) throw new Error("--tvl-concurrency must be 1..32");
-  return { basis, cadenceSec: hours * 3600, concurrency };
+  // Helius calls per second across the whole run. Low on purpose: the key may be the live engine's.
+  const rps = Number(flags.get("tvl-rps") ?? 3);
+  if (!(rps > 0) || rps > 50) throw new Error("--tvl-rps must be in (0, 50]");
+  return { basis, cadenceSec: hours * 3600, concurrency, rps };
 }
 
 /**
@@ -812,7 +815,7 @@ async function runPerWindowUniverse(ctx: {
       return [];
     }
   };
-  const tvlDeps = tvlMode.basis === "onchain" ? heliusTvlDeps(env.SOLANA_RPC_URL, (l) => console.log(l)) : null;
+  const tvlDeps = tvlMode.basis === "onchain" ? heliusTvlDeps(env.SOLANA_RPC_URL, (l) => console.log(l), ".cache", tvlMode.rps) : null;
   let tvlCalls = 0;
   /*
    * The account is the LIVE profile unless a flag says otherwise — the same resolver `main`

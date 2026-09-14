@@ -259,9 +259,27 @@ export async function ensureTvlSeries(input: {
   return { file, fetched, failed };
 }
 
+/**
+ * Spaces calls to at most `perSecond`, across every concurrent caller. Without it the first real
+ * run (8 pools x 2 reserves in flight) drew HTTP 429 on 6 of 8 probe calls and crawled on backoff —
+ * and the RPC key in a local .env may be the SAME account the live engine monitors positions with,
+ * so an ingest that exhausts the rate limit can starve a stop-loss. Pace first, retry second.
+ */
+export function rateLimiter(perSecond: number, now: () => number = Date.now, sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))): () => Promise<void> {
+  const gap = 1000 / Math.max(0.1, perSecond);
+  let next = 0;
+  return async () => {
+    const t = now();
+    const at = Math.max(t, next);
+    next = at + gap;
+    if (at > t) await sleep(at - t);
+  };
+}
+
 /** Real deps: Helius for reserves, Meteora datapi for the reserve accounts and token_x price. */
-export function heliusTvlDeps(rpcUrl: string, log: (line: string) => void = console.log, cacheDir = ".cache"): OnchainTvlDeps {
+export function heliusTvlDeps(rpcUrl: string, log: (line: string) => void = console.log, cacheDir = ".cache", requestsPerSecond = 3): OnchainTvlDeps {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const pace = rateLimiter(requestsPerSecond);
   return {
     async poolMeta(address) {
       const path = `${cacheDir}/tvl_truth/meta_${address}.json`;
@@ -287,6 +305,7 @@ export function heliusTvlDeps(rpcUrl: string, log: (line: string) => void = cons
     },
     async reserveAt(account, t) {
       for (let attempt = 0; ; attempt++) {
+        await pace();
         const res = await fetch(rpcUrl, {
           method: "POST",
           headers: { "content-type": "application/json" },

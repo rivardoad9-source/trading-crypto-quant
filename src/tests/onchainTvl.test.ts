@@ -246,11 +246,24 @@ describe("window selection on on-chain TVL", () => {
   });
 });
 
+describe("rate limiter", () => {
+  it("spaces concurrent callers to the configured rate instead of letting them burst", async () => {
+    let clock = 0;
+    const slept: number[] = [];
+    const pace = (await import("../backtest/onchainTvl.js")).rateLimiter(4, () => clock, async (ms) => {
+      slept.push(ms);
+    });
+    await Promise.all([pace(), pace(), pace(), pace()]);
+    assert.deepEqual(slept, [250, 500, 750], "the first goes now, each next one 250 ms later");
+  });
+});
+
 describe("runner flags", () => {
   it("--tvl defaults to model; cadence must divide a day", async () => {
     const { readTvlFlags } = await import("../backtest/runIntegrity.js");
-    assert.deepEqual(readTvlFlags(new Map()), { basis: "model", cadenceSec: 12 * HOUR, concurrency: 6 });
-    assert.deepEqual(readTvlFlags(new Map([["tvl", "onchain"], ["tvl-cadence-hours", "6"]])), { basis: "onchain", cadenceSec: 6 * HOUR, concurrency: 6 });
+    assert.deepEqual(readTvlFlags(new Map()), { basis: "model", cadenceSec: 12 * HOUR, concurrency: 6, rps: 3 });
+    assert.deepEqual(readTvlFlags(new Map([["tvl", "onchain"], ["tvl-cadence-hours", "6"]])), { basis: "onchain", cadenceSec: 6 * HOUR, concurrency: 6, rps: 3 });
+    assert.throws(() => readTvlFlags(new Map([["tvl-rps", "0"]])), /tvl-rps/);
     assert.throws(() => readTvlFlags(new Map([["tvl", "k"]])), /model or onchain/);
     assert.throws(() => readTvlFlags(new Map([["tvl-cadence-hours", "5"]])), /divide 24/);
   });
