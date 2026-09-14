@@ -55,6 +55,7 @@ export interface LivePositionRow {
 export interface AttemptRow {
   id: number;
   attempted_at: string | null;
+  pool_address?: string | null;
   pair_name: string | null;
   token_mint: string | null;
   outcome: string;
@@ -74,10 +75,30 @@ export interface ExitEconomicsReadRow {
   sweep_concession_after_sweep_bps: number | null;
 }
 
+/** One `scan_funnel_cycles` row, reduced to what the shadow and concentration sections read. */
+export interface FunnelReadRow {
+  cycle_at: string | null;
+  shortlist_size: number | null;
+  llm_pick_pool: string | null;
+  llm_pick_pair: string | null;
+  rule_pick_pool: string | null;
+  rule_pick_pair: string | null;
+  concentration_flagged: number | null;
+  exec_token_concentration_rejected: number | null;
+}
+
 export interface LiveReportInput {
   positions: LivePositionRow[];
   attempts: AttemptRow[];
   exitEconomics: ExitEconomicsReadRow[];
+  /**
+   * Funnel rows. Absent (older callers / tests) reads as "not read". `shadowColumns` /
+   * `concentrationColumns` say whether this database HAS the columns at all, so an old
+   * database renders "—" instead of a table of zeros that were never measured.
+   */
+  funnel?: FunnelReadRow[];
+  shadowColumns?: boolean;
+  concentrationColumns?: boolean;
   /** Tables or columns this database does not have; their fields read as null. */
   missing: string[];
 }
@@ -134,7 +155,7 @@ export function readLiveReportInput(db: Database.Database): LiveReportInput {
     const list = selectList(
       attCols,
       "live_execution_attempts",
-      ["id", "attempted_at", "pair_name", "token_mint", "outcome", "stage", "wallet_lamports_before", "wallet_lamports_after", "cost_lamports", "unwind", "position_address"],
+      ["id", "attempted_at", "pool_address", "pair_name", "token_mint", "outcome", "stage", "wallet_lamports_before", "wallet_lamports_after", "cost_lamports", "unwind", "position_address"],
       missing,
     );
     attempts = db.prepare(`SELECT ${list} FROM live_execution_attempts ORDER BY id`).all() as AttemptRow[];
@@ -153,7 +174,19 @@ export function readLiveReportInput(db: Database.Database): LiveReportInput {
     exitEconomics = db.prepare(`SELECT ${list} FROM exit_economics`).all() as ExitEconomicsReadRow[];
   }
 
-  return { positions, attempts, exitEconomics, missing };
+  const funCols = columnsOf(db, "scan_funnel_cycles");
+  let funnel: FunnelReadRow[] = [];
+  const shadowWanted = ["shortlist_size", "llm_pick_pool", "llm_pick_pair", "rule_pick_pool", "rule_pick_pair"];
+  const concWanted = ["concentration_flagged", "exec_token_concentration_rejected"];
+  const shadowColumns = funCols.size > 0 && shadowWanted.every((c) => funCols.has(c));
+  const concentrationColumns = funCols.size > 0 && concWanted.every((c) => funCols.has(c));
+  if (funCols.size === 0 || !funCols.has("cycle_at")) missing.push("scan_funnel_cycles");
+  else {
+    const list = selectList(funCols, "scan_funnel_cycles", [...shadowWanted, ...concWanted], missing);
+    funnel = db.prepare(`SELECT cycle_at, ${list} FROM scan_funnel_cycles ORDER BY id`).all() as FunnelReadRow[];
+  }
+
+  return { positions, attempts, exitEconomics, funnel, shadowColumns, concentrationColumns, missing };
 }
 
 /* ------------------------------------------------------------------ */
@@ -209,6 +242,60 @@ export interface ConcentrationLine {
   lastWindow: number;
 }
 
+/** Below this many decisions the report refuses to say anything about the LLM. */
+export const MIN_SHADOW_DECISIONS = 20;
+/** A live open is attributed to a cycle whose LLM picked its pool at most this long before. */
+export const SHADOW_OPEN_MATCH_HOURS = 2;
+
+export interface ShadowScope {
+  decisions: number;
+  llmDeclined: number;
+  same: number;
+  different: number;
+  /** Cycles where the rule produced no pick (empty or unusable shortlist). */
+  ruleNull: number;
+  /** same / (same + different) x 100; null when the LLM never picked beside a rule pick. */
+  agreementPct: number | null;
+  shortlistMedian: number | null;
+}
+
+export interface ShadowOpenedLine {
+  cycleAt: string;
+  llmPair: string | null;
+  rulePair: string | null;
+  /** Whether the rule had picked the same pool; null when the rule made no pick. */
+  ruleSame: boolean | null;
+  match: "position" | "failed-attempt";
+  positionId: number | null;
+  status: string | null;
+  bookPnlUsd: number | null;
+  chainDeltaSol: number | null;
+  /** More than one cycle picked this pool inside the match window; the latest was used. */
+  ambiguous: boolean;
+}
+
+export interface ShadowSection {
+  /** False when the database has no shadow columns: rendered as "—", never as zeros. */
+  available: boolean;
+  window: ShadowScope;
+  allTime: ShadowScope;
+  sampleSufficient: boolean;
+  recentDifferent: Array<{ cycleAt: string; shortlistSize: number | null; llmPair: string | null; rulePair: string | null }>;
+  opened: ShadowOpenedLine[];
+}
+
+export interface DailyConcentrationLine {
+  day: string;
+  liveOpens: number;
+  distinctTokens: number;
+  topToken: string | null;
+  topCount: number;
+  /** Null when the database has no concentration columns. */
+  flagged: number | null;
+  rejected: number | null;
+  funnelCycles: number;
+}
+
 export interface LiveReport {
   generatedAt: string;
   windowDays: number;
@@ -242,7 +329,40 @@ export interface LiveReport {
     valueChangeExceedsFees: boolean | null;
   };
   readiness: { closedLiveTrades: number; target: number };
+  shadow: ShadowSection;
+  dailyConcentration: { available: boolean; days: DailyConcentrationLine[] };
   missing: string[];
+}
+
+function summariseShadow(rows: FunnelReadRow[]): ShadowScope {
+  const decided = rows.filter((r) => r.shortlist_size !== null && r.shortlist_size !== undefined);
+  let llmDeclined = 0;
+  let same = 0;
+  let different = 0;
+  let ruleNull = 0;
+  for (const r of decided) {
+    if (!r.rule_pick_pool) ruleNull++;
+    if (!r.llm_pick_pool) {
+      llmDeclined++;
+      continue;
+    }
+    if (!r.rule_pick_pool) continue;
+    if (r.llm_pick_pool === r.rule_pick_pool) same++;
+    else different++;
+  }
+  const sizes = decided.map((r) => r.shortlist_size!).sort((a, b) => a - b);
+  const mid = Math.floor(sizes.length / 2);
+  const shortlistMedian =
+    sizes.length === 0 ? null : sizes.length % 2 === 1 ? sizes[mid]! : (sizes[mid - 1]! + sizes[mid]!) / 2;
+  return {
+    decisions: decided.length,
+    llmDeclined,
+    same,
+    different,
+    ruleNull,
+    agreementPct: same + different > 0 ? (same / (same + different)) * 100 : null,
+    shortlistMedian,
+  };
 }
 
 function settlementOf(sweep: string | null): PositionLine["settlement"] {
@@ -366,6 +486,124 @@ export function buildLiveReport(
   const feesUsd = split.reduce((s, p) => s + (p.feesUsd ?? 0), 0);
   const valueChangeUsd = split.reduce((s, p) => s + (p.valueChangeUsd ?? 0), 0);
 
+  /* ---- shadow pick: LLM vs rule ---- */
+  const funnel = input.funnel ?? [];
+  const shadowAvailable = input.shadowColumns === true;
+  const decided = shadowAvailable
+    ? funnel.filter((r) => r.shortlist_size !== null && r.shortlist_size !== undefined && parseStamp(r.cycle_at) !== null)
+    : [];
+  const decidedWindow = decided.filter((r) => inWindow(r.cycle_at, windowStart));
+  const byTime = (a: FunnelReadRow, b: FunnelReadRow) => parseStamp(a.cycle_at)! - parseStamp(b.cycle_at)!;
+  const recentDifferent = decided
+    .filter((r) => r.llm_pick_pool && r.rule_pick_pool && r.llm_pick_pool !== r.rule_pick_pool)
+    .sort(byTime)
+    .slice(-10)
+    .reverse()
+    .map((r) => ({ cycleAt: r.cycle_at!, shortlistSize: r.shortlist_size, llmPair: r.llm_pick_pair, rulePair: r.rule_pick_pair }));
+
+  /*
+   * JOIN RULE (stated in the render too): a live open — a position row, or a FAILED attempt,
+   * which is also an outcome of the LLM's pick — belongs to the LATEST cycle whose LLM picked
+   * the same pool address at or before the open, no more than SHADOW_OPEN_MATCH_HOURS earlier.
+   * More than one such cycle is marked ambiguous: the latest is used, and the flag says so.
+   */
+  const matchCycle = (pool: string | null | undefined, stamp: string | null) => {
+    const t = parseStamp(stamp);
+    if (!pool || t === null) return null;
+    const candidates = decided.filter((r) => {
+      const c = parseStamp(r.cycle_at)!;
+      return r.llm_pick_pool === pool && c <= t && t - c <= SHADOW_OPEN_MATCH_HOURS * 3_600_000;
+    });
+    if (candidates.length === 0) return null;
+    candidates.sort(byTime);
+    return { cycle: candidates[candidates.length - 1]!, ambiguous: candidates.length > 1 };
+  };
+  const lineById = new Map(positions.map((p) => [p.id, p]));
+  const opened: ShadowOpenedLine[] = [];
+  for (const p of live) {
+    const m = matchCycle(p.pool_address, p.opened_at);
+    if (!m) continue;
+    const line = lineById.get(p.id);
+    opened.push({
+      cycleAt: m.cycle.cycle_at!,
+      llmPair: m.cycle.llm_pick_pair,
+      rulePair: m.cycle.rule_pick_pair,
+      ruleSame: m.cycle.rule_pick_pool ? m.cycle.rule_pick_pool === m.cycle.llm_pick_pool : null,
+      match: "position",
+      positionId: p.id,
+      status: p.status,
+      bookPnlUsd: line?.bookPnlUsd ?? null,
+      chainDeltaSol: line?.chainDeltaSol ?? null,
+      ambiguous: m.ambiguous,
+    });
+  }
+  for (const a of input.attempts.filter((x) => x.outcome === "failed")) {
+    const m = matchCycle(a.pool_address, a.attempted_at);
+    if (!m) continue;
+    opened.push({
+      cycleAt: m.cycle.cycle_at!,
+      llmPair: m.cycle.llm_pick_pair,
+      rulePair: m.cycle.rule_pick_pair,
+      ruleSame: m.cycle.rule_pick_pool ? m.cycle.rule_pick_pool === m.cycle.llm_pick_pool : null,
+      match: "failed-attempt",
+      positionId: null,
+      status: `open gagal (${a.stage ?? "?"})`,
+      bookPnlUsd: null,
+      chainDeltaSol: num(a.cost_lamports) === null ? null : -num(a.cost_lamports)! / LAMPORTS_PER_SOL,
+      ambiguous: m.ambiguous,
+    });
+  }
+  opened.sort((x, y) => parseStamp(x.cycleAt)! - parseStamp(y.cycleAt)!);
+
+  const allTimeShadow = summariseShadow(decided);
+  const shadow: ShadowSection = {
+    available: shadowAvailable,
+    window: summariseShadow(decidedWindow),
+    allTime: allTimeShadow,
+    sampleSufficient: allTimeShadow.decisions >= MIN_SHADOW_DECISIONS,
+    recentDifferent,
+    opened,
+  };
+
+  /* ---- daily concentration, per UTC day over the window ---- */
+  const concAvailable = input.concentrationColumns === true;
+  const dayKey = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+  const days: DailyConcentrationLine[] = [];
+  const firstDay = Date.parse(`${dayKey(windowStart)}T00:00:00Z`);
+  for (let d = firstDay; d <= nowMs; d += 86_400_000) {
+    const key = dayKey(d);
+    const tokens = new Map<string, number>();
+    let liveOpens = 0;
+    for (const p of live) {
+      const t = parseStamp(p.opened_at);
+      if (t === null || t < windowStart || t > nowMs || dayKey(t) !== key) continue;
+      liveOpens++;
+      const tk = tokenKeyOf(p);
+      tokens.set(tk, (tokens.get(tk) ?? 0) + 1);
+    }
+    let flagged = 0;
+    let rejected = 0;
+    let funnelCycles = 0;
+    for (const r of funnel) {
+      const t = parseStamp(r.cycle_at);
+      if (t === null || t < windowStart || t > nowMs || dayKey(t) !== key) continue;
+      funnelCycles++;
+      flagged += num(r.concentration_flagged) ?? 0;
+      rejected += num(r.exec_token_concentration_rejected) ?? 0;
+    }
+    const top = [...tokens.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0];
+    days.push({
+      day: key,
+      liveOpens,
+      distinctTokens: tokens.size,
+      topToken: top?.[0] ?? null,
+      topCount: top?.[1] ?? 0,
+      flagged: concAvailable ? flagged : null,
+      rejected: concAvailable ? rejected : null,
+      funnelCycles,
+    });
+  }
+
   const liveCap = opts.liveCapitalSol;
   const base = opts.baselineSol;
   return {
@@ -400,6 +638,8 @@ export function buildLiveReport(
       valueChangeExceedsFees: split.length === 0 ? null : valueChangeUsd > feesUsd,
     },
     readiness: { closedLiveTrades: positions.length, target: EVALUATION_TRADES },
+    shadow,
+    dailyConcentration: { available: concAvailable, days },
     missing: input.missing,
   };
 }
@@ -476,6 +716,59 @@ export function renderLiveReport(r: LiveReport): string {
 
   h("7. Kesiapan evaluasi");
   out.push(`${r.readiness.closedLiveTrades}/${r.readiness.target} trade live`);
+
+  h("8. LLM vs rule (shadow pick)");
+  const s = r.shadow;
+  if (!s.available) {
+    out.push(`${DASH} DB ini belum punya kolom shadow pick (scan_funnel_cycles.shortlist_size / llm_pick_* / rule_pick_*).`);
+  } else {
+    const scope = (label: string, x: ShadowScope) =>
+      `${label}: ${x.decisions} keputusan · LLM menolak ${x.llmDeclined} · SAMA ${x.same} · BEDA ${x.different} · ` +
+      `kesepakatan ${f(x.agreementPct, 1, "%")} · rule tanpa pilihan ${x.ruleNull} · median shortlist ${f(x.shortlistMedian, 1)}`;
+    out.push(scope(`${r.windowDays} hari terakhir`, s.window), scope("Sepanjang waktu ", s.allTime));
+    out.push(
+      "Rule = pool dengan fee/TVL 24h tertinggi di shortlist yang SAMA; tidak pernah dieksekusi. Kesepakatan dihitung dari siklus di mana LLM memilih DAN rule punya pilihan.",
+    );
+    if (!s.sampleSufficient) {
+      out.push(`sampel belum cukup untuk menilai LLM (${s.allTime.decisions}/${MIN_SHADOW_DECISIONS} keputusan).`);
+    } else {
+      out.push("Sampel sudah melewati batas minimum, tetapi laporan ini TIDAK memberi vonis: kesepakatan bukan hasil.");
+    }
+    if (s.recentDifferent.length > 0) {
+      out.push("Siklus BEDA terakhir (maks 10, terbaru dulu):");
+      for (const d of s.recentDifferent) {
+        out.push(`   ${d.cycleAt} · shortlist ${d.shortlistSize ?? DASH} · LLM ${d.llmPair ?? DASH} · rule ${d.rulePair ?? DASH}`);
+      }
+    }
+    out.push(
+      `Pilihan LLM yang benar-benar dieksekusi (join: posisi live / attempt gagal di pool yang sama, ` +
+        `paling lama ${SHADOW_OPEN_MATCH_HOURS} jam sesudah siklus; siklus terakhir yang cocok dipakai, lebih dari satu = ambigu):`,
+    );
+    if (s.opened.length === 0) out.push("   (belum ada)");
+    for (const o of s.opened) {
+      out.push(
+        `   ${o.cycleAt} · LLM ${o.llmPair ?? DASH} (rule ${o.ruleSame === null ? "tanpa pilihan" : o.ruleSame ? "SAMA" : `BEDA: ${o.rulePair ?? DASH}`}) · ` +
+          `${o.match === "position" ? `posisi #${o.positionId} ${o.status}` : o.status} · buku $${f(o.bookPnlUsd)} · chain ${sgn(o.chainDeltaSol, 6, " SOL")}` +
+          (o.ambiguous ? " · AMBIGU" : ""),
+      );
+    }
+    out.push(
+      "Hasil kontrafaktual pilihan rule TIDAK terukur dari DB: pool itu tidak pernah dibuka. " +
+        "Menilainya butuh analisis bar offline per rule_pick_pool + cycle_at.",
+    );
+  }
+
+  h("9. Konsentrasi harian (UTC)");
+  out.push(
+    "Mode gate (report/enforce) TIDAK tercatat di DB — itu env LIVE_TOKEN_CONCENTRATION_MODE; 'ditolak' > 0 hanya mungkin di enforce.",
+  );
+  for (const d of r.dailyConcentration.days) {
+    out.push(
+      `${d.day} · open live ${d.liveOpens} · token berbeda ${d.distinctTokens} · ` +
+        `teratas ${d.topToken === null ? DASH : `${d.topToken} (${d.topCount}x)`} · ` +
+        `di-flag ${d.flagged === null ? DASH : d.flagged} · ditolak ${d.rejected === null ? DASH : d.rejected} · siklus funnel ${d.funnelCycles}`,
+    );
+  }
 
   if (r.missing.length > 0) {
     out.push("", `Kolom/tabel tidak ada di DB ini (dibaca sebagai ${DASH}): ${r.missing.join(", ")}`);
