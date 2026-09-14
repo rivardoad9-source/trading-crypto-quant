@@ -38,7 +38,9 @@ before(async () => {
   live = await import("../services/liveExecution.js");
 });
 
-after(() => {
+after(async () => {
+  // Close the SQLite handle the liveExecution import opened: Windows refuses to delete an open file (EPERM).
+  (await import("../database/db.js")).closeDatabase();
   rmSync(tempDir, { recursive: true, force: true });
 });
 
