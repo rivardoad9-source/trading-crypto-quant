@@ -1,0 +1,3835 @@
+{
+  "generatedAt": "2026-09-14T16:59:07.185Z",
+  "end": "2026-09-13",
+  "days": 91,
+  "band": {
+    "minUsd": 50000,
+    "maxUsd": 500000
+  },
+  "feeGate": {
+    "min": 0.008,
+    "max": 0.25
+  },
+  "ks": [
+    0.131,
+    0.195,
+    0.491
+  ],
+  "selfCheck": [
+    {
+      "pair": "SOL-USDC",
+      "reconstructed": 346320.8331859821,
+      "api": 346149.7853124259,
+      "ratio": 1.0004941440983468
+    },
+    {
+      "pair": "XMR-USDC",
+      "reconstructed": 12995.537814833653,
+      "api": 12869.824700860954,
+      "ratio": 1.0097680517718544
+    },
+    {
+      "pair": "ANSEM-SOL",
+      "reconstructed": 240219.96758058624,
+      "api": 239990.68491241612,
+      "ratio": 1.000955381531803
+    },
+    {
+      "pair": "SOL-HYPE",
+      "reconstructed": 377127.5720892229,
+      "api": 377080.7098641806,
+      "ratio": 1.0001242763785483
+    },
+    {
+      "pair": "baton-SOL",
+      "reconstructed": 263203.287070204,
+      "api": 261117.42349721616,
+      "ratio": 1.0079882205677861
+    },
+    {
+      "pair": "cbBTC-SOL",
+      "reconstructed": 305668.29117059737,
+      "api": 305497.65256795037,
+      "ratio": 1.0005585594560633
+    },
+    {
+      "pair": "baton-SOL",
+      "reconstructed": 317181.77648737456,
+      "api": 288861.2574506048,
+      "ratio": 1.0980419433423416
+    },
+    {
+      "pair": "STONK-USDC",
+      "reconstructed": 178212.17230843825,
+      "api": 178001.10992951525,
+      "ratio": 1.0011857363080858
+    }
+  ],
+  "windows": [
+    {
+      "label": "W1",
+      "start": "2026-06-14",
+      "end": "2026-09-13",
+      "candidates": 96,
+      "sampledPools": 40,
+      "observations": 120
+    },
+    {
+      "label": "W2",
+      "start": "2026-03-15",
+      "end": "2026-06-14",
+      "candidates": 96,
+      "sampledPools": 40,
+      "observations": 99
+    },
+    {
+      "label": "W3",
+      "start": "2025-12-14",
+      "end": "2026-03-15",
+      "candidates": 96,
+      "sampledPools": 40,
+      "observations": 95
+    }
+  ],
+  "results": [
+    {
+      "window": "W1",
+      "impliedK": {
+        "n": 120,
+        "p25": 0.08540376617627886,
+        "median": 0.21043093852771388,
+        "p75": 0.7165767463691471
+      },
+      "variants": [
+        {
+          "k": 0.131,
+          "n": 120,
+          "errors": {
+            "n": 120,
+            "log2Ratio": {
+              "p10": -4.206237502656526,
+              "p25": -2.4513438833065075,
+              "median": -0.683739947628613,
+              "p75": 0.6171974184148667,
+              "p90": 1.754220486797961
+            },
+            "within2x": 0.35,
+            "medianAbsPctError": 0.8013813357633331
+          },
+          "band": {
+            "bothIn": 35,
+            "bothOut": 47,
+            "falseAccept": 10,
+            "falseReject": 28
+          },
+          "spearmanTvl": 0.6195082991874435,
+          "spearmanFeeTvl": 0.3303187500582776,
+          "top10OverlapFeeTvl": 0.1,
+          "feeTvlGate": {
+            "modelledPass": 90,
+            "realPass": 79,
+            "agree": 93
+          }
+        },
+        {
+          "k": 0.195,
+          "n": 120,
+          "errors": {
+            "n": 120,
+            "log2Ratio": {
+              "p10": -3.6323301904443652,
+              "p25": -1.877436571094347,
+              "median": -0.10983263541645266,
+              "p75": 1.191104730627027,
+              "p90": 2.3281277990101215
+            },
+            "within2x": 0.30833333333333335,
+            "medianAbsPctError": 0.7997032140905926
+          },
+          "band": {
+            "bothIn": 40,
+            "bothOut": 42,
+            "falseAccept": 15,
+            "falseReject": 23
+          },
+          "spearmanTvl": 0.6195082991874435,
+          "spearmanFeeTvl": 0.3350487685459116,
+          "top10OverlapFeeTvl": 0.1,
+          "feeTvlGate": {
+            "modelledPass": 87,
+            "realPass": 79,
+            "agree": 90
+          }
+        },
+        {
+          "k": 0.491,
+          "n": 120,
+          "errors": {
+            "n": 120,
+            "log2Ratio": {
+              "p10": -2.3000812898792833,
+              "p25": -0.5451876705292649,
+              "median": 1.2224162651486297,
+              "p75": 2.5233536311921094,
+              "p90": 3.6603766995752034
+            },
+            "within2x": 0.25,
+            "medianAbsPctError": 1.3334367102763918
+          },
+          "band": {
+            "bothIn": 34,
+            "bothOut": 41,
+            "falseAccept": 16,
+            "falseReject": 29
+          },
+          "spearmanTvl": 0.6195082991874435,
+          "spearmanFeeTvl": 0.33270219300595044,
+          "top10OverlapFeeTvl": 0,
+          "feeTvlGate": {
+            "modelledPass": 60,
+            "realPass": 79,
+            "agree": 85
+          }
+        },
+        {
+          "k": "per-pool-today",
+          "n": 90,
+          "errors": {
+            "n": 90,
+            "log2Ratio": {
+              "p10": -1.9567142508852324,
+              "p25": -0.2098073541519832,
+              "median": 1.0615219706948475,
+              "p75": 2.77064685362524,
+              "p90": 4.365511348516414
+            },
+            "within2x": 0.35555555555555557,
+            "medianAbsPctError": 1.087314286304441
+          },
+          "band": {
+            "bothIn": 28,
+            "bothOut": 24,
+            "falseAccept": 12,
+            "falseReject": 26
+          },
+          "spearmanTvl": 0.5214223978268923,
+          "spearmanFeeTvl": 0.5213113776117259,
+          "top10OverlapFeeTvl": 0.4,
+          "feeTvlGate": {
+            "modelledPass": 42,
+            "realPass": 55,
+            "agree": 63
+          }
+        }
+      ]
+    },
+    {
+      "window": "W2",
+      "impliedK": {
+        "n": 99,
+        "p25": 0.4716176714900302,
+        "median": 1.5627801653841173,
+        "p75": 4.600602888119098
+      },
+      "variants": [
+        {
+          "k": 0.131,
+          "n": 99,
+          "errors": {
+            "n": 99,
+            "log2Ratio": {
+              "p10": -6.229347841220036,
+              "p25": -5.133740757980449,
+              "median": -3.5764761333649764,
+              "p75": -1.847843442390881,
+              "p90": -1.0709835810630661
+            },
+            "within2x": 0.09090909090909091,
+            "medianAbsPctError": 0.919200785572596
+          },
+          "band": {
+            "bothIn": 11,
+            "bothOut": 26,
+            "falseAccept": 4,
+            "falseReject": 58
+          },
+          "spearmanTvl": 0.7134322820037106,
+          "spearmanFeeTvl": 0.5627288648273819,
+          "top10OverlapFeeTvl": 0.5,
+          "feeTvlGate": {
+            "modelledPass": 60,
+            "realPass": 10,
+            "agree": 47
+          }
+        },
+        {
+          "k": 0.195,
+          "n": 99,
+          "errors": {
+            "n": 99,
+            "log2Ratio": {
+              "p10": -5.655440529007875,
+              "p25": -4.559833445768287,
+              "median": -3.002568821152816,
+              "p75": -1.2739361301787206,
+              "p90": -0.4970762688509059
+            },
+            "within2x": 0.15151515151515152,
+            "medianAbsPctError": 0.911447530989665
+          },
+          "band": {
+            "bothIn": 17,
+            "bothOut": 25,
+            "falseAccept": 5,
+            "falseReject": 52
+          },
+          "spearmanTvl": 0.7134322820037106,
+          "spearmanFeeTvl": 0.5428653045384086,
+          "top10OverlapFeeTvl": 0.5,
+          "feeTvlGate": {
+            "modelledPass": 57,
+            "realPass": 10,
+            "agree": 48
+          }
+        },
+        {
+          "k": 0.491,
+          "n": 99,
+          "errors": {
+            "n": 99,
+            "log2Ratio": {
+              "p10": -4.3231916284427925,
+              "p25": -3.2275845452032055,
+              "median": -1.6703199205877337,
+              "p75": 0.058312770386361845,
+              "p90": 0.8351726317141764
+            },
+            "within2x": 0.2828282828282828,
+            "medianAbsPctError": 0.8206456428788222
+          },
+          "band": {
+            "bothIn": 25,
+            "bothOut": 27,
+            "falseAccept": 3,
+            "falseReject": 44
+          },
+          "spearmanTvl": 0.7134322820037106,
+          "spearmanFeeTvl": 0.5456086025950123,
+          "top10OverlapFeeTvl": 0.4,
+          "feeTvlGate": {
+            "modelledPass": 24,
+            "realPass": 10,
+            "agree": 79
+          }
+        },
+        {
+          "k": "per-pool-today",
+          "n": 99,
+          "errors": {
+            "n": 99,
+            "log2Ratio": {
+              "p10": -2.84561645474859,
+              "p25": -1.7978676286223592,
+              "median": -0.5325512019498437,
+              "p75": 1.7749247119567788,
+              "p90": 3.0811388153097257
+            },
+            "within2x": 0.32323232323232326,
+            "medianAbsPctError": 0.7900539149878579
+          },
+          "band": {
+            "bothIn": 29,
+            "bothOut": 28,
+            "falseAccept": 2,
+            "falseReject": 40
+          },
+          "spearmanTvl": 0.7453184910327767,
+          "spearmanFeeTvl": 0.6092921346611703,
+          "top10OverlapFeeTvl": 0.3,
+          "feeTvlGate": {
+            "modelledPass": 15,
+            "realPass": 10,
+            "agree": 82
+          }
+        }
+      ]
+    },
+    {
+      "window": "W3",
+      "impliedK": {
+        "n": 95,
+        "p25": 1.0713423192204403,
+        "median": 2.3733395854113057,
+        "p75": 11.134420613855045
+      },
+      "variants": [
+        {
+          "k": 0.131,
+          "n": 95,
+          "errors": {
+            "n": 95,
+            "log2Ratio": {
+              "p10": -7.611287989161879,
+              "p25": -6.409136022978272,
+              "median": -4.179279824085325,
+              "p75": -3.0316088765544595,
+              "p90": -1.8496231626386548
+            },
+            "within2x": 0.05263157894736842,
+            "medianAbsPctError": 0.944803516190753
+          },
+          "band": {
+            "bothIn": 4,
+            "bothOut": 19,
+            "falseAccept": 1,
+            "falseReject": 71
+          },
+          "spearmanTvl": 0.632474804031355,
+          "spearmanFeeTvl": 0.49470986489704133,
+          "top10OverlapFeeTvl": 0.4,
+          "feeTvlGate": {
+            "modelledPass": 62,
+            "realPass": 6,
+            "agree": 39
+          }
+        },
+        {
+          "k": 0.195,
+          "n": 95,
+          "errors": {
+            "n": 95,
+            "log2Ratio": {
+              "p10": -7.037380676949719,
+              "p25": -5.835228710766112,
+              "median": -3.605372511873164,
+              "p75": -2.4577015643422992,
+              "p90": -1.2757158504264943
+            },
+            "within2x": 0.07368421052631578,
+            "medianAbsPctError": 0.9224090758559021
+          },
+          "band": {
+            "bothIn": 9,
+            "bothOut": 19,
+            "falseAccept": 1,
+            "falseReject": 66
+          },
+          "spearmanTvl": 0.632474804031355,
+          "spearmanFeeTvl": 0.4983023106999897,
+          "top10OverlapFeeTvl": 0.5,
+          "feeTvlGate": {
+            "modelledPass": 59,
+            "realPass": 6,
+            "agree": 42
+          }
+        },
+        {
+          "k": 0.491,
+          "n": 95,
+          "errors": {
+            "n": 95,
+            "log2Ratio": {
+              "p10": -5.705131776384636,
+              "p25": -4.50297981020103,
+              "median": -2.2731236113080815,
+              "p75": -1.1254526637772173,
+              "p90": 0.05653305013858798
+            },
+            "within2x": 0.17894736842105263,
+            "medianAbsPctError": 0.8491525740938025
+          },
+          "band": {
+            "bothIn": 24,
+            "bothOut": 19,
+            "falseAccept": 1,
+            "falseReject": 51
+          },
+          "spearmanTvl": 0.632474804031355,
+          "spearmanFeeTvl": 0.502329774248169,
+          "top10OverlapFeeTvl": 0.4,
+          "feeTvlGate": {
+            "modelledPass": 27,
+            "realPass": 6,
+            "agree": 74
+          }
+        },
+        {
+          "k": "per-pool-today",
+          "n": 95,
+          "errors": {
+            "n": 95,
+            "log2Ratio": {
+              "p10": -2.419474995877382,
+              "p25": -0.8861725386064043,
+              "median": 0.5602333989286388,
+              "p75": 2.4210069018385196,
+              "p90": 3.3874376927822385
+            },
+            "within2x": 0.37894736842105264,
+            "medianAbsPctError": 0.8257095037978819
+          },
+          "band": {
+            "bothIn": 35,
+            "bothOut": 15,
+            "falseAccept": 5,
+            "falseReject": 40
+          },
+          "spearmanTvl": 0.6633958566629339,
+          "spearmanFeeTvl": 0.6867577571928293,
+          "top10OverlapFeeTvl": 0.5,
+          "feeTvlGate": {
+            "modelledPass": 9,
+            "realPass": 6,
+            "agree": 86
+          }
+        }
+      ]
+    },
+    {
+      "window": "SEMUA",
+      "impliedK": {
+        "n": 314,
+        "p25": 0.26044545045958256,
+        "median": 1.0482999880231625,
+        "p75": 3.2594524429156406
+      },
+      "variants": [
+        {
+          "k": 0.131,
+          "n": 314,
+          "errors": {
+            "n": 314,
+            "log2Ratio": {
+              "p10": -6.474487879727047,
+              "p25": -4.6369904486461975,
+              "median": -3.000411512132062,
+              "p75": -0.9913704465852128,
+              "p90": 0.6198188216228083
+            },
+            "within2x": 0.17834394904458598,
+            "medianAbsPctError": 0.914614181314827
+          },
+          "band": {
+            "bothIn": 50,
+            "bothOut": 92,
+            "falseAccept": 15,
+            "falseReject": 157
+          },
+          "spearmanTvl": 0.5269542162930576,
+          "spearmanFeeTvl": 0.5174760771004773,
+          "top10OverlapFeeTvl": 0.1,
+          "feeTvlGate": {
+            "modelledPass": 212,
+            "realPass": 95,
+            "agree": 179
+          }
+        },
+        {
+          "k": 0.195,
+          "n": 314,
+          "errors": {
+            "n": 314,
+            "log2Ratio": {
+              "p10": -5.900580567514886,
+              "p25": -4.063083136434037,
+              "median": -2.4265041999199015,
+              "p75": -0.4174631343730524,
+              "p90": 1.1937261338349687
+            },
+            "within2x": 0.18789808917197454,
+            "medianAbsPctError": 0.8913480330609483
+          },
+          "band": {
+            "bothIn": 66,
+            "bothOut": 86,
+            "falseAccept": 21,
+            "falseReject": 141
+          },
+          "spearmanTvl": 0.5269542162930576,
+          "spearmanFeeTvl": 0.5173330025170325,
+          "top10OverlapFeeTvl": 0,
+          "feeTvlGate": {
+            "modelledPass": 203,
+            "realPass": 95,
+            "agree": 180
+          }
+        },
+        {
+          "k": 0.491,
+          "n": 314,
+          "errors": {
+            "n": 314,
+            "log2Ratio": {
+              "p10": -4.5683316669498035,
+              "p25": -2.7308342358689544,
+              "median": -1.094255299354819,
+              "p75": 0.9147857661920298,
+              "p90": 2.5259750344000507
+            },
+            "within2x": 0.23885350318471338,
+            "medianAbsPctError": 0.8543323327598411
+          },
+          "band": {
+            "bothIn": 83,
+            "bothOut": 87,
+            "falseAccept": 20,
+            "falseReject": 124
+          },
+          "spearmanTvl": 0.5269542162930576,
+          "spearmanFeeTvl": 0.5153103000188697,
+          "top10OverlapFeeTvl": 0,
+          "feeTvlGate": {
+            "modelledPass": 111,
+            "realPass": 95,
+            "agree": 238
+          }
+        },
+        {
+          "k": "per-pool-today",
+          "n": 284,
+          "errors": {
+            "n": 284,
+            "log2Ratio": {
+              "p10": -2.6143720200977225,
+              "p25": -0.99725499587034,
+              "median": 0.48477211742705306,
+              "p75": 2.4190721088796403,
+              "p90": 3.507198671950247
+            },
+            "within2x": 0.352112676056338,
+            "medianAbsPctError": 0.8403836038991568
+          },
+          "band": {
+            "bothIn": 92,
+            "bothOut": 67,
+            "falseAccept": 19,
+            "falseReject": 106
+          },
+          "spearmanTvl": 0.647027113396391,
+          "spearmanFeeTvl": 0.6596336957486062,
+          "top10OverlapFeeTvl": 0.3,
+          "feeTvlGate": {
+            "modelledPass": 66,
+            "realPass": 71,
+            "agree": 231
+          }
+        }
+      ]
+    }
+  ],
+  "composition": {
+    "byQuote": {
+      "W1": {
+        "quote SOL/lain": {
+          "n": 90,
+          "p25": 0.12639231099945838,
+          "median": 0.28120216179735824,
+          "p75": 0.9011837641654118
+        },
+        "quote USD": {
+          "n": 30,
+          "p25": 0.02987385989716444,
+          "median": 0.07692107662102274,
+          "p75": 0.4730141015440105
+        }
+      },
+      "W2": {
+        "quote SOL/lain": {
+          "n": 39,
+          "p25": 0.3924049472274484,
+          "median": 1.0001416769546296,
+          "p75": 2.73832675065794
+        },
+        "quote USD": {
+          "n": 60,
+          "p25": 0.7122294455529801,
+          "median": 2.851926456609382,
+          "p75": 6.249983579179135
+        }
+      },
+      "W3": {
+        "quote SOL/lain": {
+          "n": 35,
+          "p25": 0.5081489442576259,
+          "median": 1.545443483957018,
+          "p75": 4.804521015310785
+        },
+        "quote USD": {
+          "n": 60,
+          "p25": 1.6961189881169751,
+          "median": 3.5449594249199516,
+          "p75": 15.68750504630613
+        }
+      }
+    },
+    "samePoolDrift": [
+      {
+        "newer": "W1",
+        "older": "W2",
+        "pools": 9,
+        "medianLog2OlderOverNewer": -0.35444098895427256
+      },
+      {
+        "newer": "W1",
+        "older": "W3",
+        "pools": 5,
+        "medianLog2OlderOverNewer": -0.8875521937412846
+      },
+      {
+        "newer": "W2",
+        "older": "W3",
+        "pools": 23,
+        "medianLog2OlderOverNewer": -0.43992870148452806
+      }
+    ]
+  },
+  "exclusions": {
+    "W1: <48 bars in window": 13,
+    "W2: <48 bars in window": 5,
+    "W2: neither side is SOL or a stable: not priced": 21,
+    "W3: <48 bars in window": 14,
+    "W3: neither side is SOL or a stable: not priced": 25
+  },
+  "observations": [
+    {
+      "pool": "27Nh3SeiQheggDokah5xPwbzNLMN6H1uKpc7xamKnAkx",
+      "pairName": "Intismeran-SOL",
+      "window": "W1",
+      "t": 1787407200,
+      "feeRate": 0.01,
+      "vol24hUsd": 1545.146798649643,
+      "realTvlUsd": 1658.7668523746368,
+      "perPoolKToday": 1689.9970680556748
+    },
+    {
+      "pool": "27Nh3SeiQheggDokah5xPwbzNLMN6H1uKpc7xamKnAkx",
+      "pairName": "Intismeran-SOL",
+      "window": "W1",
+      "t": 1787781600,
+      "feeRate": 0.01,
+      "vol24hUsd": 69.03431892576037,
+      "realTvlUsd": 427.13336164297857,
+      "perPoolKToday": 1689.9970680556748
+    },
+    {
+      "pool": "27Nh3SeiQheggDokah5xPwbzNLMN6H1uKpc7xamKnAkx",
+      "pairName": "Intismeran-SOL",
+      "window": "W1",
+      "t": 1788328800,
+      "feeRate": 0.01,
+      "vol24hUsd": 136.88193050643227,
+      "realTvlUsd": 384.9180522952157,
+      "perPoolKToday": 1689.9970680556748
+    },
+    {
+      "pool": "2CVnAQYvrgTX8rmnRzWCE3Citgbo3kga3M8TeoFsUEJz",
+      "pairName": "febu-SOL",
+      "window": "W1",
+      "t": 1784354400,
+      "feeRate": 0.03,
+      "vol24hUsd": 222250.19623456252,
+      "realTvlUsd": 92809.39871141095,
+      "perPoolKToday": 649.2442770081964
+    },
+    {
+      "pool": "2CVnAQYvrgTX8rmnRzWCE3Citgbo3kga3M8TeoFsUEJz",
+      "pairName": "febu-SOL",
+      "window": "W1",
+      "t": 1785855600,
+      "feeRate": 0.03,
+      "vol24hUsd": 28354.9050668602,
+      "realTvlUsd": 23937.423453477546,
+      "perPoolKToday": 649.2442770081964
+    },
+    {
+      "pool": "2CVnAQYvrgTX8rmnRzWCE3Citgbo3kga3M8TeoFsUEJz",
+      "pairName": "febu-SOL",
+      "window": "W1",
+      "t": 1787853600,
+      "feeRate": 0.03,
+      "vol24hUsd": 4896.5311185465,
+      "realTvlUsd": 8100.318195884004,
+      "perPoolKToday": 649.2442770081964
+    },
+    {
+      "pool": "2f5QQnNBATNsE7mAW94dpxXeeBcihseJbawQ2KXen3rQ",
+      "pairName": "PERPSPAD-SOL",
+      "window": "W1",
+      "t": 1788660000,
+      "feeRate": 0.02,
+      "vol24hUsd": 1369.8704716733823,
+      "realTvlUsd": 1010.8527433526856,
+      "perPoolKToday": 0.195225010665301
+    },
+    {
+      "pool": "2f5QQnNBATNsE7mAW94dpxXeeBcihseJbawQ2KXen3rQ",
+      "pairName": "PERPSPAD-SOL",
+      "window": "W1",
+      "t": 1788894000,
+      "feeRate": 0.02,
+      "vol24hUsd": 10312.844683955916,
+      "realTvlUsd": 5209.237327918582,
+      "perPoolKToday": 0.195225010665301
+    },
+    {
+      "pool": "2f5QQnNBATNsE7mAW94dpxXeeBcihseJbawQ2KXen3rQ",
+      "pairName": "PERPSPAD-SOL",
+      "window": "W1",
+      "t": 1789128000,
+      "feeRate": 0.02,
+      "vol24hUsd": 22372.65029292928,
+      "realTvlUsd": 2680.3178358733485,
+      "perPoolKToday": 0.195225010665301
+    },
+    {
+      "pool": "2HGCGp7ceMsVVcWBQrcm8tHDCdMR7eX3pur5XGyjgWNs",
+      "pairName": "MENSA-SOL",
+      "window": "W1",
+      "t": 1784102400,
+      "feeRate": 0.02,
+      "vol24hUsd": 145870.66360372375,
+      "realTvlUsd": 91350.27925385986,
+      "perPoolKToday": 3.9561184148912694
+    },
+    {
+      "pool": "2HGCGp7ceMsVVcWBQrcm8tHDCdMR7eX3pur5XGyjgWNs",
+      "pairName": "MENSA-SOL",
+      "window": "W1",
+      "t": 1786046400,
+      "feeRate": 0.02,
+      "vol24hUsd": 159241.59891481386,
+      "realTvlUsd": 85967.6312744199,
+      "perPoolKToday": 3.9561184148912694
+    },
+    {
+      "pool": "2HGCGp7ceMsVVcWBQrcm8tHDCdMR7eX3pur5XGyjgWNs",
+      "pairName": "MENSA-SOL",
+      "window": "W1",
+      "t": 1788033600,
+      "feeRate": 0.02,
+      "vol24hUsd": 46051.90888030553,
+      "realTvlUsd": 24502.93781113294,
+      "perPoolKToday": 3.9561184148912694
+    },
+    {
+      "pool": "2N1KNuLSt167P6p9P8HYcisTvTTv4vYTM8QJBbtv1xYU",
+      "pairName": "CARDS-USDC",
+      "window": "W1",
+      "t": 1782774000,
+      "feeRate": 0.002,
+      "vol24hUsd": 1240167.4719771652,
+      "realTvlUsd": 235608.823900594,
+      "perPoolKToday": 0.3729297729243252
+    },
+    {
+      "pool": "2N1KNuLSt167P6p9P8HYcisTvTTv4vYTM8QJBbtv1xYU",
+      "pairName": "CARDS-USDC",
+      "window": "W1",
+      "t": 1785366000,
+      "feeRate": 0.002,
+      "vol24hUsd": 73746.394035893,
+      "realTvlUsd": 112326.36254145618,
+      "perPoolKToday": 0.3729297729243252
+    },
+    {
+      "pool": "2N1KNuLSt167P6p9P8HYcisTvTTv4vYTM8QJBbtv1xYU",
+      "pairName": "CARDS-USDC",
+      "window": "W1",
+      "t": 1787958000,
+      "feeRate": 0.002,
+      "vol24hUsd": 201602.5298681559,
+      "realTvlUsd": 112215.60309900859,
+      "perPoolKToday": 0.3729297729243252
+    },
+    {
+      "pool": "2QDGj5BWMSNyEfmyDFx7eEvWWm4KujUPJ38Xdkntvxtd",
+      "pairName": "PUMP-SOL",
+      "window": "W1",
+      "t": 1785315600,
+      "feeRate": 0.001,
+      "vol24hUsd": 50664.11957379011,
+      "realTvlUsd": 8940.690696231104,
+      "perPoolKToday": 0.683421940534478
+    },
+    {
+      "pool": "2QDGj5BWMSNyEfmyDFx7eEvWWm4KujUPJ38Xdkntvxtd",
+      "pairName": "PUMP-SOL",
+      "window": "W1",
+      "t": 1786892400,
+      "feeRate": 0.001,
+      "vol24hUsd": 189996.900806242,
+      "realTvlUsd": 78123.98761406954,
+      "perPoolKToday": 0.683421940534478
+    },
+    {
+      "pool": "2QDGj5BWMSNyEfmyDFx7eEvWWm4KujUPJ38Xdkntvxtd",
+      "pairName": "PUMP-SOL",
+      "window": "W1",
+      "t": 1788465600,
+      "feeRate": 0.001,
+      "vol24hUsd": 772000.9593999624,
+      "realTvlUsd": 385728.05385267164,
+      "perPoolKToday": 0.683421940534478
+    },
+    {
+      "pool": "2VHM9pTZEU6pqeZoiNi8ZCeyerqhRYgS5Um7U8AEKrd9",
+      "pairName": "Jimothy-SOL",
+      "window": "W1",
+      "t": 1784980800,
+      "feeRate": 0.03,
+      "vol24hUsd": 438662.2868833019,
+      "realTvlUsd": 254460.61280020134,
+      "perPoolKToday": 18.75409872175455
+    },
+    {
+      "pool": "2VHM9pTZEU6pqeZoiNi8ZCeyerqhRYgS5Um7U8AEKrd9",
+      "pairName": "Jimothy-SOL",
+      "window": "W1",
+      "t": 1786453200,
+      "feeRate": 0.03,
+      "vol24hUsd": 14439.37164347051,
+      "realTvlUsd": 20876.848364870722,
+      "perPoolKToday": 18.75409872175455
+    },
+    {
+      "pool": "2VHM9pTZEU6pqeZoiNi8ZCeyerqhRYgS5Um7U8AEKrd9",
+      "pairName": "Jimothy-SOL",
+      "window": "W1",
+      "t": 1788210000,
+      "feeRate": 0.03,
+      "vol24hUsd": 1340.0054093701144,
+      "realTvlUsd": 3660.4696420015202,
+      "perPoolKToday": 18.75409872175455
+    },
+    {
+      "pool": "36SpkkrsnyUgjPC24KU993r8T3whkJaPgoEeAmbBj9uB",
+      "pairName": "STONK-USDC",
+      "window": "W1",
+      "t": 1788994800,
+      "feeRate": 0.0015,
+      "vol24hUsd": 129879.04280028623,
+      "realTvlUsd": 5171.715878504743,
+      "perPoolKToday": 0.08923535135066504
+    },
+    {
+      "pool": "36SpkkrsnyUgjPC24KU993r8T3whkJaPgoEeAmbBj9uB",
+      "pairName": "STONK-USDC",
+      "window": "W1",
+      "t": 1789095600,
+      "feeRate": 0.0015,
+      "vol24hUsd": 62739.557942364925,
+      "realTvlUsd": 10436.207977883629,
+      "perPoolKToday": 0.08923535135066504
+    },
+    {
+      "pool": "36SpkkrsnyUgjPC24KU993r8T3whkJaPgoEeAmbBj9uB",
+      "pairName": "STONK-USDC",
+      "window": "W1",
+      "t": 1789203600,
+      "feeRate": 0.0015,
+      "vol24hUsd": 1620997.4797204635,
+      "realTvlUsd": 57586.97219071614,
+      "perPoolKToday": 0.08923535135066504
+    },
+    {
+      "pool": "3Mt1bpU3fnSXyPEm66HKKXyQTpLWrwYziPLqwTqK4ZT7",
+      "pairName": "ORE-SOL",
+      "window": "W1",
+      "t": 1782774000,
+      "feeRate": 0.002,
+      "vol24hUsd": 328821.79170255124,
+      "realTvlUsd": 99904.27290490844,
+      "perPoolKToday": 0.17309934979439634
+    },
+    {
+      "pool": "3Mt1bpU3fnSXyPEm66HKKXyQTpLWrwYziPLqwTqK4ZT7",
+      "pairName": "ORE-SOL",
+      "window": "W1",
+      "t": 1785366000,
+      "feeRate": 0.002,
+      "vol24hUsd": 180404.6943705235,
+      "realTvlUsd": 197599.6243217064,
+      "perPoolKToday": 0.17309934979439634
+    },
+    {
+      "pool": "3Mt1bpU3fnSXyPEm66HKKXyQTpLWrwYziPLqwTqK4ZT7",
+      "pairName": "ORE-SOL",
+      "window": "W1",
+      "t": 1787958000,
+      "feeRate": 0.002,
+      "vol24hUsd": 418447.57551655924,
+      "realTvlUsd": 279704.82899528946,
+      "perPoolKToday": 0.17309934979439634
+    },
+    {
+      "pool": "3potGhhaNyzvCNq1CGh2wLbZLLMjpdPtG1Hpj8q2DDVR",
+      "pairName": "ETH-SOL",
+      "window": "W1",
+      "t": 1782774000,
+      "feeRate": 0.0004,
+      "vol24hUsd": 85334.75444826386,
+      "realTvlUsd": 89174.76862894668,
+      "perPoolKToday": 0.16845012512105284
+    },
+    {
+      "pool": "3potGhhaNyzvCNq1CGh2wLbZLLMjpdPtG1Hpj8q2DDVR",
+      "pairName": "ETH-SOL",
+      "window": "W1",
+      "t": 1785366000,
+      "feeRate": 0.0004,
+      "vol24hUsd": 945249.6031461345,
+      "realTvlUsd": 89330.89498855527,
+      "perPoolKToday": 0.16845012512105284
+    },
+    {
+      "pool": "3potGhhaNyzvCNq1CGh2wLbZLLMjpdPtG1Hpj8q2DDVR",
+      "pairName": "ETH-SOL",
+      "window": "W1",
+      "t": 1787958000,
+      "feeRate": 0.0004,
+      "vol24hUsd": 368907.39075164596,
+      "realTvlUsd": 115924.54684192453,
+      "perPoolKToday": 0.16845012512105284
+    },
+    {
+      "pool": "3s1cAfbqveo2J3eS7KxtitNvebxWnrpkZDyotgDT24MQ",
+      "pairName": "MANLET-SOL",
+      "window": "W1",
+      "t": 1786568400,
+      "feeRate": 0.02,
+      "vol24hUsd": 169270.8153145254,
+      "realTvlUsd": 40970.9832957159,
+      "perPoolKToday": 1.0007093194590222
+    },
+    {
+      "pool": "3s1cAfbqveo2J3eS7KxtitNvebxWnrpkZDyotgDT24MQ",
+      "pairName": "MANLET-SOL",
+      "window": "W1",
+      "t": 1787637600,
+      "feeRate": 0.02,
+      "vol24hUsd": 13908.636489519731,
+      "realTvlUsd": 6484.223602779768,
+      "perPoolKToday": 1.0007093194590222
+    },
+    {
+      "pool": "3s1cAfbqveo2J3eS7KxtitNvebxWnrpkZDyotgDT24MQ",
+      "pairName": "MANLET-SOL",
+      "window": "W1",
+      "t": 1788721200,
+      "feeRate": 0.02,
+      "vol24hUsd": 9665.878104718737,
+      "realTvlUsd": 6194.2644566652125,
+      "perPoolKToday": 1.0007093194590222
+    },
+    {
+      "pool": "3T4Gd3Begbvkgo1qCTYQUrNU6b7mwkMbamf5HDVfSHd7",
+      "pairName": "BOT-USDC",
+      "window": "W1",
+      "t": 1783854000,
+      "feeRate": 0.0002,
+      "vol24hUsd": 12044631.20598445,
+      "realTvlUsd": 17735.35540005844,
+      "perPoolKToday": null
+    },
+    {
+      "pool": "3T4Gd3Begbvkgo1qCTYQUrNU6b7mwkMbamf5HDVfSHd7",
+      "pairName": "BOT-USDC",
+      "window": "W1",
+      "t": 1783998000,
+      "feeRate": 0.0002,
+      "vol24hUsd": 1111490.1763302684,
+      "realTvlUsd": 1769.2346015411895,
+      "perPoolKToday": null
+    },
+    {
+      "pool": "3T4Gd3Begbvkgo1qCTYQUrNU6b7mwkMbamf5HDVfSHd7",
+      "pairName": "BOT-USDC",
+      "window": "W1",
+      "t": 1784217600,
+      "feeRate": 0.0002,
+      "vol24hUsd": 7780.7435523854565,
+      "realTvlUsd": 435.065581317812,
+      "perPoolKToday": null
+    },
+    {
+      "pool": "3vzCDcWV1gWExDYtd2YGtoAD1wvMNv9ceiGzFs7ZrnpM",
+      "pairName": "BULLSHIT-SOL",
+      "window": "W1",
+      "t": 1787432400,
+      "feeRate": 0.02,
+      "vol24hUsd": 551968.4512955878,
+      "realTvlUsd": 391601.1014209928,
+      "perPoolKToday": 1.4613108915450659
+    },
+    {
+      "pool": "3vzCDcWV1gWExDYtd2YGtoAD1wvMNv9ceiGzFs7ZrnpM",
+      "pairName": "BULLSHIT-SOL",
+      "window": "W1",
+      "t": 1788156000,
+      "feeRate": 0.02,
+      "vol24hUsd": 100431.99646287134,
+      "realTvlUsd": 165716.595227189,
+      "perPoolKToday": 1.4613108915450659
+    },
+    {
+      "pool": "3vzCDcWV1gWExDYtd2YGtoAD1wvMNv9ceiGzFs7ZrnpM",
+      "pairName": "BULLSHIT-SOL",
+      "window": "W1",
+      "t": 1788883200,
+      "feeRate": 0.02,
+      "vol24hUsd": 12129.84933713181,
+      "realTvlUsd": 8112.664573070088,
+      "perPoolKToday": 1.4613108915450659
+    },
+    {
+      "pool": "3x6zYZAurYPDFJoWZTs4r3qvnaHNL1e6PuKJAiEyMoep",
+      "pairName": "CYBERLEEK-SOL",
+      "window": "W1",
+      "t": 1787652000,
+      "feeRate": 0.005,
+      "vol24hUsd": 748940.0085402457,
+      "realTvlUsd": 104114.69364214753,
+      "perPoolKToday": null
+    },
+    {
+      "pool": "3x6zYZAurYPDFJoWZTs4r3qvnaHNL1e6PuKJAiEyMoep",
+      "pairName": "CYBERLEEK-SOL",
+      "window": "W1",
+      "t": 1787940000,
+      "feeRate": 0.005,
+      "vol24hUsd": 371760.8575487338,
+      "realTvlUsd": 70417.12688399575,
+      "perPoolKToday": null
+    },
+    {
+      "pool": "3x6zYZAurYPDFJoWZTs4r3qvnaHNL1e6PuKJAiEyMoep",
+      "pairName": "CYBERLEEK-SOL",
+      "window": "W1",
+      "t": 1788228000,
+      "feeRate": 0.005,
+      "vol24hUsd": 45381.25018932103,
+      "realTvlUsd": 2899.659062957173,
+      "perPoolKToday": null
+    },
+    {
+      "pool": "42JnUXw5N9ftMkbM1tMzJw2tnzqs1U9RxWBk5LzNv4gD",
+      "pairName": "LEVERCAT-SOL",
+      "window": "W1",
+      "t": 1788937200,
+      "feeRate": 0.02,
+      "vol24hUsd": 529662.5139653921,
+      "realTvlUsd": 75972.24250506466,
+      "perPoolKToday": 0.48769175251272634
+    },
+    {
+      "pool": "42JnUXw5N9ftMkbM1tMzJw2tnzqs1U9RxWBk5LzNv4gD",
+      "pairName": "LEVERCAT-SOL",
+      "window": "W1",
+      "t": 1789063200,
+      "feeRate": 0.02,
+      "vol24hUsd": 1343627.6357239457,
+      "realTvlUsd": 236288.43697842502,
+      "perPoolKToday": 0.48769175251272634
+    },
+    {
+      "pool": "42JnUXw5N9ftMkbM1tMzJw2tnzqs1U9RxWBk5LzNv4gD",
+      "pairName": "LEVERCAT-SOL",
+      "window": "W1",
+      "t": 1789189200,
+      "feeRate": 0.02,
+      "vol24hUsd": 1018649.293099486,
+      "realTvlUsd": 179197.4553895599,
+      "perPoolKToday": 0.48769175251272634
+    },
+    {
+      "pool": "4643R7UrHjfY5fvNPzGiGhXSUgKo8ti6jZjMuBLAdPA6",
+      "pairName": "USEFUL-SOL",
+      "window": "W1",
+      "t": 1788800400,
+      "feeRate": 0.01,
+      "vol24hUsd": 351539.3126005887,
+      "realTvlUsd": 30379.51493808815,
+      "perPoolKToday": 0.1505853951601068
+    },
+    {
+      "pool": "4643R7UrHjfY5fvNPzGiGhXSUgKo8ti6jZjMuBLAdPA6",
+      "pairName": "USEFUL-SOL",
+      "window": "W1",
+      "t": 1788980400,
+      "feeRate": 0.01,
+      "vol24hUsd": 907148.5592615111,
+      "realTvlUsd": 180288.16945118457,
+      "perPoolKToday": 0.1505853951601068
+    },
+    {
+      "pool": "4643R7UrHjfY5fvNPzGiGhXSUgKo8ti6jZjMuBLAdPA6",
+      "pairName": "USEFUL-SOL",
+      "window": "W1",
+      "t": 1789160400,
+      "feeRate": 0.01,
+      "vol24hUsd": 671383.8923537392,
+      "realTvlUsd": 91350.55114303359,
+      "perPoolKToday": 0.1505853951601068
+    },
+    {
+      "pool": "4Ew5t8wExTKu66DpzXFiMrYYPr19Rp7rWJU6z3QPLUR5",
+      "pairName": "manlet-USDC",
+      "window": "W1",
+      "t": 1783274400,
+      "feeRate": 0.002,
+      "vol24hUsd": 2250810.0560369543,
+      "realTvlUsd": 63000.02343666661,
+      "perPoolKToday": null
+    },
+    {
+      "pool": "4Ew5t8wExTKu66DpzXFiMrYYPr19Rp7rWJU6z3QPLUR5",
+      "pairName": "manlet-USDC",
+      "window": "W1",
+      "t": 1783353600,
+      "feeRate": 0.002,
+      "vol24hUsd": 2796759.2068143175,
+      "realTvlUsd": 61555.03970037886,
+      "perPoolKToday": null
+    },
+    {
+      "pool": "4Ew5t8wExTKu66DpzXFiMrYYPr19Rp7rWJU6z3QPLUR5",
+      "pairName": "manlet-USDC",
+      "window": "W1",
+      "t": 1783432800,
+      "feeRate": 0.002,
+      "vol24hUsd": 1920722.2305756384,
+      "realTvlUsd": 25137.60912271503,
+      "perPoolKToday": null
+    },
+    {
+      "pool": "4HTy7aTjPm5PTSEws2yWRDPX6gjWM6sC2dV5mv9u8JsH",
+      "pairName": "OPENAI-USDC",
+      "window": "W1",
+      "t": 1786816800,
+      "feeRate": 0.0075,
+      "vol24hUsd": 64214.7581352772,
+      "realTvlUsd": 15306.048802701924,
+      "perPoolKToday": 0.6517989015738208
+    },
+    {
+      "pool": "4HTy7aTjPm5PTSEws2yWRDPX6gjWM6sC2dV5mv9u8JsH",
+      "pairName": "OPENAI-USDC",
+      "window": "W1",
+      "t": 1787886000,
+      "feeRate": 0.0075,
+      "vol24hUsd": 272770.27520438394,
+      "realTvlUsd": 65317.17156032838,
+      "perPoolKToday": 0.6517989015738208
+    },
+    {
+      "pool": "4HTy7aTjPm5PTSEws2yWRDPX6gjWM6sC2dV5mv9u8JsH",
+      "pairName": "OPENAI-USDC",
+      "window": "W1",
+      "t": 1788804000,
+      "feeRate": 0.0075,
+      "vol24hUsd": 3889113.810009964,
+      "realTvlUsd": 171585.25385054442,
+      "perPoolKToday": 0.6517989015738208
+    },
+    {
+      "pool": "4kdxjt8pKEW4qV4ji4HANixwswDJw3Egn8L4x2BEWQqT",
+      "pairName": "WBTC-SOL",
+      "window": "W1",
+      "t": 1782774000,
+      "feeRate": 0.0003,
+      "vol24hUsd": 25653.337628545058,
+      "realTvlUsd": 63765.948019285446,
+      "perPoolKToday": 0.16139832943303706
+    },
+    {
+      "pool": "4kdxjt8pKEW4qV4ji4HANixwswDJw3Egn8L4x2BEWQqT",
+      "pairName": "WBTC-SOL",
+      "window": "W1",
+      "t": 1785366000,
+      "feeRate": 0.0003,
+      "vol24hUsd": 34070.87613194817,
+      "realTvlUsd": 62075.91386205054,
+      "perPoolKToday": 0.16139832943303706
+    },
+    {
+      "pool": "4kdxjt8pKEW4qV4ji4HANixwswDJw3Egn8L4x2BEWQqT",
+      "pairName": "WBTC-SOL",
+      "window": "W1",
+      "t": 1787958000,
+      "feeRate": 0.0003,
+      "vol24hUsd": 129163.3101527226,
+      "realTvlUsd": 84813.26438129488,
+      "perPoolKToday": 0.16139832943303706
+    },
+    {
+      "pool": "4pANrqEvjad4xEghrCbAAJfBm8KyNvYMKk1cuGW8erE4",
+      "pairName": "ANSEM-SOL",
+      "window": "W1",
+      "t": 1784192400,
+      "feeRate": 0.001,
+      "vol24hUsd": 177610.87555269612,
+      "realTvlUsd": 21913.70142735957,
+      "perPoolKToday": 0.09434399079840547
+    },
+    {
+      "pool": "4pANrqEvjad4xEghrCbAAJfBm8KyNvYMKk1cuGW8erE4",
+      "pairName": "ANSEM-SOL",
+      "window": "W1",
+      "t": 1786215600,
+      "feeRate": 0.001,
+      "vol24hUsd": 1517810.0599945146,
+      "realTvlUsd": 242325.59827496967,
+      "perPoolKToday": 0.09434399079840547
+    },
+    {
+      "pool": "4pANrqEvjad4xEghrCbAAJfBm8KyNvYMKk1cuGW8erE4",
+      "pairName": "ANSEM-SOL",
+      "window": "W1",
+      "t": 1788238800,
+      "feeRate": 0.001,
+      "vol24hUsd": 2924790.5893229004,
+      "realTvlUsd": 279692.4576672785,
+      "perPoolKToday": 0.09434399079840547
+    },
+    {
+      "pool": "4sDjot4aAGGiwsjzNpMsn4GrWsmek3NUd2VpDFh87EUX",
+      "pairName": "CATE-SOL",
+      "window": "W1",
+      "t": 1785805200,
+      "feeRate": 0.02,
+      "vol24hUsd": 347550.1323096537,
+      "realTvlUsd": 48487.716338253456,
+      "perPoolKToday": 3.5193157138268076
+    },
+    {
+      "pool": "4sDjot4aAGGiwsjzNpMsn4GrWsmek3NUd2VpDFh87EUX",
+      "pairName": "CATE-SOL",
+      "window": "W1",
+      "t": 1787162400,
+      "feeRate": 0.02,
+      "vol24hUsd": 5667.045277640813,
+      "realTvlUsd": 14637.65300826725,
+      "perPoolKToday": 3.5193157138268076
+    },
+    {
+      "pool": "4sDjot4aAGGiwsjzNpMsn4GrWsmek3NUd2VpDFh87EUX",
+      "pairName": "CATE-SOL",
+      "window": "W1",
+      "t": 1788519600,
+      "feeRate": 0.02,
+      "vol24hUsd": 11415.47940057395,
+      "realTvlUsd": 27519.40935981343,
+      "perPoolKToday": 3.5193157138268076
+    },
+    {
+      "pool": "4UMyA2E2Wqe9z3N4iuSWJPDNdJkBVabv3mAx1kjVqTXf",
+      "pairName": "MONEROCHAN-SOL",
+      "window": "W1",
+      "t": 1789023600,
+      "feeRate": 0.01,
+      "vol24hUsd": 329898.435278997,
+      "realTvlUsd": 18749.562321616417,
+      "perPoolKToday": 0.13169872500564736
+    },
+    {
+      "pool": "4UMyA2E2Wqe9z3N4iuSWJPDNdJkBVabv3mAx1kjVqTXf",
+      "pairName": "MONEROCHAN-SOL",
+      "window": "W1",
+      "t": 1789117200,
+      "feeRate": 0.01,
+      "vol24hUsd": 266004.02836053964,
+      "realTvlUsd": 68966.29332392059,
+      "perPoolKToday": 0.13169872500564736
+    },
+    {
+      "pool": "4UMyA2E2Wqe9z3N4iuSWJPDNdJkBVabv3mAx1kjVqTXf",
+      "pairName": "MONEROCHAN-SOL",
+      "window": "W1",
+      "t": 1789207200,
+      "feeRate": 0.01,
+      "vol24hUsd": 674780.0294110191,
+      "realTvlUsd": 84168.00457131087,
+      "perPoolKToday": 0.13169872500564736
+    },
+    {
+      "pool": "4Wah6DXDvVsbHaSjmcT8zDAf4y2tRGhfAHQKvhuzmsho",
+      "pairName": "CYBERLEEK-SOL",
+      "window": "W1",
+      "t": 1787590800,
+      "feeRate": 0.0025,
+      "vol24hUsd": 2616863.824668514,
+      "realTvlUsd": 199733.31011237763,
+      "perPoolKToday": null
+    },
+    {
+      "pool": "4Wah6DXDvVsbHaSjmcT8zDAf4y2tRGhfAHQKvhuzmsho",
+      "pairName": "CYBERLEEK-SOL",
+      "window": "W1",
+      "t": 1787720400,
+      "feeRate": 0.0025,
+      "vol24hUsd": 1289832.3849548895,
+      "realTvlUsd": 54985.71933575532,
+      "perPoolKToday": null
+    },
+    {
+      "pool": "4Wah6DXDvVsbHaSjmcT8zDAf4y2tRGhfAHQKvhuzmsho",
+      "pairName": "CYBERLEEK-SOL",
+      "window": "W1",
+      "t": 1787850000,
+      "feeRate": 0.0025,
+      "vol24hUsd": 449396.43451931776,
+      "realTvlUsd": 32276.4459822523,
+      "perPoolKToday": null
+    },
+    {
+      "pool": "5pjRzUQan6bYynQERLK499fq48LiD5ryZrf9adZX1HQo",
+      "pairName": "Jimothy-SOL",
+      "window": "W1",
+      "t": 1785150000,
+      "feeRate": 0.02,
+      "vol24hUsd": 361040.11893546,
+      "realTvlUsd": 75407.75866979892,
+      "perPoolKToday": 2.008836249500824
+    },
+    {
+      "pool": "5pjRzUQan6bYynQERLK499fq48LiD5ryZrf9adZX1HQo",
+      "pairName": "Jimothy-SOL",
+      "window": "W1",
+      "t": 1786741200,
+      "feeRate": 0.02,
+      "vol24hUsd": 72548.49088582445,
+      "realTvlUsd": 92475.93712140553,
+      "perPoolKToday": 2.008836249500824
+    },
+    {
+      "pool": "5pjRzUQan6bYynQERLK499fq48LiD5ryZrf9adZX1HQo",
+      "pairName": "Jimothy-SOL",
+      "window": "W1",
+      "t": 1788393600,
+      "feeRate": 0.02,
+      "vol24hUsd": 95429.01602540241,
+      "realTvlUsd": 128826.02708249995,
+      "perPoolKToday": 2.008836249500824
+    },
+    {
+      "pool": "5SHjDACvwtox5nY8kpWNYyaceWjtTG8C6L821D9Gtpjf",
+      "pairName": "JLP-USDC",
+      "window": "W1",
+      "t": 1782774000,
+      "feeRate": 0.0003,
+      "vol24hUsd": 883744.9657340774,
+      "realTvlUsd": 496513.42688129004,
+      "perPoolKToday": 0.3137283895705036
+    },
+    {
+      "pool": "5SHjDACvwtox5nY8kpWNYyaceWjtTG8C6L821D9Gtpjf",
+      "pairName": "JLP-USDC",
+      "window": "W1",
+      "t": 1785366000,
+      "feeRate": 0.0003,
+      "vol24hUsd": 917262.7044364528,
+      "realTvlUsd": 505288.79635609465,
+      "perPoolKToday": 0.3137283895705036
+    },
+    {
+      "pool": "5SHjDACvwtox5nY8kpWNYyaceWjtTG8C6L821D9Gtpjf",
+      "pairName": "JLP-USDC",
+      "window": "W1",
+      "t": 1787958000,
+      "feeRate": 0.0003,
+      "vol24hUsd": 6451429.6380558945,
+      "realTvlUsd": 442620.9089539634,
+      "perPoolKToday": 0.3137283895705036
+    },
+    {
+      "pool": "65qQSuQDtSDrTbQVstWkCg2hELoXHYNAx3mpFoN6eFhd",
+      "pairName": "world-SOL",
+      "window": "W1",
+      "t": 1783519200,
+      "feeRate": 0.005,
+      "vol24hUsd": 425430.7035177542,
+      "realTvlUsd": 17441.506978248304,
+      "perPoolKToday": null
+    },
+    {
+      "pool": "65qQSuQDtSDrTbQVstWkCg2hELoXHYNAx3mpFoN6eFhd",
+      "pairName": "world-SOL",
+      "window": "W1",
+      "t": 1785744000,
+      "feeRate": 0.005,
+      "vol24hUsd": 16337.894658454361,
+      "realTvlUsd": 14887.98809454504,
+      "perPoolKToday": null
+    },
+    {
+      "pool": "65qQSuQDtSDrTbQVstWkCg2hELoXHYNAx3mpFoN6eFhd",
+      "pairName": "world-SOL",
+      "window": "W1",
+      "t": 1787990400,
+      "feeRate": 0.005,
+      "vol24hUsd": 153.09684456359506,
+      "realTvlUsd": 566.2211375341881,
+      "perPoolKToday": null
+    },
+    {
+      "pool": "6F4rVnmVc1A2QDqpHn5cpQZfXugapFbGZTXEyaakpvVQ",
+      "pairName": "HYPE-USDC",
+      "window": "W1",
+      "t": 1782774000,
+      "feeRate": 0.001,
+      "vol24hUsd": 2363276.2844049553,
+      "realTvlUsd": 354463.6064279489,
+      "perPoolKToday": 1.0911628899914858
+    },
+    {
+      "pool": "6F4rVnmVc1A2QDqpHn5cpQZfXugapFbGZTXEyaakpvVQ",
+      "pairName": "HYPE-USDC",
+      "window": "W1",
+      "t": 1785366000,
+      "feeRate": 0.001,
+      "vol24hUsd": 432157.69465458713,
+      "realTvlUsd": 286304.8467822898,
+      "perPoolKToday": 1.0911628899914858
+    },
+    {
+      "pool": "6F4rVnmVc1A2QDqpHn5cpQZfXugapFbGZTXEyaakpvVQ",
+      "pairName": "HYPE-USDC",
+      "window": "W1",
+      "t": 1787958000,
+      "feeRate": 0.001,
+      "vol24hUsd": 1771012.6189546469,
+      "realTvlUsd": 304269.33663268434,
+      "perPoolKToday": 1.0911628899914858
+    },
+    {
+      "pool": "6gTP8TitYMf4sQeeACfB4YaSbqMYmsgXt3gZez4NjFn4",
+      "pairName": "manlet-SOL",
+      "window": "W1",
+      "t": 1783314000,
+      "feeRate": 0.002,
+      "vol24hUsd": 992589.3679430251,
+      "realTvlUsd": 30533.373435759968,
+      "perPoolKToday": null
+    },
+    {
+      "pool": "6gTP8TitYMf4sQeeACfB4YaSbqMYmsgXt3gZez4NjFn4",
+      "pairName": "manlet-SOL",
+      "window": "W1",
+      "t": 1783458000,
+      "feeRate": 0.002,
+      "vol24hUsd": 1023078.8626945522,
+      "realTvlUsd": 11625.728623074983,
+      "perPoolKToday": null
+    },
+    {
+      "pool": "6gTP8TitYMf4sQeeACfB4YaSbqMYmsgXt3gZez4NjFn4",
+      "pairName": "manlet-SOL",
+      "window": "W1",
+      "t": 1783638000,
+      "feeRate": 0.002,
+      "vol24hUsd": 204809.4751815386,
+      "realTvlUsd": 6943.789221085916,
+      "perPoolKToday": null
+    },
+    {
+      "pool": "6k7hLzFcL3H64uziJboN3WZNXYj6PiBMP1DZh8zFfhSb",
+      "pairName": "AAVE-USDC",
+      "window": "W1",
+      "t": 1782676800,
+      "feeRate": 0.0025,
+      "vol24hUsd": 8388.193422803062,
+      "realTvlUsd": 95588.12985832401,
+      "perPoolKToday": 0.1173681764352752
+    },
+    {
+      "pool": "6k7hLzFcL3H64uziJboN3WZNXYj6PiBMP1DZh8zFfhSb",
+      "pairName": "AAVE-USDC",
+      "window": "W1",
+      "t": 1785290400,
+      "feeRate": 0.0025,
+      "vol24hUsd": 3288.2891154323797,
+      "realTvlUsd": 56388.39215,
+      "perPoolKToday": 0.1173681764352752
+    },
+    {
+      "pool": "6k7hLzFcL3H64uziJboN3WZNXYj6PiBMP1DZh8zFfhSb",
+      "pairName": "AAVE-USDC",
+      "window": "W1",
+      "t": 1788033600,
+      "feeRate": 0.0025,
+      "vol24hUsd": 9818.272673035584,
+      "realTvlUsd": 25254.489477182207,
+      "perPoolKToday": 0.1173681764352752
+    },
+    {
+      "pool": "6oQ9wVex4mKZti2GsGCfD8FWTMMC9PLQkztRU5cd6MK8",
+      "pairName": "SOL-HYPE",
+      "window": "W1",
+      "t": 1782774000,
+      "feeRate": 0.0004,
+      "vol24hUsd": 2020782.1627162592,
+      "realTvlUsd": 254820.18468628285,
+      "perPoolKToday": 0.16125666935315242
+    },
+    {
+      "pool": "6oQ9wVex4mKZti2GsGCfD8FWTMMC9PLQkztRU5cd6MK8",
+      "pairName": "SOL-HYPE",
+      "window": "W1",
+      "t": 1785366000,
+      "feeRate": 0.0004,
+      "vol24hUsd": 1382268.952754545,
+      "realTvlUsd": 156716.73228128997,
+      "perPoolKToday": 0.16125666935315242
+    },
+    {
+      "pool": "6oQ9wVex4mKZti2GsGCfD8FWTMMC9PLQkztRU5cd6MK8",
+      "pairName": "SOL-HYPE",
+      "window": "W1",
+      "t": 1787958000,
+      "feeRate": 0.0004,
+      "vol24hUsd": 3927439.6987930466,
+      "realTvlUsd": 299461.00302085746,
+      "perPoolKToday": 0.16125666935315242
+    },
+    {
+      "pool": "6tzYbgdqar57x2GAvqDzxSTtP6vkp3ydVPtoQYz1aD6p",
+      "pairName": "Cupsey-SOL",
+      "window": "W1",
+      "t": 1784469600,
+      "feeRate": 0.01,
+      "vol24hUsd": 37953.78537745237,
+      "realTvlUsd": 20705.705719007045,
+      "perPoolKToday": 21.15902853795374
+    },
+    {
+      "pool": "6tzYbgdqar57x2GAvqDzxSTtP6vkp3ydVPtoQYz1aD6p",
+      "pairName": "Cupsey-SOL",
+      "window": "W1",
+      "t": 1786345200,
+      "feeRate": 0.01,
+      "vol24hUsd": 5357.657854596405,
+      "realTvlUsd": 13689.669938059356,
+      "perPoolKToday": 21.15902853795374
+    },
+    {
+      "pool": "6tzYbgdqar57x2GAvqDzxSTtP6vkp3ydVPtoQYz1aD6p",
+      "pairName": "Cupsey-SOL",
+      "window": "W1",
+      "t": 1788260400,
+      "feeRate": 0.01,
+      "vol24hUsd": 6116.526935397562,
+      "realTvlUsd": 6420.879842877431,
+      "perPoolKToday": 21.15902853795374
+    },
+    {
+      "pool": "6yFbtmHU65gY6VwFuv7d8NbDkawhbfRNArATdGqSj8qB",
+      "pairName": "AGI-SOL",
+      "window": "W1",
+      "t": 1788724800,
+      "feeRate": 0.01,
+      "vol24hUsd": 1325603.0493422837,
+      "realTvlUsd": 103252.02988814899,
+      "perPoolKToday": 0.23302032062046685
+    },
+    {
+      "pool": "6yFbtmHU65gY6VwFuv7d8NbDkawhbfRNArATdGqSj8qB",
+      "pairName": "AGI-SOL",
+      "window": "W1",
+      "t": 1788937200,
+      "feeRate": 0.01,
+      "vol24hUsd": 903234.1668974159,
+      "realTvlUsd": 151842.78097097104,
+      "perPoolKToday": 0.23302032062046685
+    },
+    {
+      "pool": "6yFbtmHU65gY6VwFuv7d8NbDkawhbfRNArATdGqSj8qB",
+      "pairName": "AGI-SOL",
+      "window": "W1",
+      "t": 1789146000,
+      "feeRate": 0.01,
+      "vol24hUsd": 388461.8793417953,
+      "realTvlUsd": 105528.43966605946,
+      "perPoolKToday": 0.23302032062046685
+    },
+    {
+      "pool": "778hT73Cd7vV7Zme2bBNDb8ZHZ97P4WiLMMneoYKwrA6",
+      "pairName": "Pistacio-SOL",
+      "window": "W1",
+      "t": 1787990400,
+      "feeRate": 0.0025,
+      "vol24hUsd": 870252.635219576,
+      "realTvlUsd": 42589.087488047466,
+      "perPoolKToday": null
+    },
+    {
+      "pool": "778hT73Cd7vV7Zme2bBNDb8ZHZ97P4WiLMMneoYKwrA6",
+      "pairName": "Pistacio-SOL",
+      "window": "W1",
+      "t": 1788393600,
+      "feeRate": 0.0025,
+      "vol24hUsd": 95779.49664498553,
+      "realTvlUsd": 3756.349701257226,
+      "perPoolKToday": null
+    },
+    {
+      "pool": "778hT73Cd7vV7Zme2bBNDb8ZHZ97P4WiLMMneoYKwrA6",
+      "pairName": "Pistacio-SOL",
+      "window": "W1",
+      "t": 1788796800,
+      "feeRate": 0.0025,
+      "vol24hUsd": 2325.08677234683,
+      "realTvlUsd": 295.913575343345,
+      "perPoolKToday": null
+    },
+    {
+      "pool": "7iyWwX51LwktZoYbwjndBGwX98VYm3pqNRGoZLw1tB3s",
+      "pairName": "TOAD-SOL",
+      "window": "W1",
+      "t": 1786788000,
+      "feeRate": 0.003,
+      "vol24hUsd": 2182890.877613383,
+      "realTvlUsd": 368364.9030285934,
+      "perPoolKToday": 3.164074548896521
+    },
+    {
+      "pool": "7iyWwX51LwktZoYbwjndBGwX98VYm3pqNRGoZLw1tB3s",
+      "pairName": "TOAD-SOL",
+      "window": "W1",
+      "t": 1787774400,
+      "feeRate": 0.003,
+      "vol24hUsd": 508795.4491887732,
+      "realTvlUsd": 198303.43035491699,
+      "perPoolKToday": 3.164074548896521
+    },
+    {
+      "pool": "7iyWwX51LwktZoYbwjndBGwX98VYm3pqNRGoZLw1tB3s",
+      "pairName": "TOAD-SOL",
+      "window": "W1",
+      "t": 1788760800,
+      "feeRate": 0.003,
+      "vol24hUsd": 1154.3667009411367,
+      "realTvlUsd": 3082.4532719906815,
+      "perPoolKToday": 3.164074548896521
+    },
+    {
+      "pool": "7UGK9p3FhJQMWghZeULat8eBc7HmWk48Qcdgc9UVZ6gQ",
+      "pairName": "ANSEM-USDC",
+      "window": "W1",
+      "t": 1787551200,
+      "feeRate": 0.001,
+      "vol24hUsd": 101281.68448524452,
+      "realTvlUsd": 5851.948509744692,
+      "perPoolKToday": null
+    },
+    {
+      "pool": "7UGK9p3FhJQMWghZeULat8eBc7HmWk48Qcdgc9UVZ6gQ",
+      "pairName": "ANSEM-USDC",
+      "window": "W1",
+      "t": 1787875200,
+      "feeRate": 0.001,
+      "vol24hUsd": 836737.4017510987,
+      "realTvlUsd": 57481.14810963286,
+      "perPoolKToday": null
+    },
+    {
+      "pool": "7UGK9p3FhJQMWghZeULat8eBc7HmWk48Qcdgc9UVZ6gQ",
+      "pairName": "ANSEM-USDC",
+      "window": "W1",
+      "t": 1788199200,
+      "feeRate": 0.001,
+      "vol24hUsd": 450577.32915019646,
+      "realTvlUsd": 38364.58407110174,
+      "perPoolKToday": null
+    },
+    {
+      "pool": "7UhbBnpKc5tR29Try7gpmXvjZFFJh6MFQ115GRnHoA3j",
+      "pairName": "Cupsey-SOL",
+      "window": "W1",
+      "t": 1783962000,
+      "feeRate": 0.005,
+      "vol24hUsd": 180915.17021035086,
+      "realTvlUsd": 52600.57782658186,
+      "perPoolKToday": 1.612085907652423
+    },
+    {
+      "pool": "7UhbBnpKc5tR29Try7gpmXvjZFFJh6MFQ115GRnHoA3j",
+      "pairName": "Cupsey-SOL",
+      "window": "W1",
+      "t": 1784811600,
+      "feeRate": 0.005,
+      "vol24hUsd": 368451.1990775815,
+      "realTvlUsd": 67159.46435605921,
+      "perPoolKToday": 1.612085907652423
+    },
+    {
+      "pool": "7UhbBnpKc5tR29Try7gpmXvjZFFJh6MFQ115GRnHoA3j",
+      "pairName": "Cupsey-SOL",
+      "window": "W1",
+      "t": 1785661200,
+      "feeRate": 0.005,
+      "vol24hUsd": 11385.726005855135,
+      "realTvlUsd": 20416.45233644619,
+      "perPoolKToday": 1.612085907652423
+    },
+    {
+      "pool": "7xLfygtrTiJExAYgxLbBfV9faqN4Eu5zYifaAMWS7uqj",
+      "pairName": "TOAD-SOL",
+      "window": "W1",
+      "t": 1786748400,
+      "feeRate": 0.02,
+      "vol24hUsd": 294298.10962155694,
+      "realTvlUsd": 256324.84674858506,
+      "perPoolKToday": 9.93899271525216
+    },
+    {
+      "pool": "7xLfygtrTiJExAYgxLbBfV9faqN4Eu5zYifaAMWS7uqj",
+      "pairName": "TOAD-SOL",
+      "window": "W1",
+      "t": 1787688000,
+      "feeRate": 0.02,
+      "vol24hUsd": 7690.804417638196,
+      "realTvlUsd": 21020.708148699046,
+      "perPoolKToday": 9.93899271525216
+    },
+    {
+      "pool": "7xLfygtrTiJExAYgxLbBfV9faqN4Eu5zYifaAMWS7uqj",
+      "pairName": "TOAD-SOL",
+      "window": "W1",
+      "t": 1788706800,
+      "feeRate": 0.02,
+      "vol24hUsd": 5073.935743061944,
+      "realTvlUsd": 7524.7818483163755,
+      "perPoolKToday": 9.93899271525216
+    },
+    {
+      "pool": "8oVTHGznqmRMom8NpfcATC6m6Efuvo1HT8pTqMJpn14G",
+      "pairName": "SILV-USDC",
+      "window": "W1",
+      "t": 1787601600,
+      "feeRate": 0.0001,
+      "vol24hUsd": 3974174.5621823464,
+      "realTvlUsd": 87.71413334903235,
+      "perPoolKToday": null
+    },
+    {
+      "pool": "8oVTHGznqmRMom8NpfcATC6m6Efuvo1HT8pTqMJpn14G",
+      "pairName": "SILV-USDC",
+      "window": "W1",
+      "t": 1787662800,
+      "feeRate": 0.0001,
+      "vol24hUsd": 303547.43533029157,
+      "realTvlUsd": 88.72514428052281,
+      "perPoolKToday": null
+    },
+    {
+      "pool": "8oVTHGznqmRMom8NpfcATC6m6Efuvo1HT8pTqMJpn14G",
+      "pairName": "SILV-USDC",
+      "window": "W1",
+      "t": 1787731200,
+      "feeRate": 0.0001,
+      "vol24hUsd": 421224.3652672804,
+      "realTvlUsd": 333.5217087639161,
+      "perPoolKToday": null
+    },
+    {
+      "pool": "8RC9NzU25nSKpx2iAWK99fc2iHrqD8q3E4wCvaMeQLfN",
+      "pairName": "Jimothy-SOL",
+      "window": "W1",
+      "t": 1785448800,
+      "feeRate": 0.002,
+      "vol24hUsd": 2445167.282579968,
+      "realTvlUsd": 150855.12359959073,
+      "perPoolKToday": null
+    },
+    {
+      "pool": "8RC9NzU25nSKpx2iAWK99fc2iHrqD8q3E4wCvaMeQLfN",
+      "pairName": "Jimothy-SOL",
+      "window": "W1",
+      "t": 1786708800,
+      "feeRate": 0.002,
+      "vol24hUsd": 656225.1541400468,
+      "realTvlUsd": 103084.69812361794,
+      "perPoolKToday": null
+    },
+    {
+      "pool": "8RC9NzU25nSKpx2iAWK99fc2iHrqD8q3E4wCvaMeQLfN",
+      "pairName": "Jimothy-SOL",
+      "window": "W1",
+      "t": 1787968800,
+      "feeRate": 0.002,
+      "vol24hUsd": 7040.19486263762,
+      "realTvlUsd": 1858.4582689568492,
+      "perPoolKToday": null
+    },
+    {
+      "pool": "9aKBzv2QyD3GJdUAYp4w5XhAxRsuGQoq7rkUqoHmfNRd",
+      "pairName": "XST-SOL",
+      "window": "W1",
+      "t": 1786986000,
+      "feeRate": 0.01,
+      "vol24hUsd": 390919.2084865205,
+      "realTvlUsd": 82874.61045679101,
+      "perPoolKToday": 0.633217135120072
+    },
+    {
+      "pool": "9aKBzv2QyD3GJdUAYp4w5XhAxRsuGQoq7rkUqoHmfNRd",
+      "pairName": "XST-SOL",
+      "window": "W1",
+      "t": 1787893200,
+      "feeRate": 0.01,
+      "vol24hUsd": 299394.2257764171,
+      "realTvlUsd": 25595.179531158024,
+      "perPoolKToday": 0.633217135120072
+    },
+    {
+      "pool": "9aKBzv2QyD3GJdUAYp4w5XhAxRsuGQoq7rkUqoHmfNRd",
+      "pairName": "XST-SOL",
+      "window": "W1",
+      "t": 1788796800,
+      "feeRate": 0.01,
+      "vol24hUsd": 13701.698357796022,
+      "realTvlUsd": 2326.911151530666,
+      "perPoolKToday": 0.633217135120072
+    },
+    {
+      "pool": "2FAaQdbzVN5NJWhqSQsBZhJFivYDMycRTDJBzxmKKAig",
+      "pairName": "MET-USDC",
+      "window": "W2",
+      "t": 1775120400,
+      "feeRate": 0.01,
+      "vol24hUsd": 34048.62884204164,
+      "realTvlUsd": 100996.93714615324,
+      "perPoolKToday": 3.4062753398845445
+    },
+    {
+      "pool": "2FAaQdbzVN5NJWhqSQsBZhJFivYDMycRTDJBzxmKKAig",
+      "pairName": "MET-USDC",
+      "window": "W2",
+      "t": 1777744800,
+      "feeRate": 0.01,
+      "vol24hUsd": 17629.537976230546,
+      "realTvlUsd": 109415.92211981918,
+      "perPoolKToday": 3.4062753398845445
+    },
+    {
+      "pool": "2FAaQdbzVN5NJWhqSQsBZhJFivYDMycRTDJBzxmKKAig",
+      "pairName": "MET-USDC",
+      "window": "W2",
+      "t": 1780520400,
+      "feeRate": 0.01,
+      "vol24hUsd": 15557.927712739762,
+      "realTvlUsd": 89481.02848282832,
+      "perPoolKToday": 3.4062753398845445
+    },
+    {
+      "pool": "2N1KNuLSt167P6p9P8HYcisTvTTv4vYTM8QJBbtv1xYU",
+      "pairName": "CARDS-USDC",
+      "window": "W2",
+      "t": 1778079600,
+      "feeRate": 0.002,
+      "vol24hUsd": 141535.38834524818,
+      "realTvlUsd": 50263.33847691686,
+      "perPoolKToday": 0.39153854243679465
+    },
+    {
+      "pool": "2N1KNuLSt167P6p9P8HYcisTvTTv4vYTM8QJBbtv1xYU",
+      "pairName": "CARDS-USDC",
+      "window": "W2",
+      "t": 1779404400,
+      "feeRate": 0.002,
+      "vol24hUsd": 24367.78231917111,
+      "realTvlUsd": 7649.875191992881,
+      "perPoolKToday": 0.39153854243679465
+    },
+    {
+      "pool": "2N1KNuLSt167P6p9P8HYcisTvTTv4vYTM8QJBbtv1xYU",
+      "pairName": "CARDS-USDC",
+      "window": "W2",
+      "t": 1780729200,
+      "feeRate": 0.002,
+      "vol24hUsd": 466468.38999290555,
+      "realTvlUsd": 77455.4063023279,
+      "perPoolKToday": 0.39153854243679465
+    },
+    {
+      "pool": "2QDGj5BWMSNyEfmyDFx7eEvWWm4KujUPJ38Xdkntvxtd",
+      "pairName": "PUMP-SOL",
+      "window": "W2",
+      "t": 1776564000,
+      "feeRate": 0.001,
+      "vol24hUsd": 3304.5467308924885,
+      "realTvlUsd": 2309.6862240988776,
+      "perPoolKToday": 0.7289683039677834
+    },
+    {
+      "pool": "2QDGj5BWMSNyEfmyDFx7eEvWWm4KujUPJ38Xdkntvxtd",
+      "pairName": "PUMP-SOL",
+      "window": "W2",
+      "t": 1780524000,
+      "feeRate": 0.001,
+      "vol24hUsd": 1743.1407881124906,
+      "realTvlUsd": 1169.731489064766,
+      "perPoolKToday": 0.7289683039677834
+    },
+    {
+      "pool": "2QDGj5BWMSNyEfmyDFx7eEvWWm4KujUPJ38Xdkntvxtd",
+      "pairName": "PUMP-SOL",
+      "window": "W2",
+      "t": 1780588800,
+      "feeRate": 0.001,
+      "vol24hUsd": 733.1141287185319,
+      "realTvlUsd": 1145.6962193241804,
+      "perPoolKToday": 0.7289683039677834
+    },
+    {
+      "pool": "31p1hptjhFo6ZD8oBqkfutNXQKGGPyi7YcEAfsyKW777",
+      "pairName": "Bonk-USDC",
+      "window": "W2",
+      "t": 1774886400,
+      "feeRate": 0.002,
+      "vol24hUsd": 30969.260285821747,
+      "realTvlUsd": 100989.36693133342,
+      "perPoolKToday": 17.78186420678883
+    },
+    {
+      "pool": "31p1hptjhFo6ZD8oBqkfutNXQKGGPyi7YcEAfsyKW777",
+      "pairName": "Bonk-USDC",
+      "window": "W2",
+      "t": 1777482000,
+      "feeRate": 0.002,
+      "vol24hUsd": 71679.35878692505,
+      "realTvlUsd": 157843.98921524233,
+      "perPoolKToday": 17.78186420678883
+    },
+    {
+      "pool": "31p1hptjhFo6ZD8oBqkfutNXQKGGPyi7YcEAfsyKW777",
+      "pairName": "Bonk-USDC",
+      "window": "W2",
+      "t": 1780196400,
+      "feeRate": 0.002,
+      "vol24hUsd": 183206.8626026919,
+      "realTvlUsd": 210401.3833242397,
+      "perPoolKToday": 17.78186420678883
+    },
+    {
+      "pool": "3D9MyL5iD9uqbe2FYvivHsywHWr3nJR1krEcEWXUCGzr",
+      "pairName": "SOL-USDC",
+      "window": "W2",
+      "t": 1774792800,
+      "feeRate": 0.0025,
+      "vol24hUsd": 30887.87846007249,
+      "realTvlUsd": 115930.66323731627,
+      "perPoolKToday": 24.431692141634766
+    },
+    {
+      "pool": "3D9MyL5iD9uqbe2FYvivHsywHWr3nJR1krEcEWXUCGzr",
+      "pairName": "SOL-USDC",
+      "window": "W2",
+      "t": 1777384800,
+      "feeRate": 0.0025,
+      "vol24hUsd": 37937.738559488294,
+      "realTvlUsd": 137100.24704539886,
+      "perPoolKToday": 24.431692141634766
+    },
+    {
+      "pool": "3D9MyL5iD9uqbe2FYvivHsywHWr3nJR1krEcEWXUCGzr",
+      "pairName": "SOL-USDC",
+      "window": "W2",
+      "t": 1780261200,
+      "feeRate": 0.0025,
+      "vol24hUsd": 20027.631572134054,
+      "realTvlUsd": 146121.75780870405,
+      "perPoolKToday": 24.431692141634766
+    },
+    {
+      "pool": "3fUj4dDSwgpJuzriE32KsgmGGowKNZpnt7T9AD1noZrV",
+      "pairName": "WBTC-USDC",
+      "window": "W2",
+      "t": 1774882800,
+      "feeRate": 0.0004,
+      "vol24hUsd": 179993.06581718838,
+      "realTvlUsd": 64902.22590099,
+      "perPoolKToday": 0.24208928315798103
+    },
+    {
+      "pool": "3fUj4dDSwgpJuzriE32KsgmGGowKNZpnt7T9AD1noZrV",
+      "pairName": "WBTC-USDC",
+      "window": "W2",
+      "t": 1777417200,
+      "feeRate": 0.0004,
+      "vol24hUsd": 33740.48920493739,
+      "realTvlUsd": 38906.2308285029,
+      "perPoolKToday": 0.24208928315798103
+    },
+    {
+      "pool": "3fUj4dDSwgpJuzriE32KsgmGGowKNZpnt7T9AD1noZrV",
+      "pairName": "WBTC-USDC",
+      "window": "W2",
+      "t": 1779948000,
+      "feeRate": 0.0004,
+      "vol24hUsd": 43236.89100250799,
+      "realTvlUsd": 45262.14462803688,
+      "perPoolKToday": 0.24208928315798103
+    },
+    {
+      "pool": "3h3o7TqTuHgZUs4jwUYdDc6L3BVhQ5mHVBUzwhbWL8SJ",
+      "pairName": "VIRTUAL-USDC",
+      "window": "W2",
+      "t": 1774976400,
+      "feeRate": 0.0025,
+      "vol24hUsd": 34.01933179041782,
+      "realTvlUsd": 71014.64761548028,
+      "perPoolKToday": 17.297579359022222
+    },
+    {
+      "pool": "3h3o7TqTuHgZUs4jwUYdDc6L3BVhQ5mHVBUzwhbWL8SJ",
+      "pairName": "VIRTUAL-USDC",
+      "window": "W2",
+      "t": 1777842000,
+      "feeRate": 0.0025,
+      "vol24hUsd": 2785.9506548611694,
+      "realTvlUsd": 69706.3973607312,
+      "perPoolKToday": 17.297579359022222
+    },
+    {
+      "pool": "3h3o7TqTuHgZUs4jwUYdDc6L3BVhQ5mHVBUzwhbWL8SJ",
+      "pairName": "VIRTUAL-USDC",
+      "window": "W2",
+      "t": 1780304400,
+      "feeRate": 0.0025,
+      "vol24hUsd": 32.60156910752462,
+      "realTvlUsd": 82808.0194011392,
+      "perPoolKToday": 17.297579359022222
+    },
+    {
+      "pool": "3Mt1bpU3fnSXyPEm66HKKXyQTpLWrwYziPLqwTqK4ZT7",
+      "pairName": "ORE-SOL",
+      "window": "W2",
+      "t": 1774911600,
+      "feeRate": 0.002,
+      "vol24hUsd": 228887.37618073166,
+      "realTvlUsd": 58329.39375820048,
+      "perPoolKToday": 0.18070961106861352
+    },
+    {
+      "pool": "3Mt1bpU3fnSXyPEm66HKKXyQTpLWrwYziPLqwTqK4ZT7",
+      "pairName": "ORE-SOL",
+      "window": "W2",
+      "t": 1777503600,
+      "feeRate": 0.002,
+      "vol24hUsd": 143588.0464302638,
+      "realTvlUsd": 65773.24605635561,
+      "perPoolKToday": 0.18070961106861352
+    },
+    {
+      "pool": "3Mt1bpU3fnSXyPEm66HKKXyQTpLWrwYziPLqwTqK4ZT7",
+      "pairName": "ORE-SOL",
+      "window": "W2",
+      "t": 1780095600,
+      "feeRate": 0.002,
+      "vol24hUsd": 309105.03531201,
+      "realTvlUsd": 85245.9318584971,
+      "perPoolKToday": 0.18070961106861352
+    },
+    {
+      "pool": "3potGhhaNyzvCNq1CGh2wLbZLLMjpdPtG1Hpj8q2DDVR",
+      "pairName": "ETH-SOL",
+      "window": "W2",
+      "t": 1774911600,
+      "feeRate": 0.0004,
+      "vol24hUsd": 1075580.6533781237,
+      "realTvlUsd": 293575.65786235593,
+      "perPoolKToday": 0.17077210380198227
+    },
+    {
+      "pool": "3potGhhaNyzvCNq1CGh2wLbZLLMjpdPtG1Hpj8q2DDVR",
+      "pairName": "ETH-SOL",
+      "window": "W2",
+      "t": 1777503600,
+      "feeRate": 0.0004,
+      "vol24hUsd": 536890.313260548,
+      "realTvlUsd": 190147.3084905248,
+      "perPoolKToday": 0.17077210380198227
+    },
+    {
+      "pool": "3potGhhaNyzvCNq1CGh2wLbZLLMjpdPtG1Hpj8q2DDVR",
+      "pairName": "ETH-SOL",
+      "window": "W2",
+      "t": 1780092000,
+      "feeRate": 0.0004,
+      "vol24hUsd": 276101.3447824856,
+      "realTvlUsd": 164535.9611458464,
+      "perPoolKToday": 0.17077210380198227
+    },
+    {
+      "pool": "3sehQcVywWcFJZ1ri3NmJ7MRkrXbViJMRNN5b6kz8Mqn",
+      "pairName": "WBTC-USDC",
+      "window": "W2",
+      "t": 1774785600,
+      "feeRate": 0.001,
+      "vol24hUsd": 89987.64183411453,
+      "realTvlUsd": 358796.458606594,
+      "perPoolKToday": 4.51772790182582
+    },
+    {
+      "pool": "3sehQcVywWcFJZ1ri3NmJ7MRkrXbViJMRNN5b6kz8Mqn",
+      "pairName": "WBTC-USDC",
+      "window": "W2",
+      "t": 1777320000,
+      "feeRate": 0.001,
+      "vol24hUsd": 37818.90612092987,
+      "realTvlUsd": 284307.5397023019,
+      "perPoolKToday": 4.51772790182582
+    },
+    {
+      "pool": "3sehQcVywWcFJZ1ri3NmJ7MRkrXbViJMRNN5b6kz8Mqn",
+      "pairName": "WBTC-USDC",
+      "window": "W2",
+      "t": 1780311600,
+      "feeRate": 0.001,
+      "vol24hUsd": 23063.61040647293,
+      "realTvlUsd": 279049.97168302775,
+      "perPoolKToday": 4.51772790182582
+    },
+    {
+      "pool": "3WY9N19nTtPSqrbWTeaFn2HfJ9MfdyLRSrRvy97GnDgY",
+      "pairName": "TripleT-SOL",
+      "window": "W2",
+      "t": 1774908000,
+      "feeRate": 0.01,
+      "vol24hUsd": 129148.84912953939,
+      "realTvlUsd": 192029.59479231396,
+      "perPoolKToday": 0.8464476758176924
+    },
+    {
+      "pool": "3WY9N19nTtPSqrbWTeaFn2HfJ9MfdyLRSrRvy97GnDgY",
+      "pairName": "TripleT-SOL",
+      "window": "W2",
+      "t": 1777489200,
+      "feeRate": 0.01,
+      "vol24hUsd": 329180.3210325591,
+      "realTvlUsd": 329226.958297967,
+      "perPoolKToday": 0.8464476758176924
+    },
+    {
+      "pool": "3WY9N19nTtPSqrbWTeaFn2HfJ9MfdyLRSrRvy97GnDgY",
+      "pairName": "TripleT-SOL",
+      "window": "W2",
+      "t": 1780092000,
+      "feeRate": 0.01,
+      "vol24hUsd": 120696.1292998356,
+      "realTvlUsd": 268718.8796212075,
+      "perPoolKToday": 0.8464476758176924
+    },
+    {
+      "pool": "46CgAPEz8V2e9UL5PDa3JNWFW6sk7uFCj7TjdB3XbKD3",
+      "pairName": "HYPE-SOL",
+      "window": "W2",
+      "t": 1774911600,
+      "feeRate": 0.001,
+      "vol24hUsd": 596871.7161934456,
+      "realTvlUsd": 224415.25826379153,
+      "perPoolKToday": 2.774638372860099
+    },
+    {
+      "pool": "46CgAPEz8V2e9UL5PDa3JNWFW6sk7uFCj7TjdB3XbKD3",
+      "pairName": "HYPE-SOL",
+      "window": "W2",
+      "t": 1777503600,
+      "feeRate": 0.001,
+      "vol24hUsd": 747895.4403627655,
+      "realTvlUsd": 310078.4446651205,
+      "perPoolKToday": 2.774638372860099
+    },
+    {
+      "pool": "46CgAPEz8V2e9UL5PDa3JNWFW6sk7uFCj7TjdB3XbKD3",
+      "pairName": "HYPE-SOL",
+      "window": "W2",
+      "t": 1780095600,
+      "feeRate": 0.001,
+      "vol24hUsd": 2019612.241852963,
+      "realTvlUsd": 672632.7595612248,
+      "perPoolKToday": 2.774638372860099
+    },
+    {
+      "pool": "4Hj64HZw7DVNUGe17PDiNcgRSm1AXuMJ1va2D7Ja2zGx",
+      "pairName": "wPOND-SOL",
+      "window": "W2",
+      "t": 1774616400,
+      "feeRate": 0.01,
+      "vol24hUsd": 386.86287573233994,
+      "realTvlUsd": 525.9172595450644,
+      "perPoolKToday": 14.65256249365189
+    },
+    {
+      "pool": "4Hj64HZw7DVNUGe17PDiNcgRSm1AXuMJ1va2D7Ja2zGx",
+      "pairName": "wPOND-SOL",
+      "window": "W2",
+      "t": 1776690000,
+      "feeRate": 0.01,
+      "vol24hUsd": 420.6916372134796,
+      "realTvlUsd": 546.7164155718582,
+      "perPoolKToday": 14.65256249365189
+    },
+    {
+      "pool": "4Hj64HZw7DVNUGe17PDiNcgRSm1AXuMJ1va2D7Ja2zGx",
+      "pairName": "wPOND-SOL",
+      "window": "W2",
+      "t": 1780257600,
+      "feeRate": 0.01,
+      "vol24hUsd": 107.46122269271973,
+      "realTvlUsd": 338.88049041495384,
+      "perPoolKToday": 14.65256249365189
+    },
+    {
+      "pool": "4kdxjt8pKEW4qV4ji4HANixwswDJw3Egn8L4x2BEWQqT",
+      "pairName": "WBTC-SOL",
+      "window": "W2",
+      "t": 1774908000,
+      "feeRate": 0.0003,
+      "vol24hUsd": 1024608.3170250922,
+      "realTvlUsd": 189485.91395569604,
+      "perPoolKToday": 0.10189055011968717
+    },
+    {
+      "pool": "4kdxjt8pKEW4qV4ji4HANixwswDJw3Egn8L4x2BEWQqT",
+      "pairName": "WBTC-SOL",
+      "window": "W2",
+      "t": 1777489200,
+      "feeRate": 0.0003,
+      "vol24hUsd": 31195.48292590963,
+      "realTvlUsd": 80916.96240697653,
+      "perPoolKToday": 0.10189055011968717
+    },
+    {
+      "pool": "4kdxjt8pKEW4qV4ji4HANixwswDJw3Egn8L4x2BEWQqT",
+      "pairName": "WBTC-SOL",
+      "window": "W2",
+      "t": 1780070400,
+      "feeRate": 0.0003,
+      "vol24hUsd": 175369.81997906574,
+      "realTvlUsd": 89455.82118071553,
+      "perPoolKToday": 0.10189055011968717
+    },
+    {
+      "pool": "5Hm18bAMV77YtjA1T1hc31Mpk2BcXay9YtkR5kkZW8AT",
+      "pairName": "TAO-SOL",
+      "window": "W2",
+      "t": 1779062400,
+      "feeRate": 0.003,
+      "vol24hUsd": 495.4958800947817,
+      "realTvlUsd": 778.0636841595991,
+      "perPoolKToday": 0.5043680468146072
+    },
+    {
+      "pool": "5Hm18bAMV77YtjA1T1hc31Mpk2BcXay9YtkR5kkZW8AT",
+      "pairName": "TAO-SOL",
+      "window": "W2",
+      "t": 1779883200,
+      "feeRate": 0.003,
+      "vol24hUsd": 164.97625773592682,
+      "realTvlUsd": 199.80864751583573,
+      "perPoolKToday": 0.5043680468146072
+    },
+    {
+      "pool": "5Hm18bAMV77YtjA1T1hc31Mpk2BcXay9YtkR5kkZW8AT",
+      "pairName": "TAO-SOL",
+      "window": "W2",
+      "t": 1780887600,
+      "feeRate": 0.003,
+      "vol24hUsd": 114.59229988195703,
+      "realTvlUsd": 145.59324651325807,
+      "perPoolKToday": 0.5043680468146072
+    },
+    {
+      "pool": "5SHjDACvwtox5nY8kpWNYyaceWjtTG8C6L821D9Gtpjf",
+      "pairName": "JLP-USDC",
+      "window": "W2",
+      "t": 1774911600,
+      "feeRate": 0.0003,
+      "vol24hUsd": 910321.2074460543,
+      "realTvlUsd": 451290.33939036936,
+      "perPoolKToday": 0.25436746065908045
+    },
+    {
+      "pool": "5SHjDACvwtox5nY8kpWNYyaceWjtTG8C6L821D9Gtpjf",
+      "pairName": "JLP-USDC",
+      "window": "W2",
+      "t": 1777503600,
+      "feeRate": 0.0003,
+      "vol24hUsd": 344494.9689254182,
+      "realTvlUsd": 461877.232143624,
+      "perPoolKToday": 0.25436746065908045
+    },
+    {
+      "pool": "5SHjDACvwtox5nY8kpWNYyaceWjtTG8C6L821D9Gtpjf",
+      "pairName": "JLP-USDC",
+      "window": "W2",
+      "t": 1780095600,
+      "feeRate": 0.0003,
+      "vol24hUsd": 290881.9004102502,
+      "realTvlUsd": 530613.9199092732,
+      "perPoolKToday": 0.25436746065908045
+    },
+    {
+      "pool": "5XRqv7LCoC5FhWKk5JN8n4kCrJs3e4KH1XsYzKeMd5Nt",
+      "pairName": "SOL-USDC",
+      "window": "W2",
+      "t": 1774875600,
+      "feeRate": 0.0005,
+      "vol24hUsd": 5455.874694975973,
+      "realTvlUsd": 65624.39026977382,
+      "perPoolKToday": 17.064610137653137
+    },
+    {
+      "pool": "5XRqv7LCoC5FhWKk5JN8n4kCrJs3e4KH1XsYzKeMd5Nt",
+      "pairName": "SOL-USDC",
+      "window": "W2",
+      "t": 1777435200,
+      "feeRate": 0.0005,
+      "vol24hUsd": 5440.053425122871,
+      "realTvlUsd": 53994.565376067054,
+      "perPoolKToday": 17.064610137653137
+    },
+    {
+      "pool": "5XRqv7LCoC5FhWKk5JN8n4kCrJs3e4KH1XsYzKeMd5Nt",
+      "pairName": "SOL-USDC",
+      "window": "W2",
+      "t": 1780131600,
+      "feeRate": 0.0005,
+      "vol24hUsd": 2796.1874959477036,
+      "realTvlUsd": 51639.1445435107,
+      "perPoolKToday": 17.064610137653137
+    },
+    {
+      "pool": "6F4rVnmVc1A2QDqpHn5cpQZfXugapFbGZTXEyaakpvVQ",
+      "pairName": "HYPE-USDC",
+      "window": "W2",
+      "t": 1776654000,
+      "feeRate": 0.001,
+      "vol24hUsd": 563305.2672172707,
+      "realTvlUsd": 131862.2013556364,
+      "perPoolKToday": 1.1134713354742736
+    },
+    {
+      "pool": "6F4rVnmVc1A2QDqpHn5cpQZfXugapFbGZTXEyaakpvVQ",
+      "pairName": "HYPE-USDC",
+      "window": "W2",
+      "t": 1778547600,
+      "feeRate": 0.001,
+      "vol24hUsd": 186722.43068374228,
+      "realTvlUsd": 75942.49462983107,
+      "perPoolKToday": 1.1134713354742736
+    },
+    {
+      "pool": "6F4rVnmVc1A2QDqpHn5cpQZfXugapFbGZTXEyaakpvVQ",
+      "pairName": "HYPE-USDC",
+      "window": "W2",
+      "t": 1780441200,
+      "feeRate": 0.001,
+      "vol24hUsd": 7466141.752404114,
+      "realTvlUsd": 498002.3720213927,
+      "perPoolKToday": 1.1134713354742736
+    },
+    {
+      "pool": "6k7hLzFcL3H64uziJboN3WZNXYj6PiBMP1DZh8zFfhSb",
+      "pairName": "AAVE-USDC",
+      "window": "W2",
+      "t": 1778054400,
+      "feeRate": 0.0025,
+      "vol24hUsd": 47468.17630133267,
+      "realTvlUsd": 161657.4772516617,
+      "perPoolKToday": 0.1333532473680947
+    },
+    {
+      "pool": "6k7hLzFcL3H64uziJboN3WZNXYj6PiBMP1DZh8zFfhSb",
+      "pairName": "AAVE-USDC",
+      "window": "W2",
+      "t": 1779458400,
+      "feeRate": 0.0025,
+      "vol24hUsd": 15574.880845038955,
+      "realTvlUsd": 114022.65316188207,
+      "perPoolKToday": 0.1333532473680947
+    },
+    {
+      "pool": "6k7hLzFcL3H64uziJboN3WZNXYj6PiBMP1DZh8zFfhSb",
+      "pairName": "AAVE-USDC",
+      "window": "W2",
+      "t": 1780783200,
+      "feeRate": 0.0025,
+      "vol24hUsd": 140818.949114165,
+      "realTvlUsd": 81669.85813925749,
+      "perPoolKToday": 0.1333532473680947
+    },
+    {
+      "pool": "6oQ9wVex4mKZti2GsGCfD8FWTMMC9PLQkztRU5cd6MK8",
+      "pairName": "SOL-HYPE",
+      "window": "W2",
+      "t": 1776384000,
+      "feeRate": 0.0004,
+      "vol24hUsd": 2951100.9305028813,
+      "realTvlUsd": 261703.48609722292,
+      "perPoolKToday": 0.16143928181641343
+    },
+    {
+      "pool": "6oQ9wVex4mKZti2GsGCfD8FWTMMC9PLQkztRU5cd6MK8",
+      "pairName": "SOL-HYPE",
+      "window": "W2",
+      "t": 1778385600,
+      "feeRate": 0.0004,
+      "vol24hUsd": 1070991.2265299568,
+      "realTvlUsd": 320727.6913792559,
+      "perPoolKToday": 0.16143928181641343
+    },
+    {
+      "pool": "6oQ9wVex4mKZti2GsGCfD8FWTMMC9PLQkztRU5cd6MK8",
+      "pairName": "SOL-HYPE",
+      "window": "W2",
+      "t": 1780387200,
+      "feeRate": 0.0004,
+      "vol24hUsd": 3065480.2720453297,
+      "realTvlUsd": 209242.26305906128,
+      "perPoolKToday": 0.16143928181641343
+    },
+    {
+      "pool": "6qs6RBvKxaw1ncWrXyiZt4RCju8w2RWe3vY1WFVK5wuH",
+      "pairName": "USDUC-SOL",
+      "window": "W2",
+      "t": 1778695200,
+      "feeRate": 0.003,
+      "vol24hUsd": 181200.92733075068,
+      "realTvlUsd": 74079.31457707025,
+      "perPoolKToday": 2.9184327697469654
+    },
+    {
+      "pool": "6qs6RBvKxaw1ncWrXyiZt4RCju8w2RWe3vY1WFVK5wuH",
+      "pairName": "USDUC-SOL",
+      "window": "W2",
+      "t": 1779775200,
+      "feeRate": 0.003,
+      "vol24hUsd": 20046.055169582396,
+      "realTvlUsd": 71370.2441996823,
+      "perPoolKToday": 2.9184327697469654
+    },
+    {
+      "pool": "6qs6RBvKxaw1ncWrXyiZt4RCju8w2RWe3vY1WFVK5wuH",
+      "pairName": "USDUC-SOL",
+      "window": "W2",
+      "t": 1780851600,
+      "feeRate": 0.003,
+      "vol24hUsd": 12133.789517100839,
+      "realTvlUsd": 65121.368681374835,
+      "perPoolKToday": 2.9184327697469654
+    },
+    {
+      "pool": "6t5fJwGxmTy2gWiq6CiLw2roZc93UanvANypMYQYHKGh",
+      "pairName": "xSOL-USDC",
+      "window": "W2",
+      "t": 1774854000,
+      "feeRate": 0.0075,
+      "vol24hUsd": 17804.86560918242,
+      "realTvlUsd": 48254.11892172744,
+      "perPoolKToday": 0.4689545706681116
+    },
+    {
+      "pool": "6t5fJwGxmTy2gWiq6CiLw2roZc93UanvANypMYQYHKGh",
+      "pairName": "xSOL-USDC",
+      "window": "W2",
+      "t": 1777575600,
+      "feeRate": 0.0075,
+      "vol24hUsd": 5346.070922608283,
+      "realTvlUsd": 25204.87765181323,
+      "perPoolKToday": 0.4689545706681116
+    },
+    {
+      "pool": "6t5fJwGxmTy2gWiq6CiLw2roZc93UanvANypMYQYHKGh",
+      "pairName": "xSOL-USDC",
+      "window": "W2",
+      "t": 1780272000,
+      "feeRate": 0.0075,
+      "vol24hUsd": 5759.076955938534,
+      "realTvlUsd": 17938.065894194166,
+      "perPoolKToday": 0.4689545706681116
+    },
+    {
+      "pool": "6tDL16nwiD4DB3EH5iNyP1itpRRf5Wi3aLTrPE3V3Gct",
+      "pairName": "Buttcoin-USDC",
+      "window": "W2",
+      "t": 1774890000,
+      "feeRate": 0.008,
+      "vol24hUsd": 23339.333594313266,
+      "realTvlUsd": 28443.690233962527,
+      "perPoolKToday": 1.5181015972797445
+    },
+    {
+      "pool": "6tDL16nwiD4DB3EH5iNyP1itpRRf5Wi3aLTrPE3V3Gct",
+      "pairName": "Buttcoin-USDC",
+      "window": "W2",
+      "t": 1777464000,
+      "feeRate": 0.008,
+      "vol24hUsd": 341.4482946480133,
+      "realTvlUsd": 1081.7812213544219,
+      "perPoolKToday": 1.5181015972797445
+    },
+    {
+      "pool": "6tDL16nwiD4DB3EH5iNyP1itpRRf5Wi3aLTrPE3V3Gct",
+      "pairName": "Buttcoin-USDC",
+      "window": "W2",
+      "t": 1780128000,
+      "feeRate": 0.008,
+      "vol24hUsd": 1482.6842123811869,
+      "realTvlUsd": 3018.084953780471,
+      "perPoolKToday": 1.5181015972797445
+    },
+    {
+      "pool": "6wJ7W3oHj7ex6MVFp2o26NSof3aey7U8Brs8E371WCXA",
+      "pairName": "Fartcoin-SOL",
+      "window": "W2",
+      "t": 1774900800,
+      "feeRate": 0.002,
+      "vol24hUsd": 291335.30251475127,
+      "realTvlUsd": 143979.31700766025,
+      "perPoolKToday": 47.19708019028191
+    },
+    {
+      "pool": "6wJ7W3oHj7ex6MVFp2o26NSof3aey7U8Brs8E371WCXA",
+      "pairName": "Fartcoin-SOL",
+      "window": "W2",
+      "t": 1777464000,
+      "feeRate": 0.002,
+      "vol24hUsd": 299271.3129730293,
+      "realTvlUsd": 208763.57120517897,
+      "perPoolKToday": 47.19708019028191
+    },
+    {
+      "pool": "6wJ7W3oHj7ex6MVFp2o26NSof3aey7U8Brs8E371WCXA",
+      "pairName": "Fartcoin-SOL",
+      "window": "W2",
+      "t": 1780095600,
+      "feeRate": 0.002,
+      "vol24hUsd": 80885.13990636039,
+      "realTvlUsd": 233174.51507371408,
+      "perPoolKToday": 47.19708019028191
+    },
+    {
+      "pool": "6XAex22fAkvjenHg89jHzrcMKZdCU1nZJjdr25jsUaaa",
+      "pairName": "FIGHT-USDC",
+      "window": "W2",
+      "t": 1774918800,
+      "feeRate": 0.002,
+      "vol24hUsd": 8903.952297001733,
+      "realTvlUsd": 59863.48504070482,
+      "perPoolKToday": 12.176016421925993
+    },
+    {
+      "pool": "6XAex22fAkvjenHg89jHzrcMKZdCU1nZJjdr25jsUaaa",
+      "pairName": "FIGHT-USDC",
+      "window": "W2",
+      "t": 1777507200,
+      "feeRate": 0.002,
+      "vol24hUsd": 43806.44088334052,
+      "realTvlUsd": 55214.68979989238,
+      "perPoolKToday": 12.176016421925993
+    },
+    {
+      "pool": "6XAex22fAkvjenHg89jHzrcMKZdCU1nZJjdr25jsUaaa",
+      "pairName": "FIGHT-USDC",
+      "window": "W2",
+      "t": 1780095600,
+      "feeRate": 0.002,
+      "vol24hUsd": 20290.919541832358,
+      "realTvlUsd": 64000.4287165353,
+      "perPoolKToday": 12.176016421925993
+    },
+    {
+      "pool": "7LqL8hDYVYBgoif19fSozZurxm3ve129tfkftz6WdFkR",
+      "pairName": "TNSR-USDC",
+      "window": "W2",
+      "t": 1774940400,
+      "feeRate": 0.001,
+      "vol24hUsd": 6633.343419970968,
+      "realTvlUsd": 62799.42076703448,
+      "perPoolKToday": 4.8033860776670725
+    },
+    {
+      "pool": "7LqL8hDYVYBgoif19fSozZurxm3ve129tfkftz6WdFkR",
+      "pairName": "TNSR-USDC",
+      "window": "W2",
+      "t": 1777518000,
+      "feeRate": 0.001,
+      "vol24hUsd": 20800.638263573375,
+      "realTvlUsd": 65650.14547586924,
+      "perPoolKToday": 4.8033860776670725
+    },
+    {
+      "pool": "7LqL8hDYVYBgoif19fSozZurxm3ve129tfkftz6WdFkR",
+      "pairName": "TNSR-USDC",
+      "window": "W2",
+      "t": 1780124400,
+      "feeRate": 0.001,
+      "vol24hUsd": 23764.442883033116,
+      "realTvlUsd": 65057.47416933808,
+      "perPoolKToday": 4.8033860776670725
+    },
+    {
+      "pool": "88LoXa6pK8RjStugRxTwz3scTHMc986y7xE1DLNbwfPy",
+      "pairName": "PUMP-USDC",
+      "window": "W2",
+      "t": 1774911600,
+      "feeRate": 0.002,
+      "vol24hUsd": 9709.989859249003,
+      "realTvlUsd": 61956.93552915411,
+      "perPoolKToday": 1.7851616893751552
+    },
+    {
+      "pool": "88LoXa6pK8RjStugRxTwz3scTHMc986y7xE1DLNbwfPy",
+      "pairName": "PUMP-USDC",
+      "window": "W2",
+      "t": 1777593600,
+      "feeRate": 0.002,
+      "vol24hUsd": 26483.771323319248,
+      "realTvlUsd": 63398.63390051222,
+      "perPoolKToday": 1.7851616893751552
+    },
+    {
+      "pool": "88LoXa6pK8RjStugRxTwz3scTHMc986y7xE1DLNbwfPy",
+      "pairName": "PUMP-USDC",
+      "window": "W2",
+      "t": 1780268400,
+      "feeRate": 0.002,
+      "vol24hUsd": 10390.41636527853,
+      "realTvlUsd": 61637.94724605862,
+      "perPoolKToday": 1.7851616893751552
+    },
+    {
+      "pool": "8bCaqhnpeeVXXbx7oHyytsWecpHoiXhqeRBEdMEwEu7n",
+      "pairName": "USELESS-USDC",
+      "window": "W2",
+      "t": 1779782400,
+      "feeRate": 0.01,
+      "vol24hUsd": 88469.94070775942,
+      "realTvlUsd": 41016.34266677338,
+      "perPoolKToday": 2.645132211110649
+    },
+    {
+      "pool": "8bCaqhnpeeVXXbx7oHyytsWecpHoiXhqeRBEdMEwEu7n",
+      "pairName": "USELESS-USDC",
+      "window": "W2",
+      "t": 1780452000,
+      "feeRate": 0.01,
+      "vol24hUsd": 289242.1086113212,
+      "realTvlUsd": 70392.31307716251,
+      "perPoolKToday": 2.645132211110649
+    },
+    {
+      "pool": "8bCaqhnpeeVXXbx7oHyytsWecpHoiXhqeRBEdMEwEu7n",
+      "pairName": "USELESS-USDC",
+      "window": "W2",
+      "t": 1781049600,
+      "feeRate": 0.01,
+      "vol24hUsd": 328275.91794526816,
+      "realTvlUsd": 248281.01072695397,
+      "perPoolKToday": 2.645132211110649
+    },
+    {
+      "pool": "8iibPkw7zbNHMPcihHeBgcL7rDnHteZb2NfvTy8bNm7d",
+      "pairName": "INF-SOL",
+      "window": "W2",
+      "t": 1773928800,
+      "feeRate": 0.0001,
+      "vol24hUsd": 583.581367673783,
+      "realTvlUsd": 138341.9826373847,
+      "perPoolKToday": 35.12301311991855
+    },
+    {
+      "pool": "8iibPkw7zbNHMPcihHeBgcL7rDnHteZb2NfvTy8bNm7d",
+      "pairName": "INF-SOL",
+      "window": "W2",
+      "t": 1774666800,
+      "feeRate": 0.0001,
+      "vol24hUsd": 36.6161763913611,
+      "realTvlUsd": 128962.11529672651,
+      "perPoolKToday": 35.12301311991855
+    },
+    {
+      "pool": "8iibPkw7zbNHMPcihHeBgcL7rDnHteZb2NfvTy8bNm7d",
+      "pairName": "INF-SOL",
+      "window": "W2",
+      "t": 1779843600,
+      "feeRate": 0.0001,
+      "vol24hUsd": 248.61938292838843,
+      "realTvlUsd": 121358.62498035042,
+      "perPoolKToday": 35.12301311991855
+    },
+    {
+      "pool": "8qs7oJiYXzNWEN4KxS1HfthVA1SkyfWzk1WTxb8Qv2Y6",
+      "pairName": "JLP-SOL",
+      "window": "W2",
+      "t": 1774818000,
+      "feeRate": 0.004,
+      "vol24hUsd": 63688.077058712915,
+      "realTvlUsd": 285739.81960604986,
+      "perPoolKToday": 40.42994780261863
+    },
+    {
+      "pool": "8qs7oJiYXzNWEN4KxS1HfthVA1SkyfWzk1WTxb8Qv2Y6",
+      "pairName": "JLP-SOL",
+      "window": "W2",
+      "t": 1777474800,
+      "feeRate": 0.004,
+      "vol24hUsd": 39140.74697131106,
+      "realTvlUsd": 296566.8847454376,
+      "perPoolKToday": 40.42994780261863
+    },
+    {
+      "pool": "8qs7oJiYXzNWEN4KxS1HfthVA1SkyfWzk1WTxb8Qv2Y6",
+      "pairName": "JLP-SOL",
+      "window": "W2",
+      "t": 1780578000,
+      "feeRate": 0.004,
+      "vol24hUsd": 57790.55809174801,
+      "realTvlUsd": 317334.73193729,
+      "perPoolKToday": 40.42994780261863
+    },
+    {
+      "pool": "9GMA1nDPLe9yJ67EQZdWZHHoLtL3X2CrCyJqgGzLrQee",
+      "pairName": "LINK-USDC",
+      "window": "W2",
+      "t": 1777899600,
+      "feeRate": 0.02,
+      "vol24hUsd": 9.479942060280912,
+      "realTvlUsd": 4.280076923770846,
+      "perPoolKToday": 0.130315808988991
+    },
+    {
+      "pool": "9GMA1nDPLe9yJ67EQZdWZHHoLtL3X2CrCyJqgGzLrQee",
+      "pairName": "LINK-USDC",
+      "window": "W2",
+      "t": 1779296400,
+      "feeRate": 0.02,
+      "vol24hUsd": 2365.445256191955,
+      "realTvlUsd": 1134.5062774693333,
+      "perPoolKToday": 0.130315808988991
+    },
+    {
+      "pool": "9GMA1nDPLe9yJ67EQZdWZHHoLtL3X2CrCyJqgGzLrQee",
+      "pairName": "LINK-USDC",
+      "window": "W2",
+      "t": 1780718400,
+      "feeRate": 0.02,
+      "vol24hUsd": 3387.821591289434,
+      "realTvlUsd": 1307.4725020376075,
+      "perPoolKToday": 0.130315808988991
+    },
+    {
+      "pool": "9p3aRWnbu5vAmHXvsToMGfwmbkTJSwGr5G5xxSxmkB8N",
+      "pairName": "ANTFUN-USDT",
+      "window": "W2",
+      "t": 1778382000,
+      "feeRate": 0.0003,
+      "vol24hUsd": 1107281.207519204,
+      "realTvlUsd": 8153631.547586968,
+      "perPoolKToday": 1.0148810655148524
+    },
+    {
+      "pool": "9p3aRWnbu5vAmHXvsToMGfwmbkTJSwGr5G5xxSxmkB8N",
+      "pairName": "ANTFUN-USDT",
+      "window": "W2",
+      "t": 1779588000,
+      "feeRate": 0.0003,
+      "vol24hUsd": 780917.7090159877,
+      "realTvlUsd": 7656554.212352464,
+      "perPoolKToday": 1.0148810655148524
+    },
+    {
+      "pool": "9p3aRWnbu5vAmHXvsToMGfwmbkTJSwGr5G5xxSxmkB8N",
+      "pairName": "ANTFUN-USDT",
+      "window": "W2",
+      "t": 1780790400,
+      "feeRate": 0.0003,
+      "vol24hUsd": 1829963.4523994736,
+      "realTvlUsd": 7869160.782487784,
+      "perPoolKToday": 1.0148810655148524
+    },
+    {
+      "pool": "9thgWVMJUKiiotrVmzhEy1MWPyvkNsUSwKbp8ZFsuhA2",
+      "pairName": "ANTHROPIC-USDC",
+      "window": "W2",
+      "t": 1776672000,
+      "feeRate": 0.0015,
+      "vol24hUsd": 123667.50089764937,
+      "realTvlUsd": 11912.410573924448,
+      "perPoolKToday": 0.20716047869791077
+    },
+    {
+      "pool": "9thgWVMJUKiiotrVmzhEy1MWPyvkNsUSwKbp8ZFsuhA2",
+      "pairName": "ANTHROPIC-USDC",
+      "window": "W2",
+      "t": 1778828400,
+      "feeRate": 0.0015,
+      "vol24hUsd": 885.2573510403166,
+      "realTvlUsd": 889.1678655962598,
+      "perPoolKToday": 0.20716047869791077
+    },
+    {
+      "pool": "9thgWVMJUKiiotrVmzhEy1MWPyvkNsUSwKbp8ZFsuhA2",
+      "pairName": "ANTHROPIC-USDC",
+      "window": "W2",
+      "t": 1780297200,
+      "feeRate": 0.0015,
+      "vol24hUsd": 31870.494050128997,
+      "realTvlUsd": 25011.602951069653,
+      "perPoolKToday": 0.20716047869791077
+    },
+    {
+      "pool": "2FAaQdbzVN5NJWhqSQsBZhJFivYDMycRTDJBzxmKKAig",
+      "pairName": "MET-USDC",
+      "window": "W3",
+      "t": 1770307200,
+      "feeRate": 0.01,
+      "vol24hUsd": 17441.86387523234,
+      "realTvlUsd": 85264.72333680763,
+      "perPoolKToday": 3.3118536893172834
+    },
+    {
+      "pool": "2FAaQdbzVN5NJWhqSQsBZhJFivYDMycRTDJBzxmKKAig",
+      "pairName": "MET-USDC",
+      "window": "W3",
+      "t": 1771513200,
+      "feeRate": 0.01,
+      "vol24hUsd": 13393.68178314148,
+      "realTvlUsd": 85664.71298741136,
+      "perPoolKToday": 3.3118536893172834
+    },
+    {
+      "pool": "2FAaQdbzVN5NJWhqSQsBZhJFivYDMycRTDJBzxmKKAig",
+      "pairName": "MET-USDC",
+      "window": "W3",
+      "t": 1772661600,
+      "feeRate": 0.01,
+      "vol24hUsd": 10960.669517111397,
+      "realTvlUsd": 91089.88699212567,
+      "perPoolKToday": 3.3118536893172834
+    },
+    {
+      "pool": "2QDGj5BWMSNyEfmyDFx7eEvWWm4KujUPJ38Xdkntvxtd",
+      "pairName": "PUMP-SOL",
+      "window": "W3",
+      "t": 1771477200,
+      "feeRate": 0.001,
+      "vol24hUsd": 767.9592160953677,
+      "realTvlUsd": 1358.7700725137645,
+      "perPoolKToday": 0.7649937855319514
+    },
+    {
+      "pool": "2QDGj5BWMSNyEfmyDFx7eEvWWm4KujUPJ38Xdkntvxtd",
+      "pairName": "PUMP-SOL",
+      "window": "W3",
+      "t": 1771570800,
+      "feeRate": 0.001,
+      "vol24hUsd": 426.22611784621665,
+      "realTvlUsd": 1387.3423600388687,
+      "perPoolKToday": 0.7649937855319514
+    },
+    {
+      "pool": "2QDGj5BWMSNyEfmyDFx7eEvWWm4KujUPJ38Xdkntvxtd",
+      "pairName": "PUMP-SOL",
+      "window": "W3",
+      "t": 1771664400,
+      "feeRate": 0.001,
+      "vol24hUsd": 276.53864187090636,
+      "realTvlUsd": 1426.616155721088,
+      "perPoolKToday": 0.7649937855319514
+    },
+    {
+      "pool": "31p1hptjhFo6ZD8oBqkfutNXQKGGPyi7YcEAfsyKW777",
+      "pairName": "Bonk-USDC",
+      "window": "W3",
+      "t": 1772683200,
+      "feeRate": 0.002,
+      "vol24hUsd": 4010.966157495721,
+      "realTvlUsd": 95482.8487951099,
+      "perPoolKToday": 17.63570361009711
+    },
+    {
+      "pool": "31p1hptjhFo6ZD8oBqkfutNXQKGGPyi7YcEAfsyKW777",
+      "pairName": "Bonk-USDC",
+      "window": "W3",
+      "t": 1773021600,
+      "feeRate": 0.002,
+      "vol24hUsd": 19950.553021625266,
+      "realTvlUsd": 88766.36031063156,
+      "perPoolKToday": 17.63570361009711
+    },
+    {
+      "pool": "31p1hptjhFo6ZD8oBqkfutNXQKGGPyi7YcEAfsyKW777",
+      "pairName": "Bonk-USDC",
+      "window": "W3",
+      "t": 1773349200,
+      "feeRate": 0.002,
+      "vol24hUsd": 4552.75761678138,
+      "realTvlUsd": 101159.41911809918,
+      "perPoolKToday": 17.63570361009711
+    },
+    {
+      "pool": "3D9MyL5iD9uqbe2FYvivHsywHWr3nJR1krEcEWXUCGzr",
+      "pairName": "SOL-USDC",
+      "window": "W3",
+      "t": 1772323200,
+      "feeRate": 0.0025,
+      "vol24hUsd": 103193.98369310999,
+      "realTvlUsd": 98551.13732296575,
+      "perPoolKToday": 24.409853198355894
+    },
+    {
+      "pool": "3D9MyL5iD9uqbe2FYvivHsywHWr3nJR1krEcEWXUCGzr",
+      "pairName": "SOL-USDC",
+      "window": "W3",
+      "t": 1772791200,
+      "feeRate": 0.0025,
+      "vol24hUsd": 77692.67707206968,
+      "realTvlUsd": 109448.69492151879,
+      "perPoolKToday": 24.409853198355894
+    },
+    {
+      "pool": "3D9MyL5iD9uqbe2FYvivHsywHWr3nJR1krEcEWXUCGzr",
+      "pairName": "SOL-USDC",
+      "window": "W3",
+      "t": 1773277200,
+      "feeRate": 0.0025,
+      "vol24hUsd": 106734.08478314348,
+      "realTvlUsd": 133484.46598917554,
+      "perPoolKToday": 24.409853198355894
+    },
+    {
+      "pool": "3fUj4dDSwgpJuzriE32KsgmGGowKNZpnt7T9AD1noZrV",
+      "pairName": "WBTC-USDC",
+      "window": "W3",
+      "t": 1771203600,
+      "feeRate": 0.0004,
+      "vol24hUsd": 790.0714626918823,
+      "realTvlUsd": 17999.193135125304,
+      "perPoolKToday": 0.18235783481503667
+    },
+    {
+      "pool": "3fUj4dDSwgpJuzriE32KsgmGGowKNZpnt7T9AD1noZrV",
+      "pairName": "WBTC-USDC",
+      "window": "W3",
+      "t": 1772136000,
+      "feeRate": 0.0004,
+      "vol24hUsd": 2388.5096507877684,
+      "realTvlUsd": 17728.708903593717,
+      "perPoolKToday": 0.18235783481503667
+    },
+    {
+      "pool": "3fUj4dDSwgpJuzriE32KsgmGGowKNZpnt7T9AD1noZrV",
+      "pairName": "WBTC-USDC",
+      "window": "W3",
+      "t": 1773064800,
+      "feeRate": 0.0004,
+      "vol24hUsd": 11632.18166054405,
+      "realTvlUsd": 18191.30212859099,
+      "perPoolKToday": 0.18235783481503667
+    },
+    {
+      "pool": "3h3o7TqTuHgZUs4jwUYdDc6L3BVhQ5mHVBUzwhbWL8SJ",
+      "pairName": "VIRTUAL-USDC",
+      "window": "W3",
+      "t": 1771804800,
+      "feeRate": 0.0025,
+      "vol24hUsd": 5864.666800162008,
+      "realTvlUsd": 68964.07376348542,
+      "perPoolKToday": 17.339677288116096
+    },
+    {
+      "pool": "3h3o7TqTuHgZUs4jwUYdDc6L3BVhQ5mHVBUzwhbWL8SJ",
+      "pairName": "VIRTUAL-USDC",
+      "window": "W3",
+      "t": 1772726400,
+      "feeRate": 0.0025,
+      "vol24hUsd": 1260.7092987490655,
+      "realTvlUsd": 64869.521335521546,
+      "perPoolKToday": 17.339677288116096
+    },
+    {
+      "pool": "3h3o7TqTuHgZUs4jwUYdDc6L3BVhQ5mHVBUzwhbWL8SJ",
+      "pairName": "VIRTUAL-USDC",
+      "window": "W3",
+      "t": 1773284400,
+      "feeRate": 0.0025,
+      "vol24hUsd": 528.8907633352457,
+      "realTvlUsd": 68897.4078870568,
+      "perPoolKToday": 17.339677288116096
+    },
+    {
+      "pool": "3Mt1bpU3fnSXyPEm66HKKXyQTpLWrwYziPLqwTqK4ZT7",
+      "pairName": "ORE-SOL",
+      "window": "W3",
+      "t": 1771776000,
+      "feeRate": 0.002,
+      "vol24hUsd": 268083.51859971037,
+      "realTvlUsd": 179513.22344267883,
+      "perPoolKToday": 0.1989848535998095
+    },
+    {
+      "pool": "3Mt1bpU3fnSXyPEm66HKKXyQTpLWrwYziPLqwTqK4ZT7",
+      "pairName": "ORE-SOL",
+      "window": "W3",
+      "t": 1772478000,
+      "feeRate": 0.002,
+      "vol24hUsd": 365413.15562245325,
+      "realTvlUsd": 165546.1288750758,
+      "perPoolKToday": 0.1989848535998095
+    },
+    {
+      "pool": "3Mt1bpU3fnSXyPEm66HKKXyQTpLWrwYziPLqwTqK4ZT7",
+      "pairName": "ORE-SOL",
+      "window": "W3",
+      "t": 1773176400,
+      "feeRate": 0.002,
+      "vol24hUsd": 157113.00832085105,
+      "realTvlUsd": 142923.29803216155,
+      "perPoolKToday": 0.1989848535998095
+    },
+    {
+      "pool": "3potGhhaNyzvCNq1CGh2wLbZLLMjpdPtG1Hpj8q2DDVR",
+      "pairName": "ETH-SOL",
+      "window": "W3",
+      "t": 1771768800,
+      "feeRate": 0.0004,
+      "vol24hUsd": 338130.4033978875,
+      "realTvlUsd": 192653.124274871,
+      "perPoolKToday": 0.16931286410007845
+    },
+    {
+      "pool": "3potGhhaNyzvCNq1CGh2wLbZLLMjpdPtG1Hpj8q2DDVR",
+      "pairName": "ETH-SOL",
+      "window": "W3",
+      "t": 1772474400,
+      "feeRate": 0.0004,
+      "vol24hUsd": 1420679.4121196978,
+      "realTvlUsd": 241309.43605825628,
+      "perPoolKToday": 0.16931286410007845
+    },
+    {
+      "pool": "3potGhhaNyzvCNq1CGh2wLbZLLMjpdPtG1Hpj8q2DDVR",
+      "pairName": "ETH-SOL",
+      "window": "W3",
+      "t": 1773176400,
+      "feeRate": 0.0004,
+      "vol24hUsd": 4035227.896943971,
+      "realTvlUsd": 406045.1430890979,
+      "perPoolKToday": 0.16931286410007845
+    },
+    {
+      "pool": "3sehQcVywWcFJZ1ri3NmJ7MRkrXbViJMRNN5b6kz8Mqn",
+      "pairName": "WBTC-USDC",
+      "window": "W3",
+      "t": 1771167600,
+      "feeRate": 0.001,
+      "vol24hUsd": 175099.47764546712,
+      "realTvlUsd": 301342.89936071984,
+      "perPoolKToday": 3.027878431637491
+    },
+    {
+      "pool": "3sehQcVywWcFJZ1ri3NmJ7MRkrXbViJMRNN5b6kz8Mqn",
+      "pairName": "WBTC-USDC",
+      "window": "W3",
+      "t": 1772132400,
+      "feeRate": 0.001,
+      "vol24hUsd": 313427.6904695135,
+      "realTvlUsd": 330604.52444990096,
+      "perPoolKToday": 3.027878431637491
+    },
+    {
+      "pool": "3sehQcVywWcFJZ1ri3NmJ7MRkrXbViJMRNN5b6kz8Mqn",
+      "pairName": "WBTC-USDC",
+      "window": "W3",
+      "t": 1773039600,
+      "feeRate": 0.001,
+      "vol24hUsd": 219406.39450945932,
+      "realTvlUsd": 377377.3218593376,
+      "perPoolKToday": 3.027878431637491
+    },
+    {
+      "pool": "3WY9N19nTtPSqrbWTeaFn2HfJ9MfdyLRSrRvy97GnDgY",
+      "pairName": "TripleT-SOL",
+      "window": "W3",
+      "t": 1772748000,
+      "feeRate": 0.01,
+      "vol24hUsd": 48997.69945861545,
+      "realTvlUsd": 35206.63345608924,
+      "perPoolKToday": 0.8947926355406175
+    },
+    {
+      "pool": "3WY9N19nTtPSqrbWTeaFn2HfJ9MfdyLRSrRvy97GnDgY",
+      "pairName": "TripleT-SOL",
+      "window": "W3",
+      "t": 1773061200,
+      "feeRate": 0.01,
+      "vol24hUsd": 139630.1319664056,
+      "realTvlUsd": 70135.07130333084,
+      "perPoolKToday": 0.8947926355406175
+    },
+    {
+      "pool": "3WY9N19nTtPSqrbWTeaFn2HfJ9MfdyLRSrRvy97GnDgY",
+      "pairName": "TripleT-SOL",
+      "window": "W3",
+      "t": 1773370800,
+      "feeRate": 0.01,
+      "vol24hUsd": 320768.58460533124,
+      "realTvlUsd": 122397.75847090274,
+      "perPoolKToday": 0.8947926355406175
+    },
+    {
+      "pool": "46CgAPEz8V2e9UL5PDa3JNWFW6sk7uFCj7TjdB3XbKD3",
+      "pairName": "HYPE-SOL",
+      "window": "W3",
+      "t": 1773439200,
+      "feeRate": 0.001,
+      "vol24hUsd": 49687.971297752665,
+      "realTvlUsd": 20313.491582145507,
+      "perPoolKToday": 2.768167835839455
+    },
+    {
+      "pool": "46CgAPEz8V2e9UL5PDa3JNWFW6sk7uFCj7TjdB3XbKD3",
+      "pairName": "HYPE-SOL",
+      "window": "W3",
+      "t": 1773475200,
+      "feeRate": 0.001,
+      "vol24hUsd": 47943.31429960837,
+      "realTvlUsd": 21334.006403977397,
+      "perPoolKToday": 2.768167835839455
+    },
+    {
+      "pool": "46CgAPEz8V2e9UL5PDa3JNWFW6sk7uFCj7TjdB3XbKD3",
+      "pairName": "HYPE-SOL",
+      "window": "W3",
+      "t": 1773511200,
+      "feeRate": 0.001,
+      "vol24hUsd": 41833.10390606423,
+      "realTvlUsd": 21502.46981449602,
+      "perPoolKToday": 2.768167835839455
+    },
+    {
+      "pool": "4Hj64HZw7DVNUGe17PDiNcgRSm1AXuMJ1va2D7Ja2zGx",
+      "pairName": "wPOND-SOL",
+      "window": "W3",
+      "t": 1771599600,
+      "feeRate": 0.01,
+      "vol24hUsd": 170.83797106071654,
+      "realTvlUsd": 279.7208670132407,
+      "perPoolKToday": 14.837960979422123
+    },
+    {
+      "pool": "4Hj64HZw7DVNUGe17PDiNcgRSm1AXuMJ1va2D7Ja2zGx",
+      "pairName": "wPOND-SOL",
+      "window": "W3",
+      "t": 1772722800,
+      "feeRate": 0.01,
+      "vol24hUsd": 171.1267528313492,
+      "realTvlUsd": 340.73207198002245,
+      "perPoolKToday": 14.837960979422123
+    },
+    {
+      "pool": "4kdxjt8pKEW4qV4ji4HANixwswDJw3Egn8L4x2BEWQqT",
+      "pairName": "WBTC-SOL",
+      "window": "W3",
+      "t": 1771750800,
+      "feeRate": 0.0003,
+      "vol24hUsd": 348830.26382594067,
+      "realTvlUsd": 214043.0780711899,
+      "perPoolKToday": 0.06298381117405628
+    },
+    {
+      "pool": "4kdxjt8pKEW4qV4ji4HANixwswDJw3Egn8L4x2BEWQqT",
+      "pairName": "WBTC-SOL",
+      "window": "W3",
+      "t": 1772463600,
+      "feeRate": 0.0003,
+      "vol24hUsd": 968702.8333752186,
+      "realTvlUsd": 205593.3360334938,
+      "perPoolKToday": 0.06298381117405628
+    },
+    {
+      "pool": "4kdxjt8pKEW4qV4ji4HANixwswDJw3Egn8L4x2BEWQqT",
+      "pairName": "WBTC-SOL",
+      "window": "W3",
+      "t": 1773172800,
+      "feeRate": 0.0003,
+      "vol24hUsd": 533419.7539656336,
+      "realTvlUsd": 199591.34296852542,
+      "perPoolKToday": 0.06298381117405628
+    },
+    {
+      "pool": "5SHjDACvwtox5nY8kpWNYyaceWjtTG8C6L821D9Gtpjf",
+      "pairName": "JLP-USDC",
+      "window": "W3",
+      "t": 1771772400,
+      "feeRate": 0.0003,
+      "vol24hUsd": 283099.4734088436,
+      "realTvlUsd": 508526.83578037284,
+      "perPoolKToday": 0.2517728678069176
+    },
+    {
+      "pool": "5SHjDACvwtox5nY8kpWNYyaceWjtTG8C6L821D9Gtpjf",
+      "pairName": "JLP-USDC",
+      "window": "W3",
+      "t": 1772474400,
+      "feeRate": 0.0003,
+      "vol24hUsd": 3042435.687461563,
+      "realTvlUsd": 468972.68491456885,
+      "perPoolKToday": 0.2517728678069176
+    },
+    {
+      "pool": "5SHjDACvwtox5nY8kpWNYyaceWjtTG8C6L821D9Gtpjf",
+      "pairName": "JLP-USDC",
+      "window": "W3",
+      "t": 1773176400,
+      "feeRate": 0.0003,
+      "vol24hUsd": 3759271.5160448146,
+      "realTvlUsd": 518419.0411949806,
+      "perPoolKToday": 0.2517728678069176
+    },
+    {
+      "pool": "5XRqv7LCoC5FhWKk5JN8n4kCrJs3e4KH1XsYzKeMd5Nt",
+      "pairName": "SOL-USDC",
+      "window": "W3",
+      "t": 1771020000,
+      "feeRate": 0.0005,
+      "vol24hUsd": 6317.2166462287205,
+      "realTvlUsd": 85287.2222034633,
+      "perPoolKToday": 18.57809564650432
+    },
+    {
+      "pool": "5XRqv7LCoC5FhWKk5JN8n4kCrJs3e4KH1XsYzKeMd5Nt",
+      "pairName": "SOL-USDC",
+      "window": "W3",
+      "t": 1772020800,
+      "feeRate": 0.0005,
+      "vol24hUsd": 2244.436892374329,
+      "realTvlUsd": 77515.6711388485,
+      "perPoolKToday": 18.57809564650432
+    },
+    {
+      "pool": "5XRqv7LCoC5FhWKk5JN8n4kCrJs3e4KH1XsYzKeMd5Nt",
+      "pairName": "SOL-USDC",
+      "window": "W3",
+      "t": 1773021600,
+      "feeRate": 0.0005,
+      "vol24hUsd": 4169.291139461893,
+      "realTvlUsd": 66426.73786711594,
+      "perPoolKToday": 18.57809564650432
+    },
+    {
+      "pool": "6t5fJwGxmTy2gWiq6CiLw2roZc93UanvANypMYQYHKGh",
+      "pairName": "xSOL-USDC",
+      "window": "W3",
+      "t": 1772812800,
+      "feeRate": 0.0075,
+      "vol24hUsd": 34011.761538286555,
+      "realTvlUsd": 35419.03726569031,
+      "perPoolKToday": 0.5013228720421482
+    },
+    {
+      "pool": "6t5fJwGxmTy2gWiq6CiLw2roZc93UanvANypMYQYHKGh",
+      "pairName": "xSOL-USDC",
+      "window": "W3",
+      "t": 1773097200,
+      "feeRate": 0.0075,
+      "vol24hUsd": 26018.75597957973,
+      "realTvlUsd": 42267.43990556139,
+      "perPoolKToday": 0.5013228720421482
+    },
+    {
+      "pool": "6t5fJwGxmTy2gWiq6CiLw2roZc93UanvANypMYQYHKGh",
+      "pairName": "xSOL-USDC",
+      "window": "W3",
+      "t": 1773396000,
+      "feeRate": 0.0075,
+      "vol24hUsd": 17888.189616282867,
+      "realTvlUsd": 34142.39687695989,
+      "perPoolKToday": 0.5013228720421482
+    },
+    {
+      "pool": "6tDL16nwiD4DB3EH5iNyP1itpRRf5Wi3aLTrPE3V3Gct",
+      "pairName": "Buttcoin-USDC",
+      "window": "W3",
+      "t": 1771336800,
+      "feeRate": 0.008,
+      "vol24hUsd": 174768.224946949,
+      "realTvlUsd": 93527.23489321432,
+      "perPoolKToday": 1.4928269335984363
+    },
+    {
+      "pool": "6tDL16nwiD4DB3EH5iNyP1itpRRf5Wi3aLTrPE3V3Gct",
+      "pairName": "Buttcoin-USDC",
+      "window": "W3",
+      "t": 1772211600,
+      "feeRate": 0.008,
+      "vol24hUsd": 19432.568084830233,
+      "realTvlUsd": 13744.768605897712,
+      "perPoolKToday": 1.4928269335984363
+    },
+    {
+      "pool": "6tDL16nwiD4DB3EH5iNyP1itpRRf5Wi3aLTrPE3V3Gct",
+      "pairName": "Buttcoin-USDC",
+      "window": "W3",
+      "t": 1773086400,
+      "feeRate": 0.008,
+      "vol24hUsd": 21611.6028733955,
+      "realTvlUsd": 30073.442078903772,
+      "perPoolKToday": 1.4928269335984363
+    },
+    {
+      "pool": "6wJ7W3oHj7ex6MVFp2o26NSof3aey7U8Brs8E371WCXA",
+      "pairName": "Fartcoin-SOL",
+      "window": "W3",
+      "t": 1771668000,
+      "feeRate": 0.002,
+      "vol24hUsd": 106934.78957283366,
+      "realTvlUsd": 180973.2919501644,
+      "perPoolKToday": 50.509023743850385
+    },
+    {
+      "pool": "6wJ7W3oHj7ex6MVFp2o26NSof3aey7U8Brs8E371WCXA",
+      "pairName": "Fartcoin-SOL",
+      "window": "W3",
+      "t": 1772413200,
+      "feeRate": 0.002,
+      "vol24hUsd": 112545.55462193747,
+      "realTvlUsd": 138570.5307217362,
+      "perPoolKToday": 50.509023743850385
+    },
+    {
+      "pool": "6wJ7W3oHj7ex6MVFp2o26NSof3aey7U8Brs8E371WCXA",
+      "pairName": "Fartcoin-SOL",
+      "window": "W3",
+      "t": 1773154800,
+      "feeRate": 0.002,
+      "vol24hUsd": 61069.07242304378,
+      "realTvlUsd": 119117.56029674178,
+      "perPoolKToday": 50.509023743850385
+    },
+    {
+      "pool": "6WTbcDmtqDNwxxLe9YzHzpSSBKQ7AduZG7SmYWpRwjZZ",
+      "pairName": "USDC-SOL",
+      "window": "W3",
+      "t": 1771146000,
+      "feeRate": 0.0015,
+      "vol24hUsd": 14835.082269922084,
+      "realTvlUsd": 222267.49755104462,
+      "perPoolKToday": 94.64919505382407
+    },
+    {
+      "pool": "6WTbcDmtqDNwxxLe9YzHzpSSBKQ7AduZG7SmYWpRwjZZ",
+      "pairName": "USDC-SOL",
+      "window": "W3",
+      "t": 1772114400,
+      "feeRate": 0.0015,
+      "vol24hUsd": 19200.760450428603,
+      "realTvlUsd": 210413.87308701815,
+      "perPoolKToday": 94.64919505382407
+    },
+    {
+      "pool": "6WTbcDmtqDNwxxLe9YzHzpSSBKQ7AduZG7SmYWpRwjZZ",
+      "pairName": "USDC-SOL",
+      "window": "W3",
+      "t": 1773032400,
+      "feeRate": 0.0015,
+      "vol24hUsd": 12483.884680808053,
+      "realTvlUsd": 203125.31121250428,
+      "perPoolKToday": 94.64919505382407
+    },
+    {
+      "pool": "6XAex22fAkvjenHg89jHzrcMKZdCU1nZJjdr25jsUaaa",
+      "pairName": "FIGHT-USDC",
+      "window": "W3",
+      "t": 1771682400,
+      "feeRate": 0.002,
+      "vol24hUsd": 74829.93062634575,
+      "realTvlUsd": 157188.23884133264,
+      "perPoolKToday": 11.721002179257042
+    },
+    {
+      "pool": "6XAex22fAkvjenHg89jHzrcMKZdCU1nZJjdr25jsUaaa",
+      "pairName": "FIGHT-USDC",
+      "window": "W3",
+      "t": 1772416800,
+      "feeRate": 0.002,
+      "vol24hUsd": 48015.89932204204,
+      "realTvlUsd": 136100.7676727035,
+      "perPoolKToday": 11.721002179257042
+    },
+    {
+      "pool": "6XAex22fAkvjenHg89jHzrcMKZdCU1nZJjdr25jsUaaa",
+      "pairName": "FIGHT-USDC",
+      "window": "W3",
+      "t": 1773154800,
+      "feeRate": 0.002,
+      "vol24hUsd": 14223.408983813953,
+      "realTvlUsd": 95279.59291816838,
+      "perPoolKToday": 11.721002179257042
+    },
+    {
+      "pool": "6YuRXMMF4W8zo216CP1A7iiE627GdDaitCRS2iXEdM2q",
+      "pairName": "SOL-USDC",
+      "window": "W3",
+      "t": 1771779600,
+      "feeRate": 0.003,
+      "vol24hUsd": 898.3535651549718,
+      "realTvlUsd": 89944.33075750738,
+      "perPoolKToday": 54.48517956865537
+    },
+    {
+      "pool": "6YuRXMMF4W8zo216CP1A7iiE627GdDaitCRS2iXEdM2q",
+      "pairName": "SOL-USDC",
+      "window": "W3",
+      "t": 1772474400,
+      "feeRate": 0.003,
+      "vol24hUsd": 3054.827753175951,
+      "realTvlUsd": 94055.5103394088,
+      "perPoolKToday": 54.48517956865537
+    },
+    {
+      "pool": "6YuRXMMF4W8zo216CP1A7iiE627GdDaitCRS2iXEdM2q",
+      "pairName": "SOL-USDC",
+      "window": "W3",
+      "t": 1773162000,
+      "feeRate": 0.003,
+      "vol24hUsd": 1683.5576045663347,
+      "realTvlUsd": 94907.96588249643,
+      "perPoolKToday": 54.48517956865537
+    },
+    {
+      "pool": "7LqL8hDYVYBgoif19fSozZurxm3ve129tfkftz6WdFkR",
+      "pairName": "TNSR-USDC",
+      "window": "W3",
+      "t": 1771466400,
+      "feeRate": 0.001,
+      "vol24hUsd": 9435.307230723976,
+      "realTvlUsd": 66727.07716621677,
+      "perPoolKToday": 4.754192120883541
+    },
+    {
+      "pool": "7LqL8hDYVYBgoif19fSozZurxm3ve129tfkftz6WdFkR",
+      "pairName": "TNSR-USDC",
+      "window": "W3",
+      "t": 1772290800,
+      "feeRate": 0.001,
+      "vol24hUsd": 28796.53398008331,
+      "realTvlUsd": 64997.06168409639,
+      "perPoolKToday": 4.754192120883541
+    },
+    {
+      "pool": "7LqL8hDYVYBgoif19fSozZurxm3ve129tfkftz6WdFkR",
+      "pairName": "TNSR-USDC",
+      "window": "W3",
+      "t": 1773108000,
+      "feeRate": 0.001,
+      "vol24hUsd": 17781.01075900799,
+      "realTvlUsd": 66739.86602244222,
+      "perPoolKToday": 4.754192120883541
+    },
+    {
+      "pool": "88LoXa6pK8RjStugRxTwz3scTHMc986y7xE1DLNbwfPy",
+      "pairName": "PUMP-USDC",
+      "window": "W3",
+      "t": 1773439200,
+      "feeRate": 0.002,
+      "vol24hUsd": 42272.612201070515,
+      "realTvlUsd": 75720.72797854846,
+      "perPoolKToday": 1.876133579104633
+    },
+    {
+      "pool": "88LoXa6pK8RjStugRxTwz3scTHMc986y7xE1DLNbwfPy",
+      "pairName": "PUMP-USDC",
+      "window": "W3",
+      "t": 1773468000,
+      "feeRate": 0.002,
+      "vol24hUsd": 35734.966445322236,
+      "realTvlUsd": 75725.47237164309,
+      "perPoolKToday": 1.876133579104633
+    },
+    {
+      "pool": "88LoXa6pK8RjStugRxTwz3scTHMc986y7xE1DLNbwfPy",
+      "pairName": "PUMP-USDC",
+      "window": "W3",
+      "t": 1773496800,
+      "feeRate": 0.002,
+      "vol24hUsd": 30133.083629592922,
+      "realTvlUsd": 75729.87913970592,
+      "perPoolKToday": 1.876133579104633
+    },
+    {
+      "pool": "8iibPkw7zbNHMPcihHeBgcL7rDnHteZb2NfvTy8bNm7d",
+      "pairName": "INF-SOL",
+      "window": "W3",
+      "t": 1771473600,
+      "feeRate": 0.0001,
+      "vol24hUsd": 9824.777595319623,
+      "realTvlUsd": 131824.82292762096,
+      "perPoolKToday": 35.28081375472014
+    },
+    {
+      "pool": "8iibPkw7zbNHMPcihHeBgcL7rDnHteZb2NfvTy8bNm7d",
+      "pairName": "INF-SOL",
+      "window": "W3",
+      "t": 1772276400,
+      "feeRate": 0.0001,
+      "vol24hUsd": 24332.262057682838,
+      "realTvlUsd": 125483.79100002495,
+      "perPoolKToday": 35.28081375472014
+    },
+    {
+      "pool": "8iibPkw7zbNHMPcihHeBgcL7rDnHteZb2NfvTy8bNm7d",
+      "pairName": "INF-SOL",
+      "window": "W3",
+      "t": 1773050400,
+      "feeRate": 0.0001,
+      "vol24hUsd": 62.220025044013504,
+      "realTvlUsd": 132224.56841850726,
+      "perPoolKToday": 35.28081375472014
+    },
+    {
+      "pool": "8qs7oJiYXzNWEN4KxS1HfthVA1SkyfWzk1WTxb8Qv2Y6",
+      "pairName": "JLP-SOL",
+      "window": "W3",
+      "t": 1771509600,
+      "feeRate": 0.004,
+      "vol24hUsd": 60602.468331118806,
+      "realTvlUsd": 276819.9247144452,
+      "perPoolKToday": 40.63543407444529
+    },
+    {
+      "pool": "8qs7oJiYXzNWEN4KxS1HfthVA1SkyfWzk1WTxb8Qv2Y6",
+      "pairName": "JLP-SOL",
+      "window": "W3",
+      "t": 1772744400,
+      "feeRate": 0.004,
+      "vol24hUsd": 85344.52121821589,
+      "realTvlUsd": 301094.2549307525,
+      "perPoolKToday": 40.63543407444529
+    },
+    {
+      "pool": "9oCwYQJYCWHeXnodFCxdqY1kV4uBPo5P7yWGkNJ2Wjj3",
+      "pairName": "SOL-USDC",
+      "window": "W3",
+      "t": 1771189200,
+      "feeRate": 0.004,
+      "vol24hUsd": 5352.3544648901725,
+      "realTvlUsd": 125305.54203765484,
+      "perPoolKToday": 93.87774798572072
+    },
+    {
+      "pool": "9oCwYQJYCWHeXnodFCxdqY1kV4uBPo5P7yWGkNJ2Wjj3",
+      "pairName": "SOL-USDC",
+      "window": "W3",
+      "t": 1772150400,
+      "feeRate": 0.004,
+      "vol24hUsd": 5630.070965736238,
+      "realTvlUsd": 123209.4760332989,
+      "perPoolKToday": 93.87774798572072
+    },
+    {
+      "pool": "9oCwYQJYCWHeXnodFCxdqY1kV4uBPo5P7yWGkNJ2Wjj3",
+      "pairName": "SOL-USDC",
+      "window": "W3",
+      "t": 1773039600,
+      "feeRate": 0.004,
+      "vol24hUsd": 8186.245165627015,
+      "realTvlUsd": 127753.55556224012,
+      "perPoolKToday": 93.87774798572072
+    },
+    {
+      "pool": "9ToMYnmEeYKc1AWYAFo8yjPKM1bt3vPhgw1U6qh9RxBd",
+      "pairName": "ZEC-USDC",
+      "window": "W3",
+      "t": 1771657200,
+      "feeRate": 0.002,
+      "vol24hUsd": 166522.9385782776,
+      "realTvlUsd": 181157.21736802257,
+      "perPoolKToday": 0.8568210869646707
+    },
+    {
+      "pool": "9ToMYnmEeYKc1AWYAFo8yjPKM1bt3vPhgw1U6qh9RxBd",
+      "pairName": "ZEC-USDC",
+      "window": "W3",
+      "t": 1772406000,
+      "feeRate": 0.002,
+      "vol24hUsd": 111279.85415186457,
+      "realTvlUsd": 144994.1692635024,
+      "perPoolKToday": 0.8568210869646707
+    },
+    {
+      "pool": "9ToMYnmEeYKc1AWYAFo8yjPKM1bt3vPhgw1U6qh9RxBd",
+      "pairName": "ZEC-USDC",
+      "window": "W3",
+      "t": 1773154800,
+      "feeRate": 0.002,
+      "vol24hUsd": 214116.46123100683,
+      "realTvlUsd": 157974.1211863493,
+      "perPoolKToday": 0.8568210869646707
+    },
+    {
+      "pool": "9Ub2zeRCZg7UnTwH6kL9w9bYPpf35CaiJHFhjenVQhMd",
+      "pairName": "xSOL-SOL",
+      "window": "W3",
+      "t": 1771365600,
+      "feeRate": 0.025,
+      "vol24hUsd": 12953.693105565275,
+      "realTvlUsd": 65302.708575460405,
+      "perPoolKToday": 7.7851105823092945
+    },
+    {
+      "pool": "9Ub2zeRCZg7UnTwH6kL9w9bYPpf35CaiJHFhjenVQhMd",
+      "pairName": "xSOL-SOL",
+      "window": "W3",
+      "t": 1772622000,
+      "feeRate": 0.025,
+      "vol24hUsd": 23730.775340186377,
+      "realTvlUsd": 36674.57211873892,
+      "perPoolKToday": 7.7851105823092945
+    },
+    {
+      "pool": "9uX6G8ZaRVxGSVybyYwqjHdgA1hgQqsospqD4m1sG3u2",
+      "pairName": "PENGU-USDC",
+      "window": "W3",
+      "t": 1771102800,
+      "feeRate": 0.002,
+      "vol24hUsd": 7032.43224784025,
+      "realTvlUsd": 80094.72384015349,
+      "perPoolKToday": 37.90148955379838
+    },
+    {
+      "pool": "9uX6G8ZaRVxGSVybyYwqjHdgA1hgQqsospqD4m1sG3u2",
+      "pairName": "PENGU-USDC",
+      "window": "W3",
+      "t": 1772056800,
+      "feeRate": 0.002,
+      "vol24hUsd": 3209.7229232955638,
+      "realTvlUsd": 86333.38588517913,
+      "perPoolKToday": 37.90148955379838
+    },
+    {
+      "pool": "9uX6G8ZaRVxGSVybyYwqjHdgA1hgQqsospqD4m1sG3u2",
+      "pairName": "PENGU-USDC",
+      "window": "W3",
+      "t": 1773021600,
+      "feeRate": 0.002,
+      "vol24hUsd": 368.9047969417512,
+      "realTvlUsd": 93020.28890973309,
+      "perPoolKToday": 37.90148955379838
+    },
+    {
+      "pool": "A3N64gxHQL8b2cQ75JM3nVqoRFYWmntaEUFfDmhYe1Nv",
+      "pairName": "PENGU-SOL",
+      "window": "W3",
+      "t": 1772208000,
+      "feeRate": 0.002,
+      "vol24hUsd": 5087.571077476853,
+      "realTvlUsd": 57541.544965199784,
+      "perPoolKToday": 13.18875368376633
+    },
+    {
+      "pool": "A3N64gxHQL8b2cQ75JM3nVqoRFYWmntaEUFfDmhYe1Nv",
+      "pairName": "PENGU-SOL",
+      "window": "W3",
+      "t": 1773097200,
+      "feeRate": 0.002,
+      "vol24hUsd": 156619.78841544082,
+      "realTvlUsd": 101624.82979749571,
+      "perPoolKToday": 13.18875368376633
+    },
+    {
+      "pool": "ARwi1S4DaiTG5DX7S4M4ZsrXqpMD1MrTmbu9ue2tpmEq",
+      "pairName": "USDC-USDT",
+      "window": "W3",
+      "t": 1771592400,
+      "feeRate": 0.0001,
+      "vol24hUsd": 139364.67001350663,
+      "realTvlUsd": 449912.7565948169,
+      "perPoolKToday": 17.192651098776512
+    },
+    {
+      "pool": "ARwi1S4DaiTG5DX7S4M4ZsrXqpMD1MrTmbu9ue2tpmEq",
+      "pairName": "USDC-USDT",
+      "window": "W3",
+      "t": 1772366400,
+      "feeRate": 0.0001,
+      "vol24hUsd": 181677.94945715147,
+      "realTvlUsd": 431183.469243012,
+      "perPoolKToday": 17.192651098776512
+    },
+    {
+      "pool": "ARwi1S4DaiTG5DX7S4M4ZsrXqpMD1MrTmbu9ue2tpmEq",
+      "pairName": "USDC-USDT",
+      "window": "W3",
+      "t": 1773140400,
+      "feeRate": 0.0001,
+      "vol24hUsd": 176727.26373306828,
+      "realTvlUsd": 401488.8951545005,
+      "perPoolKToday": 17.192651098776512
+    },
+    {
+      "pool": "AUgbdzNob9S8MiVHm4Qruqz3VsZGoqtMZnSzv45juDbL",
+      "pairName": "JUP-USDC",
+      "window": "W3",
+      "t": 1770321600,
+      "feeRate": 0.01,
+      "vol24hUsd": 77280.88701717978,
+      "realTvlUsd": 214903.96981803933,
+      "perPoolKToday": 89.50074093483734
+    },
+    {
+      "pool": "AUgbdzNob9S8MiVHm4Qruqz3VsZGoqtMZnSzv45juDbL",
+      "pairName": "JUP-USDC",
+      "window": "W3",
+      "t": 1771423200,
+      "feeRate": 0.01,
+      "vol24hUsd": 2174.691681787424,
+      "realTvlUsd": 215700.37518519405,
+      "perPoolKToday": 89.50074093483734
+    },
+    {
+      "pool": "AUgbdzNob9S8MiVHm4Qruqz3VsZGoqtMZnSzv45juDbL",
+      "pairName": "JUP-USDC",
+      "window": "W3",
+      "t": 1772722800,
+      "feeRate": 0.01,
+      "vol24hUsd": 76119.44801617814,
+      "realTvlUsd": 253971.31793667973,
+      "perPoolKToday": 89.50074093483734
+    },
+    {
+      "pool": "AuHsaRkwk9TVTZv7uF2VJfwwRPZRky7Ah2ktKnACPFW3",
+      "pairName": "wNEAR-USDC",
+      "window": "W3",
+      "t": 1770519600,
+      "feeRate": 0.01,
+      "vol24hUsd": 20720.401348350966,
+      "realTvlUsd": 116697.4281092757,
+      "perPoolKToday": 8.304436700326658
+    },
+    {
+      "pool": "AuHsaRkwk9TVTZv7uF2VJfwwRPZRky7Ah2ktKnACPFW3",
+      "pairName": "wNEAR-USDC",
+      "window": "W3",
+      "t": 1771981200,
+      "feeRate": 0.01,
+      "vol24hUsd": 19414.068366343694,
+      "realTvlUsd": 116013.86230904746,
+      "perPoolKToday": 8.304436700326658
+    },
+    {
+      "pool": "AuHsaRkwk9TVTZv7uF2VJfwwRPZRky7Ah2ktKnACPFW3",
+      "pairName": "wNEAR-USDC",
+      "window": "W3",
+      "t": 1772910000,
+      "feeRate": 0.01,
+      "vol24hUsd": 19469.410144695572,
+      "realTvlUsd": 122959.89373901964,
+      "perPoolKToday": 8.304436700326658
+    }
+  ]
+}
