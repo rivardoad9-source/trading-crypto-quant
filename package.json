@@ -30,6 +30,7 @@
     "report:quant": "python scripts/generate_quant_report.py",
     "exitcosts:backfill": "node --import tsx src/scripts/backfillExitCosts.ts",
     "report:exitcosts": "node --import tsx src/scripts/reportExitCosts.ts",
+    "report:live": "node --import tsx src/scripts/reportLive.ts",
     "test:local": "node --import tsx scripts/test-local.ts",
     "audit:report": "node --import tsx scripts/generate-audit-report.ts",
     "sweep": "node --import tsx src/scripts/sweepGuardrails.ts",
