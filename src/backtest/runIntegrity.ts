@@ -34,9 +34,11 @@ import {
   SOL_USDC_POOL,
   fetchHourlyBars,
   loadHistoricalData,
+  type Bar,
   type HistoricalDataset,
   type PoolHistory,
 } from "./historicalData.js";
+import { ensureTvlSeries, heliusTvlDeps, seriesPoints } from "./onchainTvl.js";
 import { calibrateTvlModel, describeTvlModel, type TvlModel } from "./tvlModel.js";
 import { liveV11Config } from "./runMicroCapital.js";
 import {
@@ -71,6 +73,7 @@ import { buildPointInTimeUniverse } from "./universe.js";
 import {
   BRAKE_LABEL,
   DEFAULT_INGEST_PARAMS,
+  barFilePath,
   loadWindowDataset,
   universeCoverage,
   windowFunnel,
@@ -686,6 +689,21 @@ export function readIngestFlags(flags: ReadonlyMap<string, string>): IngestParam
 }
 
 /**
+ * `--tvl=model|onchain` (default model), `--tvl-cadence-hours` (default 12), `--tvl-concurrency`
+ * (default 6). On-chain costs two RPC reads per pool per grid instant, cached per pool; the model
+ * default keeps every earlier per-window run reproducible.
+ */
+export function readTvlFlags(flags: ReadonlyMap<string, string>): { basis: "model" | "onchain"; cadenceSec: number; concurrency: number } {
+  const basis = flags.get("tvl") ?? "model";
+  if (basis !== "model" && basis !== "onchain") throw new Error(`--tvl=${basis} must be model or onchain`);
+  const hours = Number(flags.get("tvl-cadence-hours") ?? 12);
+  if (!Number.isInteger(hours) || hours < 1 || 24 % hours !== 0) throw new Error(`--tvl-cadence-hours=${flags.get("tvl-cadence-hours")} must divide 24 (1,2,3,4,6,8,12,24)`);
+  const concurrency = Number(flags.get("tvl-concurrency") ?? 6);
+  if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 32) throw new Error("--tvl-concurrency must be 1..32");
+  return { basis, cadenceSec: hours * 3600, concurrency };
+}
+
+/**
  * `--end=YYYY-MM-DD` pins the newest window's end (00:00 UTC). Without it windows end NOW,
  * so their dates — and the cache files named after them — move every day; pinning the end
  * is how a later run reuses an earlier run's candidate lists instead of starting new ones.
@@ -735,11 +753,17 @@ export function renderWindowFunnels(
         String(f.rejected.belowTopN),
         String(f.fetchFailed),
         `${f.coverage.withData}/${f.coverage.n}`,
-        w.dataset.selection.k === null ? "—" : w.dataset.selection.k.toFixed(3),
+        w.dataset.selection.tvlBasis === "onchain" ? "on-chain" : w.dataset.selection.k === null ? "—" : w.dataset.selection.k.toFixed(3),
       ]),
     ),
   ];
   for (const { w, f } of funnels) {
+    const refusals = Object.entries(w.dataset.selection.tvlRefusals ?? {});
+    if (w.dataset.selection.tvlBasis === "onchain") {
+      out.push(
+        `${w.label}: TVL on-chain · tanpa seri: ${refusals.length ? refusals.map(([r, n]) => `${n}x ${r}`).join("; ") : "0"} · band TVL tidak diketahui: ${f.tvlBandDetail?.unknown ?? 0}`,
+      );
+    }
     if (!f.reconciles) {
       out.push(`${w.label}: ** funnel TIDAK rekonsiliasi (kandidat ${f.candidates} != dipakai + ditolak + gagal) — cache robek atau bug, jangan pakai window ini **`);
     }
@@ -780,6 +804,16 @@ async function runPerWindowUniverse(ctx: {
 }): Promise<void> {
   const n = ctx.num("pools", 16) + ctx.num("deadpools", 16);
   const ingest = readIngestFlags(ctx.flags);
+  const tvlMode = readTvlFlags(ctx.flags);
+  const solFullBars = (): Bar[] => {
+    try {
+      return (JSON.parse(readFileSync(resolve(process.cwd(), barFilePath(SOL_USDC_POOL)), "utf8")) as { bars: Bar[] }).bars;
+    } catch {
+      return [];
+    }
+  };
+  const tvlDeps = tvlMode.basis === "onchain" ? heliusTvlDeps(env.SOLANA_RPC_URL, (l) => console.log(l)) : null;
+  let tvlCalls = 0;
   /*
    * The account is the LIVE profile unless a flag says otherwise — the same resolver `main`
    * feeds, but fed the raw flags. The 14 Sep run passed a hardcoded $300 / 63% / 1 account
@@ -816,6 +850,32 @@ async function runPerWindowUniverse(ctx: {
       barsWanted: oldestBars,
       barsFromSec: oldestStart,
       tvlBand: { minUsd: env.MIN_TVL_USD, maxUsd: env.MAX_TVL_USD },
+      onchainTvl:
+        tvlMode.basis === "onchain" && tvlDeps
+          ? {
+              cadenceSec: tvlMode.cadenceSec,
+              async seriesFor(address, times) {
+                let bars: Bar[] = [];
+                try {
+                  bars = (JSON.parse(readFileSync(resolve(process.cwd(), barFilePath(address)), "utf8")) as { bars: Bar[] }).bars;
+                } catch {
+                  return { points: [], refused: "no cached bars for pricing" };
+                }
+                const { file, fetched, failed } = await ensureTvlSeries({
+                  address,
+                  bars,
+                  solUsdBars: solFullBars(),
+                  times,
+                  deps: tvlDeps,
+                  concurrency: tvlMode.concurrency,
+                });
+                tvlCalls += fetched * 2;
+                if (failed > 0) console.warn(`[tvl] ${address}: ${failed} sample(s) failed in transport — retried on the next run`);
+                if (file.refused) return { points: [], refused: file.refused };
+                return { points: seriesPoints(file, times[0] ?? 0, Number.MAX_SAFE_INTEGER), refused: null };
+              },
+            }
+          : undefined,
       deps: {
         /*
          * Survivors inside the strategy's TVL band, exactly as the legacy ingest asks for.
@@ -849,6 +909,11 @@ async function runPerWindowUniverse(ctx: {
     { ingest, hasProKey: Boolean(process.env.COINGECKO_PRO_API_KEY), nowSec: Math.floor(Date.now() / 1000) },
   );
   console.log(funnelLines.join("\n"));
+  if (tvlMode.basis === "onchain") {
+    console.log(
+      `[integrity] on-chain TVL: ${tvlCalls} RPC reads this run (~${tvlCalls * 10} Helius credits at 10 per getTransactionsForAddress); the rest came from .cache/tvl_series`,
+    );
+  }
   if (ctx.ingestOnly) {
     console.log("[integrity] --ingest-only: caches written, no analysis run");
     return;
@@ -885,7 +950,19 @@ async function runPerWindowUniverse(ctx: {
   for (const w of loaded) {
     const k = w.dataset.selection.k;
     // The same k the universe was selected with, so the gates cannot disagree with the selection.
-    const tvlModel: TvlModel = { medianK: k ?? 0, p25K: k ?? 0, p75K: k ?? 0, samples: k === null ? 0 : 1, perPoolK: {} };
+    const onchain = w.dataset.selection.tvlBasis === "onchain";
+    const tvlModel: TvlModel = onchain
+      ? {
+          medianK: 0,
+          p25K: 0,
+          p75K: 0,
+          samples: Object.keys(w.dataset.tvlSeries ?? {}).length,
+          perPoolK: {},
+          series: w.dataset.tvlSeries ?? {},
+          // A sample older than 1.5 cadences is unknown TVL, not the last known one.
+          seriesMaxStaleSec: Math.round((w.dataset.selection.tvlCadenceSec ?? tvlMode.cadenceSec) * 1.5),
+        }
+      : { medianK: k ?? 0, p25K: k ?? 0, p75K: k ?? 0, samples: k === null ? 0 : 1, perPoolK: {} };
     const partition = await partitionLiveEligible(w.dataset.pools, ctx.policy);
     const eligible = new Set(partition.eligible.map((p) => p.address));
     meta.push({
@@ -898,7 +975,7 @@ async function runPerWindowUniverse(ctx: {
       universe: w.dataset.pools.length,
       eligiblePools: partition.eligible.length,
     });
-    if (k === null || w.dataset.pools.length === 0) continue;
+    if ((!onchain && k === null) || w.dataset.pools.length === 0) continue;
 
     for (const cost of ladder) {
       const costConfig: BacktestConfig = {
@@ -932,6 +1009,7 @@ async function runPerWindowUniverse(ctx: {
     `Universe        : top ${n} per window by in-window fees, from up to ${ingest.candidatesCap} candidates ` +
       `(pages survivor ${ingest.survivorPages} / dead cohort ${ingest.cohortPages}), ` +
       `modelled TVL band $${env.MIN_TVL_USD}-$${env.MAX_TVL_USD}`,
+    `TVL             : ${tvlMode.basis === "onchain" ? `ON-CHAIN (reserve x harga, grid ${tvlMode.cadenceSec / 3600}h, sampel basi > ${(tvlMode.cadenceSec * 1.5) / 3600}h = TVL tidak diketahui = ditolak; tanpa fallback ke model k)` : "MODEL k x volume (tervalidasi buruk: docs/backtests/2026-09-14-tvl-model-validation.md)"}`,
     `Swap (baru)     : ${ctx.swapSlippagePct}%/kaki + ${ctx.swapGasSolPerLeg} SOL gas/kaki · exit model fit & envelope`,
     `Live-eligible   : ${meta.map((m) => `${m.label} ${m.eligiblePools}/${m.universe}`).join(" · ")}`,
     ...funnelLines,
@@ -1057,6 +1135,7 @@ async function runPerWindowUniverse(ctx: {
         n,
         candidatesCap: ingest.candidatesCap,
         ingest,
+        tvl: tvlMode,
         profile,
         windows: meta.map((m) => ({ ...m, funnel: windowFunnel(loaded.find((w) => w.label === m.label)!.dataset, loaded.find((w) => w.label === m.label)!.spec) })),
         cells: cells.map((c) => ({ ...c, eligible: strip(c.eligible), full: strip(c.full) })),

@@ -5,7 +5,7 @@ import {
 } from "../services/meteora.js";
 import { computeMaxDrawdown, computeProfitFactor } from "../services/metrics.js";
 import { WSOL_MINT } from "../config/constants.js";
-import { estimateTvlAt, type TvlModel } from "./tvlModel.js";
+import { estimateTvlAt, tvlAtBar, type TvlModel } from "./tvlModel.js";
 import type { Bar, PoolHistory } from "./historicalData.js";
 import { exitConcessionPct, type ExitCostModel } from "./exitCost.js";
 
@@ -1024,7 +1024,13 @@ export function runSimulation(input: SimulationInput): BacktestResult {
 
       // Modelled, not the current snapshot — a snapshot would reject every dead pool
       // and reinstate the survivorship bias this harness exists to remove.
-      const tvl = estimateTvlAt(tvlModel, pool.address, vol24h).tvlUsd;
+      // With on-chain series (`tvlModel.series`), the measured TVL at this bar or nothing.
+      const tvlOrUnknown = tvlModel.series ? tvlAtBar(tvlModel, pool.address, vol24h, t) : null;
+      if (tvlModel.series && tvlOrUnknown === null) {
+        gateRejections.tvlUnknown = (gateRejections.tvlUnknown ?? 0) + 1;
+        continue;
+      }
+      const tvl = tvlOrUnknown ?? estimateTvlAt(tvlModel, pool.address, vol24h).tvlUsd;
       if (tvl < config.minTvlUsd) {
         gateRejections.lowTvl = (gateRejections.lowTvl ?? 0) + 1;
         continue;
