@@ -660,6 +660,7 @@ describe("execution guard - the bench covers the TOKEN, not one pool address", (
         noWsol: 0,
         binCap: 0,
         transferFee: 0,
+        tokenConcentration: 0,
       });
     });
 

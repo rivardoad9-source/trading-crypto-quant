@@ -93,6 +93,7 @@ import {
   getPoolExitRecord,
   getRecentFailurePostMortems,
   getPositionById,
+  listRecentOpenedAttempts,
   settleOpenedLiveAttempt,
   hasActivePositionForPool,
   insertPosition,
@@ -100,6 +101,7 @@ import {
   updatePositionMetrics,
 } from "../database/repositories.js";
 import { reflectOnPosition, runPostMortemSweep } from "./postMortemAgent.js";
+import { assessTokenConcentration } from "../services/tokenConcentration.js";
 import type { SimulatedPositionRow } from "../database/types.js";
 
 /* ------------------------------------------------------------------ */
@@ -1397,7 +1399,8 @@ export type ExecutionBlockKind =
   | "tokenBench"
   | "noWsol"
   | "binCap"
-  | "transferFee";
+  | "transferFee"
+  | "tokenConcentration";
 
 /** Tallies execution refusals per gate. Every kind is present, zero included. */
 export function countExecutionBlocks(
@@ -1410,6 +1413,7 @@ export function countExecutionBlocks(
     noWsol: 0,
     binCap: 0,
     transferFee: 0,
+    tokenConcentration: 0,
   };
   for (const r of rejected) out[r.kind] += 1;
   return out;
@@ -1508,10 +1512,52 @@ export interface EntrySummary {
     projectedNetPnlUsd: number;
     roundTripCostUsd: number;
   }>;
+  /**
+   * Pools the token-concentration gate flagged, in EITHER mode. In "report" mode they stay
+   * on the list and this is the record of what the rule would have refused; in "enforce"
+   * mode they are also in `executionRejected`.
+   */
+  concentrationFlagged: Array<{ pairName: string; poolAddress: string; entries: number; enforced: boolean; reason: string }>;
+  /**
+   * The LLM's pick beside a one-line rule's pick on the SAME shortlist. Diagnostic only —
+   * nothing acts on the rule's pick. Null when no decision was reached.
+   */
+  shadowPick: ShadowPick | null;
   priorityFee: PriorityFeeEstimate | null;
   decision: DLMMPoolDecision | null;
   opened: boolean;
   skipReason?: string;
+}
+
+export interface ShadowPick {
+  shortlistSize: number;
+  /** Null when the model declined or named a pool not on the list. */
+  llmPickPool: string | null;
+  llmPickPair: string | null;
+  rulePickPool: string | null;
+  rulePickPair: string | null;
+}
+
+/**
+ * The shadow rule: highest 24h fee/TVL on the shortlist the LLM was shown, ties broken by
+ * address so the pick is deterministic. Deliberately the dumbest reasonable rule — the
+ * question it exists to answer is whether the model adds anything over it.
+ */
+export function shadowRulePick(
+  shortlist: ReadonlyArray<{ address: string; pairName: string; feeTvlRatio24h: number }>,
+): { poolAddress: string; pairName: string } | null {
+  let best: (typeof shortlist)[number] | null = null;
+  for (const p of shortlist) {
+    if (!Number.isFinite(p.feeTvlRatio24h)) continue;
+    if (
+      best === null ||
+      p.feeTvlRatio24h > best.feeTvlRatio24h ||
+      (p.feeTvlRatio24h === best.feeTvlRatio24h && p.address.localeCompare(best.address) < 0)
+    ) {
+      best = p;
+    }
+  }
+  return best ? { poolAddress: best.address, pairName: best.pairName } : null;
 }
 
 interface EntrySizing {
@@ -1576,6 +1622,8 @@ async function seekNewEntry(): Promise<EntrySummary> {
     volatilityRejected: [],
     breakevenRejected: [],
     microFrictionRejected: [],
+    concentrationFlagged: [],
+    shadowPick: null,
     priorityFee: null,
     decision: null,
     opened: false,
@@ -1665,6 +1713,18 @@ async function seekNewEntry(): Promise<EntrySummary> {
      */
     const unkeyed = describeUnkeyedBenches(executionHistory);
     if (unkeyed) console.warn(unkeyed);
+
+    /*
+     * Confirmed live opens in the concentration window, read ONCE per cycle. A read failure
+     * leaves the list empty — the gate fails open, like every anti-churn gate: it protects
+     * the sample's diversity, not capital.
+     */
+    let openedAttempts: ReturnType<typeof listRecentOpenedAttempts> = [];
+    try {
+      openedAttempts = listRecentOpenedAttempts(env.LIVE_TOKEN_ENTRY_WINDOW_HOURS);
+    } catch (err) {
+      console.warn(`[concentration] could not read recent opens, gate skipped: ${err instanceof Error ? err.message : String(err)}`);
+    }
 
     const executable: typeof fresh = [];
 
@@ -1773,6 +1833,42 @@ async function seekNewEntry(): Promise<EntrySummary> {
       }
 
       /*
+       * TOKEN CONCENTRATION — see `services/tokenConcentration.ts`. Local state only, so it
+       * sits before the one gate here that reads the chain. REPORT mode (the default)
+       * records the flag and keeps the pool: the operator is holding config frozen while
+       * the live sample grows, and the flag count is the evidence for arming it.
+       */
+      const concentrationMint = pool.baseMint === WSOL_MINT ? pool.quoteMint : pool.baseMint;
+      const concentration = assessTokenConcentration({
+        attempts: openedAttempts,
+        tokenMint: concentrationMint || null,
+        poolAddress: pool.address,
+        nowMs: Date.now(),
+        limit: env.LIVE_MAX_ENTRIES_PER_TOKEN,
+        windowHours: env.LIVE_TOKEN_ENTRY_WINDOW_HOURS,
+      });
+      if (concentration.flagged) {
+        const enforced = env.LIVE_TOKEN_CONCENTRATION_MODE === "enforce";
+        summary.concentrationFlagged.push({
+          pairName: pool.pairName,
+          poolAddress: pool.address,
+          entries: concentration.entries,
+          enforced,
+          reason: concentration.reason ?? "token concentration limit reached",
+        });
+        if (enforced) {
+          summary.executionRejected.push({
+            pairName: pool.pairName,
+            poolAddress: pool.address,
+            kind: "tokenConcentration",
+            reason: concentration.reason ?? "token concentration limit reached",
+          });
+          continue;
+        }
+        console.warn(`[concentration] flagged ${pool.pairName} (report mode, kept): ${concentration.reason}`);
+      }
+
+      /*
        * THE TOKEN-2022 TRANSFER-FEE SCREEN — 13 Sep 2026, 0.079110 SOL.
        *
        * The one gate here that reads the CHAIN rather than config or history, and it is
@@ -1836,6 +1932,7 @@ async function seekNewEntry(): Promise<EntrySummary> {
           `${byKind.noWsol} with no wSOL side, ` +
           `${byKind.transferFee} on a token that charges a transfer fee, ` +
           `${byKind.breaker} benched by the execution breaker, ` +
+          `${byKind.tokenConcentration} over the token concentration limit, ` +
           `${byKind.denylist} on the operator denylist)`
         : summary.cooldownRejected.length > 0 && held.length === summary.cooldownRejected.length
           ? `every candidate is on cooldown or locked out (${summary.cooldownRejected.length} pools)`
@@ -2198,6 +2295,32 @@ async function seekNewEntry(): Promise<EntrySummary> {
   }
   summary.decision = decision;
 
+  /*
+   * SHADOW RULE, recorded and never acted on. The same shortlist, the dumbest reasonable
+   * rule. Recorded BEFORE the decision is acted on so a declined or failed entry still
+   * leaves the comparison behind.
+   */
+  {
+    const shortlist = top.map((t) => t.pool);
+    const rule = shadowRulePick(shortlist);
+    const llmPool =
+      decision.action === "ENTER" && decision.selectedPool !== "NONE"
+        ? (shortlist.find((p) => p.address === decision.selectedPool) ?? null)
+        : null;
+    summary.shadowPick = {
+      shortlistSize: shortlist.length,
+      llmPickPool: llmPool?.address ?? null,
+      llmPickPair: llmPool?.pairName ?? null,
+      rulePickPool: rule?.poolAddress ?? null,
+      rulePickPair: rule?.pairName ?? null,
+    };
+    console.log(
+      `[shadow] shortlist ${shortlist.length}: LLM ${llmPool?.pairName ?? "declined"} · ` +
+        `rule(max fee/TVL) ${rule?.pairName ?? "none"}` +
+        (llmPool && rule ? (llmPool.address === rule.poolAddress ? " · SAME" : " · DIFFERENT") : ""),
+    );
+  }
+
   if (decision.action !== "ENTER" || decision.selectedPool === "NONE") {
     summary.skipReason = `model declined: ${decision.thesis}`;
     return summary;
@@ -2479,8 +2602,9 @@ function recordFunnel(entry: EntrySummary, monitor: MonitorSummary, durationMs: 
       `cooldown -${entry.cooldownRejected.length} -> ` +
       `exec-guard -${entry.executionRejected.length}` +
       (entry.executionRejected.length > 0
-        ? ` (bin-cap ${byKind.binCap}, no-wsol ${byKind.noWsol}, token-fee ${byKind.transferFee}, breaker ${byKind.breaker}, denylist ${byKind.denylist})`
+        ? ` (bin-cap ${byKind.binCap}, no-wsol ${byKind.noWsol}, token-fee ${byKind.transferFee}, breaker ${byKind.breaker}, concentration ${byKind.tokenConcentration}, denylist ${byKind.denylist})`
         : "") +
+      (entry.concentrationFlagged.length > 0 ? ` [concentration flagged ${entry.concentrationFlagged.length}]` : "") +
       ` -> candidates ${entry.candidates} -> ` +
       `antirug ${entry.safeCandidates}/-${entry.rugRejected.length} -> ` +
       `vol -${entry.volatilityRejected.length} -> ` +
@@ -2506,6 +2630,13 @@ function recordFunnel(entry: EntrySummary, monitor: MonitorSummary, durationMs: 
       execNoWsolRejected: byKind.noWsol,
       execTokenBenchRejected: byKind.tokenBench,
       execTransferFeeRejected: byKind.transferFee,
+      execTokenConcentrationRejected: byKind.tokenConcentration,
+      concentrationFlagged: entry.concentrationFlagged.length,
+      shortlistSize: entry.shadowPick?.shortlistSize ?? null,
+      llmPickPool: entry.shadowPick?.llmPickPool ?? null,
+      llmPickPair: entry.shadowPick?.llmPickPair ?? null,
+      rulePickPool: entry.shadowPick?.rulePickPool ?? null,
+      rulePickPair: entry.shadowPick?.rulePickPair ?? null,
       antirugPassed: entry.safeCandidates,
       antirugRejected: entry.rugRejected.length,
       volatilityRejected: entry.volatilityRejected.length,
@@ -2649,6 +2780,8 @@ export async function runDlmmTradingCycle(
             volatilityRejected: [],
             breakevenRejected: [],
             microFrictionRejected: [],
+            concentrationFlagged: [],
+            shadowPick: null,
             priorityFee: null,
             decision: null,
             opened: false,

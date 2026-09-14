@@ -169,6 +169,24 @@ export function initDatabase(): void {
    */
   addColumnIfMissing("scan_funnel_cycles", "exec_transfer_fee_rejected", "INTEGER DEFAULT 0");
   /*
+   * Measurement while the config is frozen (14 Sep 2026).
+   *  - exec_token_concentration_rejected: pools REMOVED by the token-concentration gate
+   *    (enforce mode only), so the funnel still reconciles.
+   *  - concentration_flagged: pools the gate flagged in either mode — in report mode this is
+   *    the count of entries the rule WOULD have refused, which is the evidence for arming it.
+   *  - llm_pick_* / rule_pick_* / shortlist_size: the pool the LLM chose next to the pool a
+   *    plain "highest fee/TVL on the same shortlist" rule would have chosen. Nothing reads
+   *    them back; they exist so "does the LLM beat a one-line rule" can be answered from
+   *    rows instead of opinion. NULL when the cycle never reached a decision.
+   */
+  addColumnIfMissing("scan_funnel_cycles", "exec_token_concentration_rejected", "INTEGER DEFAULT 0");
+  addColumnIfMissing("scan_funnel_cycles", "concentration_flagged", "INTEGER DEFAULT 0");
+  addColumnIfMissing("scan_funnel_cycles", "shortlist_size", "INTEGER");
+  addColumnIfMissing("scan_funnel_cycles", "llm_pick_pool", "TEXT");
+  addColumnIfMissing("scan_funnel_cycles", "llm_pick_pair", "TEXT");
+  addColumnIfMissing("scan_funnel_cycles", "rule_pick_pool", "TEXT");
+  addColumnIfMissing("scan_funnel_cycles", "rule_pick_pair", "TEXT");
+  /*
    * What a live exit ACTUALLY cost, one row per closed position (13 Sep 2026). The exit
    * cost model in `src/backtest/exitCost.ts` stood on three hand-collected points; this is
    * where the rest accumulate. A new TABLE rather than columns on simulated_positions: a

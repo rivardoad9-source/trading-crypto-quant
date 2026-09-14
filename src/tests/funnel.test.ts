@@ -105,7 +105,8 @@ describe("entry funnel — the stages have to add up", () => {
         row.execBinCapRejected +
         row.execNoWsolRejected +
         row.execTokenBenchRejected +
-        row.execTransferFeeRejected,
+        row.execTransferFeeRejected +
+        (row.execTokenConcentrationRejected ?? 0),
       row.executionRejected,
       "the per-gate counts disagree with the total",
     );
@@ -146,7 +147,8 @@ describe("entry funnel — the stages have to add up", () => {
         row.execBinCapRejected +
         row.execNoWsolRejected +
         row.execTokenBenchRejected +
-        row.execTransferFeeRejected,
+        row.execTransferFeeRejected +
+        (row.execTokenConcentrationRejected ?? 0),
       row.executionRejected,
       "the per-gate counts disagree with the total",
     );
@@ -193,6 +195,7 @@ describe("entry funnel — the stages have to add up", () => {
       // A token that taxes every transfer cannot clear the take-profit at any momentum,
       // which is a different answer for the operator than any of the gates above.
       transferFee: 0,
+      tokenConcentration: 0,
     });
 
     // Empty input still names every gate: a missing key would render as "undefined" in
@@ -204,6 +207,7 @@ describe("entry funnel — the stages have to add up", () => {
       noWsol: 0,
       binCap: 0,
       transferFee: 0,
+      tokenConcentration: 0,
     });
   });
 });
