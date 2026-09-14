@@ -187,7 +187,8 @@ export function topNOverlap(items: ReadonlyArray<{ id: string; a: number; b: num
 
 /**
  * For each k variant: TVL error distribution, band decisions, and whether the ORDER of pools
- * survives (TVL and fee/TVL, Spearman over one sample instant per pool).
+ * survives (TVL and fee/TVL, Spearman over every observation — several instants per pool, so
+ * the effective sample is closer to the pool count than to the observation count).
  */
 export function evaluateKVariant(
   obs: readonly TvlObservation[],
