@@ -33,6 +33,14 @@ export interface TvlModel {
   samples: number;
   /** Per-pool k, keyed by pool address, for pools observable today. */
   perPoolK: Record<string, number>;
+  /**
+   * ON-CHAIN TVL series (see `onchainTvl.ts`), sorted by t. When present the model is NOT used at
+   * all: `tvlAtBar` reads the last sample at or before the bar, refuses one older than
+   * `seriesMaxStaleSec`, and a pool without a series has an UNKNOWN TVL. Absent = the volume model,
+   * byte-identical to before this field existed.
+   */
+  series?: Record<string, ReadonlyArray<{ t: number; tvlUsd: number }>>;
+  seriesMaxStaleSec?: number;
 }
 
 /** Clamps to keep a pathological k from producing absurd TVL. */
@@ -110,6 +118,29 @@ export function estimateTvlAt(
     basis,
     k,
   };
+}
+
+/**
+ * The TVL the engine gates on at bar `t`. Volume model unless the model carries on-chain series;
+ * then the series or NOTHING — null means unknown, and the engine refuses the bar rather than
+ * falling back to a model the validation showed to be wrong by more than 2x most of the time.
+ */
+export function tvlAtBar(model: TvlModel, poolAddress: string, trailing24hVolumeUsd: number, t: number): number | null {
+  if (!model.series) return estimateTvlAt(model, poolAddress, trailing24hVolumeUsd).tvlUsd;
+  const points = model.series[poolAddress];
+  if (!points || points.length === 0) return null;
+  const maxStale = model.seriesMaxStaleSec ?? 18 * 3600;
+  let lo = 0;
+  let hi = points.length - 1;
+  let best: { t: number; tvlUsd: number } | null = null;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (points[mid]!.t <= t) {
+      best = points[mid]!;
+      lo = mid + 1;
+    } else hi = mid - 1;
+  }
+  return best && t - best.t <= maxStale ? best.tvlUsd : null;
 }
 
 export function describeTvlModel(model: TvlModel): string {

@@ -27,6 +27,7 @@ import { dirname, resolve } from "node:path";
 
 import type { Bar, HistoricalDataset, PoolHistory } from "./historicalData.js";
 import type { UniversePool, UniverseResult } from "./universe.js";
+import type { TvlPoint } from "./onchainTvl.js";
 
 export interface WindowSpec {
   /** Unix seconds, inclusive. */
@@ -60,7 +61,7 @@ export interface WindowSelection {
    * in the 14 Sep run; whether they were too SMALL or too LARGE decides what would fix it
    * (a deeper dead-cohort walk finds small pools; it cannot shrink a SOL-USDC-scale one).
    */
-  tvlBandDetail: { belowMin: number; aboveMax: number };
+  tvlBandDetail: { belowMin: number; aboveMax: number; unknown?: number };
 }
 
 /**
@@ -110,9 +111,15 @@ export function selectWindowUniverse(input: {
   window: WindowSpec;
   n: number;
   tvlBand?: { minUsd: number; maxUsd: number; k: number };
+  /**
+   * ON-CHAIN TVL for the band instead of `k x median daily volume` (see `onchainTvl.ts`). Null
+   * means unknown and REJECTS the candidate (counted under `tvlBand`, detail `unknown`) — never a
+   * fall back to the volume model the validation refuted. Absent = the volume model, unchanged.
+   */
+  tvlOf?: (address: string) => number | null;
 }): WindowSelection {
   const rejected: WindowSelection["rejected"] = { bornAfterWindow: 0, noBarsInWindow: 0, tvlBand: 0, belowTopN: 0 };
-  const tvlBandDetail = { belowMin: 0, aboveMax: 0 };
+  const tvlBandDetail: WindowSelection["tvlBandDetail"] = input.tvlOf ? { belowMin: 0, aboveMax: 0, unknown: 0 } : { belowMin: 0, aboveMax: 0 };
   const ranked: WindowSelection["selected"] = [];
 
   for (const c of input.candidates) {
@@ -131,7 +138,13 @@ export function selectWindowUniverse(input: {
       for (let i = 0; i + 24 <= inWindow.length; i += 24) {
         daily.push(inWindow.slice(i, i + 24).reduce((s, b) => s + b.v, 0));
       }
-      const modelledTvl = input.tvlBand.k * median(daily);
+      const measured = input.tvlOf ? input.tvlOf(c.pool.address) : null;
+      if (input.tvlOf && measured === null) {
+        rejected.tvlBand++;
+        tvlBandDetail.unknown = (tvlBandDetail.unknown ?? 0) + 1;
+        continue;
+      }
+      const modelledTvl = measured ?? input.tvlBand.k * median(daily);
       if (modelledTvl < input.tvlBand.minUsd || modelledTvl > input.tvlBand.maxUsd) {
         rejected.tvlBand++;
         if (modelledTvl < input.tvlBand.minUsd) tvlBandDetail.belowMin++;
@@ -171,7 +184,14 @@ export interface WindowDataset extends HistoricalDataset {
     /** Candidates whose bars could not be fetched; they never reach the selection. */
     fetchFailed?: number;
     ingest?: IngestParams;
+    /** "model" (k x volume) on every dataset written before on-chain TVL existed. */
+    tvlBasis?: "model" | "onchain";
+    tvlCadenceSec?: number;
+    /** Candidates that got no on-chain series, by reason (unpriceable pair, mis-oriented price...). */
+    tvlRefusals?: Record<string, number>;
   };
+  /** On-chain TVL samples of the selected pools, sorted by t, including one cadence before the window. */
+  tvlSeries?: Record<string, TvlPoint[]>;
 }
 
 /**
@@ -407,6 +427,16 @@ export async function loadWindowDataset(input: {
   kOverride?: number | null;
   /** The strategy's TVL band; `k` is fitted from the candidates' TODAY figures. */
   tvlBand?: { minUsd: number; maxUsd: number };
+  /**
+   * Select and gate on TVL MEASURED ON-CHAIN (see `onchainTvl.ts`) instead of `k x volume`.
+   * `seriesFor` returns the pool's samples at `times` (fetching what its cache lacks), or a
+   * refusal. The band uses the median in-window sample; the dataset carries the in-window series
+   * for the engine. A cached dataset selected on the other basis or cadence is re-selected.
+   */
+  onchainTvl?: {
+    cadenceSec: number;
+    seriesFor(address: string, times: number[]): Promise<{ points: TvlPoint[]; refused: string | null }>;
+  };
   deps: WindowIngestDeps;
 }): Promise<{ dataset: WindowDataset; cache: CacheOutcome; cachePath: string }> {
   const { window: w, deps } = input;
@@ -424,7 +454,10 @@ export async function loadWindowDataset(input: {
     const hit = readJson<WindowDataset>(cachePath);
     const kMatches = input.kOverride == null || hit?.selection?.k === input.kOverride;
     const reaches = hit?.selection != null && ingestCovers(recordedIngest(hit.selection.ingest, hit.selection.candidates, input.n), want);
-    if (hit && Array.isArray(hit.pools) && kMatches && reaches) return { dataset: hit, cache: "hit", cachePath };
+    const basisMatches =
+      (hit?.selection?.tvlBasis ?? "model") === (input.onchainTvl ? "onchain" : "model") &&
+      (!input.onchainTvl || hit?.selection?.tvlCadenceSec === input.onchainTvl.cadenceSec);
+    if (hit && Array.isArray(hit.pools) && kMatches && reaches && basisMatches) return { dataset: hit, cache: "hit", cachePath };
   }
 
   let partial = input.refresh ? null : readJson<PartialFile>(partialPath);
@@ -509,14 +542,48 @@ export async function loadWindowDataset(input: {
   const failed = partial.failed;
   const fetchFailed = partial.candidates.filter((p) => failed[p.address] !== undefined).length;
 
-  const k = input.kOverride ?? kFromCandidates(partial.candidates);
+  /*
+   * ON-CHAIN TVL, only for candidates that can still be selected (born before the window ends,
+   * a day of bars in it): every sample is two RPC calls, and the other rejections are free. The
+   * grid starts one cadence BEFORE the window so the first bars have a sample at or before them.
+   */
+  const tvlPoints = new Map<string, TvlPoint[]>();
+  const tvlRefusals: Record<string, number> = {};
+  if (input.onchainTvl) {
+    const cadence = input.onchainTvl.cadenceSec;
+    const times: number[] = [];
+    for (let t = Math.ceil((w.start - cadence) / cadence) * cadence; t < w.end; t += cadence) times.push(t);
+    const eligible = partial.candidates.filter(
+      (p) => !(p.createdAtMs > 0 && p.createdAtMs / 1000 >= w.end) && (inWindowBars.get(p.address)?.length ?? 0) >= 24,
+    );
+    for (const [i, pool] of eligible.entries()) {
+      const r = await input.onchainTvl.seriesFor(pool.address, times);
+      if (r.refused) tvlRefusals[r.refused] = (tvlRefusals[r.refused] ?? 0) + 1;
+      else tvlPoints.set(pool.address, r.points);
+      deps.log(
+        `[window ${day(w.start)}] tvl ${String(i + 1).padStart(3)}/${eligible.length} ${pool.pairName.padEnd(18)} ` +
+          (r.refused ? `NO SERIES: ${r.refused}` : `${r.points.length}/${times.length} samples`),
+      );
+    }
+  }
+  const tvlOf = input.onchainTvl
+    ? (address: string): number | null => {
+        const pts = tvlPoints.get(address)?.filter((p) => p.t >= w.start && p.t < w.end) ?? [];
+        if (pts.length === 0) return null;
+        const sorted = pts.map((p) => p.tvlUsd).sort((a, b) => a - b);
+        return sorted[Math.floor(sorted.length / 2)]!;
+      }
+    : undefined;
+
+  const k = input.onchainTvl ? null : (input.kOverride ?? kFromCandidates(partial.candidates));
   const selection = selectWindowUniverse({
     candidates: partial.candidates
       .filter((p) => inWindowBars.has(p.address))
       .map((pool) => ({ pool, bars: inWindowBars.get(pool.address)! })),
     window: w,
     n: input.n,
-    tvlBand: input.tvlBand && k !== null ? { ...input.tvlBand, k } : undefined,
+    tvlBand: input.tvlBand && (k !== null || tvlOf) ? { ...input.tvlBand, k: k ?? 0 } : undefined,
+    tvlOf,
   });
 
   const pools: PoolHistory[] = selection.selected.map(({ pool, bars }) => ({
@@ -550,7 +617,12 @@ export async function loadWindowDataset(input: {
       tvlBandDetail: selection.tvlBandDetail,
       fetchFailed,
       ingest: partial.ingest ?? want,
+      tvlBasis: input.onchainTvl ? "onchain" : "model",
+      ...(input.onchainTvl ? { tvlCadenceSec: input.onchainTvl.cadenceSec, tvlRefusals } : {}),
     },
+    ...(input.onchainTvl
+      ? { tvlSeries: Object.fromEntries(selection.selected.map(({ pool }) => [pool.address, tvlPoints.get(pool.address) ?? []])) }
+      : {}),
   };
   writeJson(cachePath, dataset);
   return { dataset, cache: outcome, cachePath };
