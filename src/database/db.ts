@@ -198,6 +198,19 @@ export function initDatabase(): void {
     measured_at              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     notes                    TEXT
   )`);
+  /*
+   * Exit-cost completeness (14 Sep 2026). Added by migration, not in the CREATE above: the
+   * table already exists on the live host with rows, where CREATE TABLE IF NOT EXISTS is a
+   * no-op, so one path adds these columns everywhere. Every existing row keeps NULL — its
+   * earlier close signatures and its landing price were never stored and are not guessed.
+   *  - close_signatures: JSON array of EVERY close tx; close_signature-era fees counted the final one only.
+   *  - pool_price_after_sweep: read once after the sweep landed; pool_price_at_exit is the DECISION price.
+   *  - *_after_sweep_bps: the same two concessions against that landing price. The old columns keep their meaning.
+   */
+  addColumnIfMissing("exit_economics", "close_signatures", "TEXT");
+  addColumnIfMissing("exit_economics", "pool_price_after_sweep", "REAL");
+  addColumnIfMissing("exit_economics", "sweep_concession_after_sweep_bps", "REAL");
+  addColumnIfMissing("exit_economics", "exit_cost_after_sweep_bps", "REAL");
 
   initialised = true;
   console.log(`[db] ready at ${dbPath}`);

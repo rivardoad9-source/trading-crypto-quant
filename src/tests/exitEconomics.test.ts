@@ -314,6 +314,206 @@ describe("where the live write sits", () => {
   });
 });
 
+describe("exit-cost completeness (WO3 B): every close tx, and the landing price", () => {
+  const sweepAt = (price: number) => ({ binStep: 200, tvlUsd: 80_000, currentPrice: price });
+
+  it("(a) the fee sums EVERY close tx + sweep + ata_close, and never counts the final one twice", async () => {
+    const row = await econ.measureExitEconomics(
+      // The executor's list already ends with the final signature; it must not be read twice.
+      input({ closeSignatures: ["C1", "C2", "CLOSEsig"] }),
+      reader({ C1: feeOnly(7_000), C2: feeOnly(9_000), CLOSEsig: feeOnly(10_000), SWEEPsig: sweepMeta(), ATAsig: feeOnly(5_000) }),
+    );
+    assert.equal(row.exitFeeLamports, 7_000 + 9_000 + 10_000 + 5_000 + 5_000);
+    assert.deepEqual(row.closeSignatures, ["C1", "C2", "CLOSEsig"]);
+    assert.ok(row.notes.some((n) => /all 3 close tx/.test(n)));
+    assert.equal(row.notes.some((n) => /FINAL close tx only/.test(n)), false);
+
+    // A list that omits the final signature gets it appended, once.
+    const appended = await econ.measureExitEconomics(
+      input({ closeSignatures: ["C1"] }),
+      reader({ C1: feeOnly(7_000), CLOSEsig: feeOnly(10_000), SWEEPsig: sweepMeta(), ATAsig: feeOnly(5_000) }),
+    );
+    assert.deepEqual(appended.closeSignatures, ["C1", "CLOSEsig"]);
+    assert.equal(appended.exitFeeLamports, 7_000 + 10_000 + 5_000 + 5_000);
+
+    // One unreadable earlier close tx makes the whole fee null, naming it.
+    const partial = await econ.measureExitEconomics(
+      input({ closeSignatures: ["C1", "CLOSEsig"] }),
+      reader({ C1: new Error("429"), CLOSEsig: feeOnly(10_000), SWEEPsig: sweepMeta(), ATAsig: feeOnly(5_000) }),
+    );
+    assert.equal(partial.exitFeeLamports, null);
+    assert.ok(partial.notes.some((n) => /tx meta close 1\/2 C1.* unreadable: 429/.test(n)));
+  });
+
+  it("without close_signatures (backfill) the old single-tx behaviour and its note stand", async () => {
+    const row = await econ.measureExitEconomics(input(), reader({ CLOSEsig: feeOnly(10_000), SWEEPsig: sweepMeta(), ATAsig: feeOnly(5_000) }));
+    assert.equal(row.closeSignatures, null);
+    assert.equal(row.exitFeeLamports, 20_000);
+    assert.ok(row.notes.some((n) => /FINAL close tx only/.test(n)));
+    assert.ok(row.notes.some((n) => /close_signatures not recorded/.test(n)));
+    assert.equal(row.poolPriceAfterSweep, null);
+    assert.equal(row.sweepConcessionAfterSweepBps, null);
+    assert.ok(row.notes.some((n) => /pool price after sweep not recorded/.test(n)));
+  });
+
+  it("the landing concession is ADDITIVE: the decision-price columns keep their exact values", async () => {
+    const metas = { CLOSEsig: feeOnly(10_000), SWEEPsig: sweepMeta(), ATAsig: feeOnly(5_000) };
+    const before = await econ.measureExitEconomics(input(), reader(metas));
+    const landed = 0.000180; // the pool moved down between the decision and the sale
+    const row = await econ.recordLiveExitEconomics(
+      { ...input({ positionId: "live-landing", closeSignatures: ["CLOSEsig"] }), poolAddress: "P" },
+      { readMeta: reader(metas), readPool: async () => sweepAt(landed), insert: () => true },
+    );
+    assert.equal(row!.sweepConcessionBps, before.sweepConcessionBps, "the calibrated column is unchanged");
+    assert.equal(row!.exitCostBps, before.exitCostBps);
+    assert.equal(row!.poolPriceAfterSweep, landed);
+    const expectedAfter = econ.valueAtPoolPriceLamports(4_498_666_263n, 6, landed, true)!;
+    assert.ok(Math.abs(row!.sweepConcessionAfterSweepBps! - ((expectedAfter - 786_995_667) / expectedAfter) * 10_000) < 1e-9);
+    assert.ok(row!.sweepConcessionAfterSweepBps! < row!.sweepConcessionBps!, "a lower landing price leaves less concession");
+  });
+
+  it("(c) an unreadable landing price is NULL with a note — never 0", async () => {
+    const metas = { CLOSEsig: feeOnly(1), SWEEPsig: sweepMeta(), ATAsig: feeOnly(1) };
+    for (const readPool of [
+      async () => null,
+      async () => {
+        throw new Error("meteora down");
+      },
+      async () => sweepAt(0),
+      async () => ({ binStep: 200, tvlUsd: 1 }),
+    ]) {
+      const row = await econ.recordLiveExitEconomics(
+        { ...input({ positionId: "live-noland" }), poolAddress: "P" },
+        { readMeta: reader(metas), readPool, insert: () => true },
+      );
+      assert.equal(row!.poolPriceAfterSweep, null);
+      assert.equal(row!.sweepConcessionAfterSweepBps, null);
+      assert.equal(row!.exitCostAfterSweepBps, null);
+      assert.ok(row!.notes.some((n) => /landing concession unmeasured/.test(n)), row!.notes.join(" | "));
+      assert.notEqual(row!.sweepConcessionBps, null, "the decision-price measurement is unaffected");
+    }
+  });
+
+  it("the dlmm-pool route's slippage is labelled as the ladder CAP, not a rung that sold", async () => {
+    const row = await econ.measureExitEconomics(
+      input({ sweepRoute: "dlmm-pool", sweepSlippageBpsUsed: 300 }),
+      reader({ CLOSEsig: feeOnly(1), SWEEPsig: sweepMeta(), ATAsig: feeOnly(1) }),
+    );
+    assert.ok(row.notes.some((n) => /ladder's CAP/.test(n)));
+    const jup = await econ.measureExitEconomics(input(), reader({ CLOSEsig: feeOnly(1), SWEEPsig: sweepMeta(), ATAsig: feeOnly(1) }));
+    assert.equal(jup.notes.some((n) => /ladder's CAP/.test(n)), false);
+  });
+
+  it("stores the new columns — JSON list, landing price — and null (not 0) when absent", async () => {
+    const metas = { C1: feeOnly(3), CLOSEsig: feeOnly(10_000), SWEEPsig: sweepMeta(), ATAsig: feeOnly(5_000) };
+    await econ.recordLiveExitEconomics(
+      { ...input({ positionId: "db-live", closeSignatures: ["C1", "CLOSEsig"] }), poolAddress: "P" },
+      { readMeta: reader(metas), readPool: async () => sweepAt(0.00018), insert: repos.insertExitEconomicsIfAbsent },
+    );
+    const r = repos.listExitEconomics().find((x) => x.position_id === "db-live")!;
+    assert.deepEqual(JSON.parse(r.close_signatures!), ["C1", "CLOSEsig"]);
+    assert.equal(r.pool_price_after_sweep, 0.00018);
+    assert.equal(r.exit_fee_lamports, 3 + 10_000 + 5_000 + 5_000);
+    assert.equal(typeof r.sweep_concession_after_sweep_bps, "number");
+
+    const bf = repos.listExitEconomics().find((x) => x.position_id === "bf-1");
+    if (bf) {
+      assert.deepEqual([bf.close_signatures, bf.pool_price_after_sweep, bf.sweep_concession_after_sweep_bps], [null, null, null]);
+    }
+  });
+
+  it("settleLiveCloses hands the recorder EVERY close signature, not only the final one", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    const { dirname } = await import("node:path");
+    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "agents", "dlmmTraderAgent.ts"), "utf8");
+    const call = src.slice(src.indexOf("await recordExit?.({"), src.indexOf("closed++;", src.indexOf("await recordExit?.({")));
+    assert.match(call, /closeSignatures: signatures,/);
+    assert.match(src, /const \{ closeSignature, signatures, walletLamportsAfter/);
+  });
+
+  it("(d) the report prints BOTH concessions, and — where the landing price was never measured", async () => {
+    const { renderConcessionComparison } = await import("../scripts/reportExitCosts.js");
+    const base = {
+      pair_name: "EMBER-SOL", mint: MINT, bin_step: 200, notional_lamports: 1, tvl_usd_at_exit: null, entry_tvl_usd: null,
+      pool_price_at_exit: 1, sweep_route: "jupiter", sweep_slippage_bps_used: null, sweep_in_amount: null, sweep_out_lamports: null,
+      expected_out_lamports: null, exit_fee_lamports: 20_000, exit_cost_bps: null, source: "live", measured_at: "2026-09-14 00:00:00",
+      notes: null, exit_cost_after_sweep_bps: null,
+    };
+    const text = renderConcessionComparison([
+      { ...base, position_id: "new-row", sweep_concession_bps: 394.9, sweep_concession_after_sweep_bps: 250.4, close_signatures: '["a","b"]', pool_price_after_sweep: 1 },
+      { ...base, position_id: "old-row", sweep_concession_bps: 180.6, sweep_concession_after_sweep_bps: null, close_signatures: null, pool_price_after_sweep: null, source: "backfill" },
+    ]);
+    assert.match(text, /concession @decision/);
+    assert.match(text, /concession @landing/);
+    const newLine = text.split("\n").find((l) => l.includes("new-row"))!;
+    assert.match(newLine, /394\.9 bps.*250\.4 bps.*-144\.5 bps/);
+    const oldLine = text.split("\n").find((l) => l.includes("old-row"))!;
+    assert.match(oldLine, /180\.6 bps/);
+    assert.equal(/0\.0 bps/.test(oldLine), false, "an unmeasured landing concession is not rendered as zero");
+  });
+});
+
+describe("(b) migration: an exit_economics table that already holds rows gains the new columns", () => {
+  it("adds every column through initDatabase and leaves the existing rows exactly as they were", async () => {
+    const { spawnSync } = await import("node:child_process");
+    const dir = mkdtempSync(join(tmpdir(), "flowmetrix-exitecon-mig-"));
+    const dbPath = join(dir, "old.db");
+    const script = `
+      const Database = require("better-sqlite3");
+      const old = new Database(${JSON.stringify(dbPath)});
+      old.exec(\`CREATE TABLE exit_economics (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, position_id TEXT NOT NULL UNIQUE, pair_name TEXT, mint TEXT,
+        bin_step INTEGER, notional_lamports INTEGER, tvl_usd_at_exit REAL, entry_tvl_usd REAL, pool_price_at_exit REAL,
+        sweep_route TEXT, sweep_slippage_bps_used INTEGER, sweep_in_amount TEXT, sweep_out_lamports INTEGER,
+        expected_out_lamports INTEGER, exit_fee_lamports INTEGER, exit_cost_bps REAL, sweep_concession_bps REAL,
+        source TEXT NOT NULL, measured_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, notes TEXT)\`);
+      const ins = old.prepare("INSERT INTO exit_economics (position_id, pair_name, bin_step, exit_fee_lamports, exit_cost_bps, sweep_concession_bps, source, notes) VALUES (?, ?, ?, ?, ?, ?, 'backfill', ?)");
+      const seeds = [[4,"MANLET-SOL",80,null,null,null],[5,"EMBER-SOL",200,20000,175.2,394.9],[6,"EMBER-SOL",200,15000,80.1,180.6],
+        [7,"EMBER-SOL",200,15000,40.2,90.4],[8,"EMBER-SOL",200,15000,null,null],[9,"EMBER-SOL",200,15000,68.0,152.8],["attempt-5","NEARKAT-SOL",400,24000,143.1,143.1]];
+      for (const s of seeds) ins.run(String(s[0]), s[1], s[2], s[3], s[4], s[5], "seed " + s[0]);
+      old.close();
+    `;
+    const seeded = spawnSync(process.execPath, ["-e", script], { cwd: process.cwd(), encoding: "utf8" });
+    assert.equal(seeded.status, 0, seeded.stderr);
+
+    // A fresh process, because db.ts opens DATABASE_PATH once at import.
+    const migrate = `
+      const { initDatabase, db, closeDatabase } = await import("./src/database/db.ts");
+      initDatabase();
+      const cols = db.prepare("PRAGMA table_info(exit_economics)").all().map((c) => c.name);
+      const rows = db.prepare("SELECT position_id, bin_step, exit_fee_lamports, exit_cost_bps, sweep_concession_bps, notes, close_signatures, pool_price_after_sweep, sweep_concession_after_sweep_bps, exit_cost_after_sweep_bps FROM exit_economics ORDER BY id").all();
+      closeDatabase();
+      console.log("RESULT" + JSON.stringify({ cols, rows }));
+    `;
+    const run = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", migrate], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: { ...process.env, DATABASE_PATH: dbPath, NODE_TEST_CONTEXT: "child" },
+    });
+    assert.equal(run.status, 0, run.stderr);
+    const line = run.stdout.split("\n").find((l) => l.startsWith("RESULT"))!;
+    const { cols, rows } = JSON.parse(line.slice("RESULT".length)) as { cols: string[]; rows: Array<Record<string, unknown>> };
+    for (const c of ["close_signatures", "pool_price_after_sweep", "sweep_concession_after_sweep_bps", "exit_cost_after_sweep_bps"]) {
+      assert.ok(cols.includes(c), `missing ${c}`);
+    }
+    assert.equal(rows.length, 7);
+    assert.deepEqual(
+      rows.map((r) => [r.position_id, r.exit_fee_lamports, r.sweep_concession_bps, r.notes]),
+      [["4", null, null, "seed 4"], ["5", 20000, 394.9, "seed 5"], ["6", 15000, 180.6, "seed 6"], ["7", 15000, 90.4, "seed 7"],
+        ["8", 15000, null, "seed 8"], ["9", 15000, 152.8, "seed 9"], ["attempt-5", 24000, 143.1, "seed attempt-5"]],
+    );
+    for (const r of rows) {
+      assert.deepEqual([r.close_signatures, r.pool_price_after_sweep, r.sweep_concession_after_sweep_bps, r.exit_cost_after_sweep_bps], [null, null, null, null]);
+    }
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Windows can hold the temp dir; not a test result.
+    }
+  });
+});
+
 describe("known failed opens file", () => {
   it("parses the shipped file, and refuses a malformed one instead of returning nothing", async () => {
     const { readFileSync } = await import("node:fs");

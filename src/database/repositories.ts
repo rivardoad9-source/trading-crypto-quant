@@ -1355,15 +1355,41 @@ export function insertExitEconomicsIfAbsent(row: ExitEconomicsRow): boolean {
          position_id, pair_name, mint, bin_step, notional_lamports, tvl_usd_at_exit,
          entry_tvl_usd, pool_price_at_exit, sweep_route, sweep_slippage_bps_used,
          sweep_in_amount, sweep_out_lamports, expected_out_lamports, exit_fee_lamports,
-         exit_cost_bps, sweep_concession_bps, source, notes
+         exit_cost_bps, sweep_concession_bps, source, notes,
+         close_signatures, pool_price_after_sweep, sweep_concession_after_sweep_bps, exit_cost_after_sweep_bps
        ) VALUES (
          @positionId, @pairName, @mint, @binStep, @notionalLamports, @tvlUsdAtExit,
          @entryTvlUsd, @poolPriceAtExit, @sweepRoute, @sweepSlippageBpsUsed,
          @sweepInAmount, @sweepOutLamports, @expectedOutLamports, @exitFeeLamports,
-         @exitCostBps, @sweepConcessionBps, @source, @notes
+         @exitCostBps, @sweepConcessionBps, @source, @notes,
+         @closeSignaturesJson, @poolPriceAfterSweep, @sweepConcessionAfterSweepBps, @exitCostAfterSweepBps
        )`,
     )
-    .run({ ...row, notes: row.notes.length ? row.notes.join(" | ") : null });
+    .run({
+      positionId: row.positionId,
+      pairName: row.pairName,
+      mint: row.mint,
+      binStep: row.binStep,
+      notionalLamports: row.notionalLamports,
+      tvlUsdAtExit: row.tvlUsdAtExit,
+      entryTvlUsd: row.entryTvlUsd,
+      poolPriceAtExit: row.poolPriceAtExit,
+      sweepRoute: row.sweepRoute,
+      sweepSlippageBpsUsed: row.sweepSlippageBpsUsed,
+      sweepInAmount: row.sweepInAmount,
+      sweepOutLamports: row.sweepOutLamports,
+      expectedOutLamports: row.expectedOutLamports,
+      exitFeeLamports: row.exitFeeLamports,
+      exitCostBps: row.exitCostBps,
+      sweepConcessionBps: row.sweepConcessionBps,
+      source: row.source,
+      notes: row.notes.length ? row.notes.join(" | ") : null,
+      closeSignaturesJson: row.closeSignatures ? JSON.stringify(row.closeSignatures) : null,
+      // `?? null`: a row built by an older caller without these fields binds NULL, never undefined.
+      poolPriceAfterSweep: row.poolPriceAfterSweep ?? null,
+      sweepConcessionAfterSweepBps: row.sweepConcessionAfterSweepBps ?? null,
+      exitCostAfterSweepBps: row.exitCostAfterSweepBps ?? null,
+    });
   return result.changes > 0;
 }
 
@@ -1387,6 +1413,11 @@ export interface ExitEconomicsDbRow {
   source: string;
   measured_at: string;
   notes: string | null;
+  /** JSON array of every close tx signature; NULL on rows written before it (not reconstructible). */
+  close_signatures: string | null;
+  pool_price_after_sweep: number | null;
+  sweep_concession_after_sweep_bps: number | null;
+  exit_cost_after_sweep_bps: number | null;
 }
 
 export function listExitEconomics(): ExitEconomicsDbRow[] {

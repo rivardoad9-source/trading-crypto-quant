@@ -8,8 +8,10 @@
  *
  * Reads the local database and (unless --solusd is given) one SOL/USD quote. Signs nothing.
  */
+import { pathToFileURL } from "node:url";
+
 import { initDatabase } from "../database/db.js";
-import { listExitEconomics } from "../database/repositories.js";
+import { listExitEconomics, type ExitEconomicsDbRow } from "../database/repositories.js";
 import { fetchSolPriceUsd } from "../services/marketData.js";
 import { renderTable } from "../backtest/report.js";
 import {
@@ -39,6 +41,53 @@ function fitLine(label: string, obs: readonly ExitCostObservation[]): string[] {
   ];
 }
 
+/**
+ * Every ledger row's concession measured TWO ways: against the pool price at the exit
+ * DECISION (`sweep_concession_bps`, what the calibration uses) and against the price read
+ * after the sweep LANDED (`sweep_concession_after_sweep_bps`). The gap between them is the
+ * market moving between deciding and selling, not a cost of the sale. "—" = not measured
+ * (every row written before the landing price existed), never zero.
+ */
+export function renderConcessionComparison(ledger: readonly ExitEconomicsDbRow[]): string {
+  const closeTxCount = (json: string | null): string => {
+    if (!json) return "—";
+    try {
+      const parsed = JSON.parse(json) as unknown;
+      return Array.isArray(parsed) ? String(parsed.length) : "—";
+    } catch {
+      return "—";
+    }
+  };
+  return renderTable(
+    [
+      { header: "Position" },
+      { header: "pair" },
+      { header: "route" },
+      { header: "close tx", align: "right" },
+      { header: "fee (lamports)", align: "right" },
+      { header: "concession @decision", align: "right" },
+      { header: "concession @landing", align: "right" },
+      { header: "landing - decision", align: "right" },
+      { header: "source" },
+    ],
+    ledger.map((r) => {
+      const d = r.sweep_concession_bps;
+      const l = r.sweep_concession_after_sweep_bps ?? null;
+      return [
+        r.position_id.slice(0, 12),
+        r.pair_name ?? "—",
+        r.sweep_route ?? "—",
+        closeTxCount(r.close_signatures ?? null),
+        r.exit_fee_lamports === null ? "—" : String(r.exit_fee_lamports),
+        d === null ? "—" : `${d.toFixed(1)} bps`,
+        l === null ? "—" : `${l.toFixed(1)} bps`,
+        d === null || l === null ? "—" : `${(l - d).toFixed(1)} bps`,
+        r.source,
+      ];
+    }),
+  );
+}
+
 async function main(): Promise<void> {
   initDatabase();
   const flag = process.argv.find((a) => a.startsWith("--solusd="));
@@ -48,6 +97,10 @@ async function main(): Promise<void> {
   const { observations: measured, excluded } = observationsFromLedger(ledger, solUsd);
 
   console.log(`\nEXIT-COST CALIBRATION — ${ledger.length} ledger rows, ${measured.length} measured, SOL/USD ${f(solUsd)}\n`);
+
+  console.log("CONCESSION — against the DECISION price vs the price after the sweep LANDED (calibration uses @decision)\n");
+  console.log(renderConcessionComparison(ledger));
+  console.log("");
 
   console.log(
     renderTable(
@@ -135,7 +188,9 @@ async function main(): Promise<void> {
   );
 }
 
-main().catch((err) => {
-  console.error("[exitcosts] report failed:", err);
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    console.error("[exitcosts] report failed:", err);
+    process.exit(1);
+  });
+}

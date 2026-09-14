@@ -45,6 +45,24 @@ export interface ExitEconomicsRow {
   exitCostBps: number | null;
   /** (expected - received) / expected x 10 000 — the calibration unit of `exitCost.ts`. */
   sweepConcessionBps: number | null;
+  /**
+   * EVERY signature of the close, in the order the executor sent them (14 Sep 2026). A wide
+   * position closes in several transactions and `closeSignature` is only the final one, so a
+   * fee summed from that one alone under-counted the exit. Null when not recorded (backfill:
+   * the earlier signatures were never stored anywhere and cannot be reconstructed).
+   */
+  closeSignatures: string[] | null;
+  /**
+   * Pool price read ONCE after the close and its sweep settled. `poolPriceAtExit` is the price
+   * at the exit DECISION; on a bin_step-200 pool moving ~10%/h the two can differ enough that
+   * a concession measured against the decision price is partly the market moving. Null (never
+   * 0) when the pool could not be read, or when the row predates this column.
+   */
+  poolPriceAfterSweep: number | null;
+  /** Same formula as `sweepConcessionBps`, against `poolPriceAfterSweep`. Additive: the old column keeps its meaning. */
+  sweepConcessionAfterSweepBps: number | null;
+  /** Same formula as `exitCostBps`, against `poolPriceAfterSweep`. */
+  exitCostAfterSweepBps: number | null;
   source: "live" | "backfill";
   notes: string[];
 }
@@ -131,8 +149,16 @@ export interface ExitMeasurementInput {
   sweepRoute: "jupiter" | "dlmm-pool" | null;
   sweepSlippageBpsUsed: number | null;
   closeSignature: string | null;
+  /** Every close tx signature. Absent/null = only `closeSignature` is known (backfill). */
+  closeSignatures?: readonly string[] | null;
   sweepSignature: string | null;
   ataCloseSignature: string | null;
+  /**
+   * Pool price read after the sweep landed. `undefined` = never read on this path (backfill);
+   * `null` = read and unusable, in which case `landingPriceNote` says why.
+   */
+  poolPriceAfterSweep?: number | null;
+  landingPriceNote?: string | null;
   source: "live" | "backfill";
 }
 
@@ -165,9 +191,29 @@ export async function measureExitEconomics(
     exitFeeLamports: null,
     exitCostBps: null,
     sweepConcessionBps: null,
+    closeSignatures: null,
+    poolPriceAfterSweep: null,
+    sweepConcessionAfterSweepBps: null,
+    exitCostAfterSweepBps: null,
     source: input.source,
     notes,
   };
+
+  /*
+   * The full close list: the executor's order, with the final signature appended only if the
+   * caller did not already include it, and each signature counted once — a fee read twice is
+   * as wrong as a fee not read at all.
+   */
+  const closeList: string[] = [];
+  if (input.closeSignatures && input.closeSignatures.length > 0) {
+    for (const s of [...input.closeSignatures, ...(input.closeSignature ? [input.closeSignature] : [])]) {
+      if (s && !closeList.includes(s)) closeList.push(s);
+    }
+    row.closeSignatures = closeList;
+  } else {
+    if (input.closeSignature) closeList.push(input.closeSignature);
+    notes.push("close_signatures not recorded: only the final close tx signature was stored for this exit");
+  }
 
   const metas = new Map<string, TransactionMetaReading>();
   const read = async (label: string, signature: string | null): Promise<TransactionMetaReading | null> => {
@@ -188,13 +234,13 @@ export async function measureExitEconomics(
 
   /* ---- fees: every stored signature, or null ---- */
   const stored: Array<[string, string | null]> = [
-    ["close", input.closeSignature],
+    ...closeList.map((sig, i): [string, string] => [closeList.length === 1 ? "close" : `close ${i + 1}/${closeList.length}`, sig]),
     ["sweep", input.sweepSignature],
     ["ata_close", input.ataCloseSignature],
   ];
   let feeTotal = 0;
-  let feeMeasurable = input.closeSignature !== null;
-  if (input.closeSignature === null) notes.push("no close signature stored — exit fee unmeasured");
+  let feeMeasurable = closeList.length > 0;
+  if (closeList.length === 0) notes.push("no close signature stored — exit fee unmeasured");
   for (const [label, sig] of stored) {
     if (!sig) continue;
     const meta = await read(label, sig);
@@ -203,7 +249,25 @@ export async function measureExitEconomics(
   }
   if (feeMeasurable) {
     row.exitFeeLamports = feeTotal;
-    notes.push("fee covers the stored FINAL close tx only; earlier txs of a multi-tx close are not stored");
+    notes.push(
+      row.closeSignatures
+        ? `fee covers all ${closeList.length} close tx(s) + sweep + ata_close stored for this exit`
+        : "fee covers the stored FINAL close tx only; earlier txs of a multi-tx close are not stored",
+    );
+  }
+  if (input.sweepRoute === "dlmm-pool") {
+    notes.push(
+      "sweep_slippage_bps_used is the exit ladder's CAP (the bound the dlmm-pool route runs at), not a Jupiter rung that sold",
+    );
+  }
+
+  /* ---- the landing price: recorded whether or not the sweep leg is measurable ---- */
+  if (input.poolPriceAfterSweep === undefined) {
+    notes.push("pool price after sweep not recorded for this exit: landing concession unmeasured");
+  } else if (input.poolPriceAfterSweep !== null && input.poolPriceAfterSweep > 0 && Number.isFinite(input.poolPriceAfterSweep)) {
+    row.poolPriceAfterSweep = input.poolPriceAfterSweep;
+  } else {
+    notes.push(input.landingPriceNote ?? "pool price after sweep unusable: landing concession unmeasured");
   }
 
   /* ---- the sweep leg ---- */
@@ -235,6 +299,17 @@ export async function measureExitEconomics(
   row.sweepOutLamports = lamportsReceivedByPayer(sweep);
 
   const solIsQuote = solIsQuoteFromPairName(input.pairName);
+  // Landing-price concession first and independently: a missing DECISION price must not hide it.
+  if (solIsQuote !== null && row.poolPriceAfterSweep !== null) {
+    const expectedAfter = valueAtPoolPriceLamports(spent.amount, spent.decimals, row.poolPriceAfterSweep, solIsQuote);
+    if (expectedAfter !== null && expectedAfter > 0) {
+      const gapAfter = expectedAfter - row.sweepOutLamports;
+      row.sweepConcessionAfterSweepBps = (gapAfter / expectedAfter) * 10_000;
+      if (input.notionalLamports !== null && input.notionalLamports > 0) {
+        row.exitCostAfterSweepBps = (gapAfter / input.notionalLamports) * 10_000;
+      }
+    }
+  }
   if (solIsQuote === null || input.poolPriceAtExit === null) {
     notes.push("expected out unmeasured: pool price at exit or SOL side unknown");
     return row;
@@ -295,6 +370,10 @@ export async function measureFailedOpenRoundTrip(
     exitFeeLamports: null,
     exitCostBps: null,
     sweepConcessionBps: null,
+    closeSignatures: null,
+    poolPriceAfterSweep: null,
+    sweepConcessionAfterSweepBps: null,
+    exitCostAfterSweepBps: null,
     source: "backfill",
     notes,
   };
@@ -363,8 +442,12 @@ export function metaReaderWithRetry(
 
 export interface LiveExitRecordDeps {
   readMeta: MetaReader;
-  /** Bin step and TVL now; null when the pool could not be read. */
-  readPool(poolAddress: string): Promise<{ binStep: number; tvlUsd: number } | null>;
+  /**
+   * Bin step, TVL and the current pool price NOW — i.e. after the close and sweep settled,
+   * since the recorder runs after both. Null when the pool could not be read. `currentPrice`
+   * is optional so an older reader still types; absent reads as unmeasured, never 0.
+   */
+  readPool(poolAddress: string): Promise<{ binStep: number; tvlUsd: number; currentPrice?: number | null } | null>;
   insert(row: ExitEconomicsRow): boolean;
 }
 
@@ -372,7 +455,7 @@ export const defaultLiveExitRecordDeps = (): LiveExitRecordDeps => ({
   readMeta: metaReaderWithRetry(),
   async readPool(poolAddress) {
     const pool = await fetchPoolByAddress(poolAddress, { quiet: true });
-    return pool ? { binStep: pool.binStep, tvlUsd: pool.tvlUsd } : null;
+    return pool ? { binStep: pool.binStep, tvlUsd: pool.tvlUsd, currentPrice: pool.currentPrice } : null;
   },
   insert: insertExitEconomicsIfAbsent,
 });
@@ -383,23 +466,38 @@ export const defaultLiveExitRecordDeps = (): LiveExitRecordDeps => ({
  * cost a log line, not the close. Returns the row it wrote, or null when it wrote none.
  */
 export async function recordLiveExitEconomics(
-  input: Omit<ExitMeasurementInput, "binStep" | "tvlUsdAtExit" | "source"> & { poolAddress: string },
+  input: Omit<ExitMeasurementInput, "binStep" | "tvlUsdAtExit" | "source" | "poolPriceAfterSweep" | "landingPriceNote"> & {
+    poolAddress: string;
+  },
   deps: LiveExitRecordDeps = defaultLiveExitRecordDeps(),
 ): Promise<ExitEconomicsRow | null> {
   try {
     let binStep: number | null = null;
     let tvlUsdAtExit: number | null = null;
     let poolNote: string | null = null;
+    // ONE pool read, after the sweep settled: it supplies bin_step, TVL and the landing price.
+    let poolPriceAfterSweep: number | null = null;
+    let landingPriceNote: string | null = null;
     try {
       const pool = await deps.readPool(input.poolAddress);
       if (pool) {
         binStep = pool.binStep;
         tvlUsdAtExit = pool.tvlUsd;
-      } else poolNote = "pool unreadable at exit: bin_step and TVL unmeasured";
+        const price = pool.currentPrice;
+        if (typeof price === "number" && Number.isFinite(price) && price > 0) poolPriceAfterSweep = price;
+        else landingPriceNote = "pool price after sweep unusable (missing or non-positive): landing concession unmeasured";
+      } else {
+        poolNote = "pool unreadable at exit: bin_step and TVL unmeasured";
+        landingPriceNote = "pool unreadable after sweep: pool_price_after_sweep and landing concession unmeasured";
+      }
     } catch (err) {
       poolNote = `pool unreadable at exit (${errText(err)}): bin_step and TVL unmeasured`;
+      landingPriceNote = "pool unreadable after sweep: pool_price_after_sweep and landing concession unmeasured";
     }
-    const row = await measureExitEconomics({ ...input, binStep, tvlUsdAtExit, source: "live" }, deps.readMeta);
+    const row = await measureExitEconomics(
+      { ...input, binStep, tvlUsdAtExit, poolPriceAfterSweep, landingPriceNote, source: "live" },
+      deps.readMeta,
+    );
     if (poolNote) row.notes.unshift(poolNote);
     deps.insert(row);
     return row;
