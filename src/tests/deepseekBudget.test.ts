@@ -19,6 +19,7 @@ import {
   DeepSeekTruncatedError,
   MAX_STRUCTURED_ATTEMPTS,
   REASONER_MAX_TOKENS,
+  firstChoiceOrThrow,
   resolveTokenBudget,
 } from "../services/deepseek.js";
 import { CRON, DLMM_BASE_CADENCE_MIN } from "../config/constants.js";
@@ -63,6 +64,53 @@ describe("deepseek retry policy", () => {
     assert.ok(err instanceof DeepSeekTruncatedError);
     assert.ok(err instanceof Error);
     assert.equal(err.name, "DeepSeekTruncatedError");
+  });
+});
+
+describe("deepseek response envelope", () => {
+  /*
+   * 15 Sep 2026, 02:00-04:00 WIB: five consecutive cycles aborted with
+   * `TypeError: Cannot read properties of undefined (reading '0')` from deepseek.ts:200,
+   * the first of them preceded by a `Premature close` transport error. Reading
+   * `choices[0]` was unguarded and sat OUTSIDE the retry loop, so a malformed provider
+   * envelope escaped `structuredCompletion` and killed the cycle instead of being
+   * retried. These tests pin the classification: a missing choice is an ordinary Error
+   * naming the model, never a TypeError.
+   */
+
+  it("returns the first choice of a normal envelope", () => {
+    const choice = { finish_reason: "stop", message: { content: "{}" } };
+    assert.equal(
+      firstChoiceOrThrow({ choices: [choice] } as never, "deepseek-chat"),
+      choice,
+    );
+  });
+
+  it("throws a plain Error — not a TypeError — when the envelope carries no choices", () => {
+    for (const envelope of [
+      { choices: [] },
+      {} as { choices?: unknown[] },
+      undefined,
+      null,
+    ]) {
+      assert.throws(
+        () => firstChoiceOrThrow(envelope as never, "deepseek-reasoner"),
+        (err: unknown) => {
+          assert.ok(err instanceof Error, "must be an Error the caller can classify");
+          assert.equal((err as Error).name, "Error");
+          assert.match((err as Error).message, /provider returned no choices/);
+          assert.match((err as Error).message, /deepseek-reasoner/);
+          return true;
+        },
+      );
+    }
+  });
+
+  it("names the response keys so an error envelope is diagnosable from the log", () => {
+    assert.throws(
+      () => firstChoiceOrThrow({ error: { message: "insufficient balance" } } as never, "deepseek-chat"),
+      /response keys: error/,
+    );
   });
 });
 
