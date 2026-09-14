@@ -4,6 +4,9 @@
  * Read-only report of what the LIVE engine has actually done, in SOL (see
  * `services/liveReport.ts`). Safe to run on the live host while the engine runs: the
  * database is opened `readonly`, nothing is migrated, nothing is sent anywhere.
+ *
+ * Sections 8 (LLM vs rule shadow pick) and 9 (daily token concentration) read
+ * `scan_funnel_cycles`; `--json` carries them as `shadow` and `dailyConcentration`.
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
