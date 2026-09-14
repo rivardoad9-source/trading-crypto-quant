@@ -160,6 +160,15 @@ describe("ensureTvlSeries", () => {
     assert.deepEqual(seriesPoints(second.file, T0, T0 + 48 * HOUR).map((p) => p.t), [T0 + 12 * HOUR, T0 + 24 * HOUR]);
   });
 
+  it("an instant before the pool was created is a settled null and costs no RPC read", async () => {
+    let reads = 0;
+    const deps: OnchainTvlDeps = { poolMeta: async () => meta, reserveAt: async () => (reads++, 5), log: () => undefined };
+    const r = await ensureTvlSeries({ address: "P9", bars: priceBars, solUsdBars: sol, times: [T0, T0 + 12 * HOUR], deps, cacheDir, createdAtSec: T0 + 6 * HOUR });
+    assert.equal(reads, 2, "only the instant after creation is read (two reserves)");
+    assert.equal(r.file.samples[String(T0)]?.reason, "before pool creation");
+    assert.equal(r.file.samples[String(T0)]?.tvlUsd, null);
+  });
+
   it("refuses — and remembers refusing — an unpriceable pair and a mis-oriented price; an unreadable meta is not remembered", async () => {
     let reserveCalls = 0;
     const deps = (m: PoolReserveMeta | null): OnchainTvlDeps => ({ poolMeta: async () => m, reserveAt: async () => (reserveCalls++, 1), log: () => undefined });

@@ -195,6 +195,12 @@ export async function ensureTvlSeries(input: {
   deps: OnchainTvlDeps;
   concurrency?: number;
   cacheDir?: string;
+  /**
+   * The pool's on-chain creation (unix seconds). An instant before it has no reserve by
+   * definition, so it is recorded as a settled null WITHOUT two RPC reads — on the first real run
+   * a pool born inside its window spent 180 of its 184 reads learning that.
+   */
+  createdAtSec?: number | null;
 }): Promise<{ file: SeriesFile; fetched: number; failed: number }> {
   const path = seriesFilePath(input.address, input.cacheDir);
   const file: SeriesFile = readJson<SeriesFile>(path) ?? { pool: input.address, side: null, refused: null, samples: {} };
@@ -219,7 +225,15 @@ export async function ensureTvlSeries(input: {
   }
   file.side = pricing.side;
 
-  const missing = input.times.filter((t) => file.samples[String(t)] === undefined);
+  const born = input.createdAtSec && input.createdAtSec > 0 ? input.createdAtSec : null;
+  const missing = input.times.filter((t) => {
+    if (file.samples[String(t)] !== undefined) return false;
+    if (born !== null && t < born) {
+      file.samples[String(t)] = { t, tvlUsd: null, x: null, y: null, reason: "before pool creation" };
+      return false;
+    }
+    return true;
+  });
   let fetched = 0;
   let failed = 0;
   await pool(missing, input.concurrency ?? 6, async (t) => {

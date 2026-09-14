@@ -435,7 +435,7 @@ export async function loadWindowDataset(input: {
    */
   onchainTvl?: {
     cadenceSec: number;
-    seriesFor(address: string, times: number[]): Promise<{ points: TvlPoint[]; refused: string | null }>;
+    seriesFor(address: string, times: number[], createdAtSec: number | null): Promise<{ points: TvlPoint[]; refused: string | null }>;
   };
   deps: WindowIngestDeps;
 }): Promise<{ dataset: WindowDataset; cache: CacheOutcome; cachePath: string }> {
@@ -557,7 +557,7 @@ export async function loadWindowDataset(input: {
       (p) => !(p.createdAtMs > 0 && p.createdAtMs / 1000 >= w.end) && (inWindowBars.get(p.address)?.length ?? 0) >= 24,
     );
     for (const [i, pool] of eligible.entries()) {
-      const r = await input.onchainTvl.seriesFor(pool.address, times);
+      const r = await input.onchainTvl.seriesFor(pool.address, times, pool.createdAtMs > 0 ? Math.floor(pool.createdAtMs / 1000) : null);
       if (r.refused) tvlRefusals[r.refused] = (tvlRefusals[r.refused] ?? 0) + 1;
       else tvlPoints.set(pool.address, r.points);
       deps.log(
