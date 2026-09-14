@@ -873,7 +873,9 @@ async function runPerWindowUniverse(ctx: {
                 tvlCalls += fetched * 2;
                 if (failed > 0) console.warn(`[tvl] ${address}: ${failed} sample(s) failed in transport — retried on the next run`);
                 if (file.refused) return { points: [], refused: file.refused };
-                return { points: seriesPoints(file, times[0] ?? 0, Number.MAX_SAFE_INTEGER), refused: null };
+                // Only this window's grid: the file is shared with every other window of the pool.
+                const last = times[times.length - 1] ?? 0;
+                return { points: seriesPoints(file, times[0] ?? 0, last + 1), refused: null };
               },
             }
           : undefined,
