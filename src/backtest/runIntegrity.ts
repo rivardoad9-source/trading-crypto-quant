@@ -854,7 +854,7 @@ async function runPerWindowUniverse(ctx: {
         tvlMode.basis === "onchain" && tvlDeps
           ? {
               cadenceSec: tvlMode.cadenceSec,
-              async seriesFor(address, times) {
+              async seriesFor(address, times, createdAtSec) {
                 let bars: Bar[] = [];
                 try {
                   bars = (JSON.parse(readFileSync(resolve(process.cwd(), barFilePath(address)), "utf8")) as { bars: Bar[] }).bars;
@@ -868,6 +868,7 @@ async function runPerWindowUniverse(ctx: {
                   times,
                   deps: tvlDeps,
                   concurrency: tvlMode.concurrency,
+                  createdAtSec,
                 });
                 tvlCalls += fetched * 2;
                 if (failed > 0) console.warn(`[tvl] ${address}: ${failed} sample(s) failed in transport — retried on the next run`);
