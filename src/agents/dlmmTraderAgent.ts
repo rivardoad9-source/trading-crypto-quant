@@ -69,7 +69,9 @@ import {
   screenTokenSafety,
   type PriorityFeeEstimate,
   type SafetyVerdict,
+  type SafetyUnknownCause,
   type TokenSafetyReport,
+  safetyUnknownCause,
 } from "../services/solana.js";
 import { sendError, sendPositionClosed, sendPositionOpened } from "../services/telegram.js";
 import {
@@ -318,7 +320,25 @@ export interface SafetyScreenedPool {
 
 export interface SafetyScreenSummary {
   passed: SafetyScreenedPool[];
-  rejected: Array<{ pairName: string; verdict: string; reasons: string[] }>;
+  rejected: Array<{ pairName: string; verdict: string; reasons: string[]; unknownCause?: SafetyUnknownCause | null }>;
+}
+
+/**
+ * Anti-rug rejections split by WHY (15 Sep 2026): a real FAIL, an UNKNOWN because the RPC
+ * did not answer (429/5xx/timeout/network after retries), or an UNKNOWN because the answer
+ * was unusable. One "UNKNOWN" bucket could not say "N candidates were lost to a rate limit"
+ * without opening the raw log — which is how LEVERCAT-SOL was lost and nearly missed.
+ */
+export function countAntiRugRejections(
+  rejected: ReadonlyArray<{ verdict: string; unknownCause?: SafetyUnknownCause | null }>,
+): { failed: number; rateLimited: number; unreadable: number } {
+  const out = { failed: 0, rateLimited: 0, unreadable: 0 };
+  for (const r of rejected) {
+    if (r.verdict !== "UNKNOWN") out.failed++;
+    else if (r.unknownCause === "rpc_unavailable") out.rateLimited++;
+    else out.unreadable++;
+  }
+  return out;
 }
 
 /**
@@ -387,6 +407,7 @@ export async function applyAntiRugScreen(
         mintAuthorityRevoked: null,
         freezeAuthorityRevoked: null,
         checkedAt: new Date().toISOString(),
+        unknownCause: safetyUnknownCause(err),
       };
     }
 
@@ -397,6 +418,7 @@ export async function applyAntiRugScreen(
         pairName: pool.pairName,
         verdict: safety.verdict,
         reasons: safety.reasons,
+        unknownCause: safety.unknownCause ?? null,
       });
     }
   }
@@ -1947,7 +1969,8 @@ async function seekNewEntry(): Promise<EntrySummary> {
   summary.safeCandidates = safetyScreen.passed.length;
 
   for (const r of safetyScreen.rejected) {
-    console.warn(`[antirug] rejected ${r.pairName} (${r.verdict}): ${r.reasons.join("; ")}`);
+    const cause = r.verdict === "UNKNOWN" ? `, ${r.unknownCause === "rpc_unavailable" ? "RPC unavailable" : "data unreadable"}` : "";
+    console.warn(`[antirug] rejected ${r.pairName} (${r.verdict}${cause}): ${r.reasons.join("; ")}`);
   }
 
   if (safetyScreen.passed.length === 0) {
@@ -2580,6 +2603,7 @@ function recordFunnel(entry: EntrySummary, monitor: MonitorSummary, durationMs: 
     .join(" ");
 
   const byKind = countExecutionBlocks(entry.executionRejected);
+  const rugByCause = countAntiRugRejections(entry.rugRejected);
 
   /*
    * STAGES IN THE ORDER THEY RUN, and `candidates` LAST.
@@ -2606,7 +2630,11 @@ function recordFunnel(entry: EntrySummary, monitor: MonitorSummary, durationMs: 
         : "") +
       (entry.concentrationFlagged.length > 0 ? ` [concentration flagged ${entry.concentrationFlagged.length}]` : "") +
       ` -> candidates ${entry.candidates} -> ` +
-      `antirug ${entry.safeCandidates}/-${entry.rugRejected.length} -> ` +
+      `antirug ${entry.safeCandidates}/-${entry.rugRejected.length}` +
+      (entry.rugRejected.length > 0
+        ? ` (fail ${rugByCause.failed}, rpc-unavailable ${rugByCause.rateLimited}, unreadable ${rugByCause.unreadable})`
+        : "") +
+      ` -> ` +
       `vol -${entry.volatilityRejected.length} -> ` +
       `coverage -${entry.breakevenRejected.length} -> ` +
       `micro -${entry.microFrictionRejected.length} -> ` +
@@ -2639,6 +2667,8 @@ function recordFunnel(entry: EntrySummary, monitor: MonitorSummary, durationMs: 
       rulePickPair: entry.shadowPick?.rulePickPair ?? null,
       antirugPassed: entry.safeCandidates,
       antirugRejected: entry.rugRejected.length,
+      antirugRpcUnavailable: rugByCause.rateLimited,
+      antirugUnreadable: rugByCause.unreadable,
       volatilityRejected: entry.volatilityRejected.length,
       coverageRejected: entry.breakevenRejected.length,
       microRejected: entry.microFrictionRejected.length,
