@@ -187,6 +187,14 @@ export function initDatabase(): void {
   addColumnIfMissing("scan_funnel_cycles", "rule_pick_pool", "TEXT");
   addColumnIfMissing("scan_funnel_cycles", "rule_pick_pair", "TEXT");
   /*
+   * Anti-rug UNKNOWN split by cause (15 Sep 2026). Both are parts of `antirug_rejected`;
+   * the rest of it is real FAILs. `antirug_rpc_unavailable` is the one that answers "how many
+   * candidates did a rate limit cost this cycle" — LEVERCAT-SOL was lost to a 429 on a key
+   * shared with a backtest ingest, and the row could only say UNKNOWN.
+   */
+  addColumnIfMissing("scan_funnel_cycles", "antirug_rpc_unavailable", "INTEGER DEFAULT 0");
+  addColumnIfMissing("scan_funnel_cycles", "antirug_unreadable", "INTEGER DEFAULT 0");
+  /*
    * What a live exit ACTUALLY cost, one row per closed position (13 Sep 2026). The exit
    * cost model in `src/backtest/exitCost.ts` stood on three hand-collected points; this is
    * where the rest accumulate. A new TABLE rather than columns on simulated_positions: a

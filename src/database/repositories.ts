@@ -769,6 +769,13 @@ export interface ScanFunnelRecord {
   rulePickPair?: string | null;
   antirugPassed: number;
   antirugRejected: number;
+  /**
+   * Of `antirugRejected`: UNKNOWN because the RPC did not answer after retries (429, 5xx,
+   * timeout, network) — a rate limit, not the token (15 Sep 2026). Absent = 0.
+   */
+  antirugRpcUnavailable?: number;
+  /** Of `antirugRejected`: UNKNOWN because the answer was unusable (not a mint, RPC error). Absent = 0. */
+  antirugUnreadable?: number;
   volatilityRejected: number;
   coverageRejected: number;
   microRejected: number;
@@ -802,7 +809,7 @@ export function recordScanFunnel(record: ScanFunnelRecord): void {
        exec_no_wsol_rejected, exec_token_bench_rejected, exec_transfer_fee_rejected,
        exec_token_concentration_rejected, concentration_flagged,
        shortlist_size, llm_pick_pool, llm_pick_pair, rule_pick_pool, rule_pick_pair,
-       antirug_passed, antirug_rejected, volatility_rejected,
+       antirug_passed, antirug_rejected, antirug_rpc_unavailable, antirug_unreadable, volatility_rejected,
        coverage_rejected, micro_rejected, reached_decision, opened,
        skip_reason, positions_checked, positions_closed, duration_ms
      ) VALUES (
@@ -812,7 +819,7 @@ export function recordScanFunnel(record: ScanFunnelRecord): void {
        @execNoWsolRejected, @execTokenBenchRejected, @execTransferFeeRejected,
        @execTokenConcentrationRejected, @concentrationFlagged,
        @shortlistSize, @llmPickPool, @llmPickPair, @rulePickPool, @rulePickPair,
-       @antirugPassed, @antirugRejected, @volatilityRejected,
+       @antirugPassed, @antirugRejected, @antirugRpcUnavailable, @antirugUnreadable, @volatilityRejected,
        @coverageRejected, @microRejected, @reachedDecision, @opened,
        @skipReason, @positionsChecked, @positionsClosed, @durationMs
      )`,
@@ -820,6 +827,8 @@ export function recordScanFunnel(record: ScanFunnelRecord): void {
     ...record,
     execTokenConcentrationRejected: record.execTokenConcentrationRejected ?? 0,
     concentrationFlagged: record.concentrationFlagged ?? 0,
+    antirugRpcUnavailable: record.antirugRpcUnavailable ?? 0,
+    antirugUnreadable: record.antirugUnreadable ?? 0,
     shortlistSize: record.shortlistSize ?? null,
     llmPickPool: record.llmPickPool ?? null,
     llmPickPair: record.llmPickPair ?? null,
@@ -856,6 +865,8 @@ interface RawFunnelRow {
   rule_pick_pair?: string | null;
   antirug_passed: number;
   antirug_rejected: number;
+  antirug_rpc_unavailable?: number | null;
+  antirug_unreadable?: number | null;
   volatility_rejected: number;
   coverage_rejected: number;
   micro_rejected: number;
@@ -902,6 +913,8 @@ export function getScanFunnel(limit = 100): ScanFunnelRow[] {
     rulePickPair: r.rule_pick_pair ?? null,
     antirugPassed: r.antirug_passed,
     antirugRejected: r.antirug_rejected,
+    antirugRpcUnavailable: r.antirug_rpc_unavailable ?? 0,
+    antirugUnreadable: r.antirug_unreadable ?? 0,
     volatilityRejected: r.volatility_rejected,
     coverageRejected: r.coverage_rejected,
     microRejected: r.micro_rejected,
