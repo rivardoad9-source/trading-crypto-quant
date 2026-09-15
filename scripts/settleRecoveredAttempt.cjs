@@ -44,20 +44,30 @@ function envDatabasePath() {
   }
 }
 
-async function chainIsClean(poolAddress, positionAddress, mint, walletAddress) {
-  const bs58 = require('bs58').default ?? require('bs58');
+// Both token programs. Until 15 Sep 2026 only SPL Token was asked, so a Token-2022 residual
+// (LEVERCAT-SOL is Token-2022) would have passed this proof while the wallet still held it.
+const TOKEN_PROGRAMS = ['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'];
+
+/**
+ * The proof a recovery happened: the position account is gone and the wallet holds none of the
+ * paired token. Returns the problems found (empty = clean). `connection` is injectable so
+ * `scripts/retryResidualSweep.ts` reuses THIS check rather than growing its own.
+ */
+async function chainIsClean(poolAddress, positionAddress, mint, walletAddress, connection) {
   const { Connection, PublicKey } = require('@solana/web3.js');
-  const env = Object.fromEntries(
-    fs
-      .readFileSync('.env', 'utf8')
-      .split('\n')
-      .filter((l) => l.includes('=') && !l.trim().startsWith('#'))
-      .map((l) => {
-        const i = l.indexOf('=');
-        return [l.slice(0, i).trim(), l.slice(i + 1).trim()];
-      }),
-  );
-  const conn = new Connection(env.SOLANA_RPC_URL || env.HELIUS_RPC_URL, 'confirmed');
+  const readEnv = () =>
+    Object.fromEntries(
+      fs
+        .readFileSync('.env', 'utf8')
+        .split('\n')
+        .filter((l) => l.includes('=') && !l.trim().startsWith('#'))
+        .map((l) => {
+          const i = l.indexOf('=');
+          return [l.slice(0, i).trim(), l.slice(i + 1).trim()];
+        }),
+    );
+  const env = connection && walletAddress ? {} : readEnv();
+  const conn = connection ?? new Connection(env.SOLANA_RPC_URL || env.HELIUS_RPC_URL, 'confirmed');
   const owner = new PublicKey(walletAddress ?? env.SOLANA_WALLET_ADDRESS);
   const problems = [];
 
@@ -67,17 +77,61 @@ async function chainIsClean(poolAddress, positionAddress, mint, walletAddress) {
   }
 
   if (mint) {
-    const accounts = await conn.getParsedTokenAccountsByOwner(owner, {
-      programId: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'),
-    });
-    const held = accounts.value.find(
-      (a) => a.account.data.parsed.info.mint === mint && Number(a.account.data.parsed.info.tokenAmount.amount) > 0,
-    );
-    if (held) {
-      problems.push(`wallet still holds ${held.account.data.parsed.info.tokenAmount.uiAmountString} of ${mint}`);
+    for (const programId of TOKEN_PROGRAMS) {
+      const accounts = await conn.getParsedTokenAccountsByOwner(owner, { programId: new PublicKey(programId) });
+      const held = accounts.value.find(
+        (a) => a.account.data.parsed.info.mint === mint && Number(a.account.data.parsed.info.tokenAmount.amount) > 0,
+      );
+      if (held) {
+        problems.push(`wallet still holds ${held.account.data.parsed.info.tokenAmount.uiAmountString} of ${mint}`);
+      }
     }
   }
   return problems;
+}
+
+/**
+ * Whether a row may be settled with this measured balance, and at what cost. PURE.
+ * `cost_lamports` is DERIVED (wallet_lamports_before - after), never passed in.
+ */
+function planSettlement(row, afterLamports) {
+  const sol = (l) => (typeof l === 'number' ? (l / 1e9).toFixed(9) : 'NULL');
+  const refusals = [];
+  if (!Number.isSafeInteger(afterLamports) || afterLamports <= 0) {
+    refusals.push('the measured post-recovery wallet balance is missing or not a positive integer');
+  }
+  if (row.outcome !== 'failed') refusals.push(`the row is not a failed attempt (outcome ${row.outcome})`);
+  if (!['orphan', 'unknown'].includes(String(row.unwind))) {
+    refusals.push(`unwind is '${row.unwind}', so no stranded capital is recorded against this row`);
+  }
+  if (!Number.isSafeInteger(row.wallet_lamports_before)) {
+    refusals.push('wallet_lamports_before is missing, so the cost cannot be derived');
+  }
+  if (!row.position_address) refusals.push('the row names no position address to verify against the chain');
+  if (afterLamports > (row.wallet_lamports_before ?? 0)) {
+    refusals.push(
+      `the measured balance (${sol(afterLamports)}) is HIGHER than the pre-attempt balance ` +
+        `(${sol(row.wallet_lamports_before)}) — that is a top-up, not a recovery`,
+    );
+  }
+  const cost = refusals.length === 0 ? Math.round(row.wallet_lamports_before - afterLamports) : null;
+  return { refusals, cost };
+}
+
+/**
+ * The one write. Guarded on the row still being an unsettled failed attempt, so a row settled
+ * underneath us is not overwritten. The optional signatures only fill columns that are NULL.
+ */
+function writeSettlement(db, id, cost, afterLamports, extras = {}) {
+  return db
+    .prepare(
+      `UPDATE live_execution_attempts
+          SET cost_lamports = ?, wallet_lamports_after = ?, unwind = 'clean',
+              rescue_signature = COALESCE(rescue_signature, ?),
+              ata_close_signature = COALESCE(ata_close_signature, ?)
+        WHERE id = ? AND outcome = 'failed' AND COALESCE(unwind, 'unknown') IN ('orphan', 'unknown')`,
+    )
+    .run(cost, afterLamports, extras.rescueSignature ?? null, extras.ataCloseSignature ?? null, id).changes;
 }
 
 async function main() {
@@ -120,27 +174,12 @@ async function main() {
   console.log(`  cost_lamports            ${row.cost_lamports ?? 'NULL'} (current)`);
   console.log(`  unwind                   ${row.unwind}`);
 
-  const refusals = [];
-  if (row.outcome !== 'failed') refusals.push(`the row is not a failed attempt (outcome ${row.outcome})`);
-  if (!['orphan', 'unknown'].includes(String(row.unwind))) {
-    refusals.push(`unwind is '${row.unwind}', so no stranded capital is recorded against this row`);
-  }
-  if (!Number.isSafeInteger(row.wallet_lamports_before)) {
-    refusals.push('wallet_lamports_before is missing, so the cost cannot be derived');
-  }
-  if (!row.position_address) refusals.push('the row names no position address to verify against the chain');
-  if (afterLamports > (row.wallet_lamports_before ?? 0)) {
-    refusals.push(
-      `the measured balance (${sol(afterLamports)}) is HIGHER than the pre-attempt balance ` +
-        `(${sol(row.wallet_lamports_before)}) — that is a top-up, not a recovery`,
-    );
-  }
+  const { refusals, cost } = planSettlement(row, afterLamports);
   if (refusals.length > 0) {
     console.error(`REFUSED: ${refusals.join('; ')}.`);
     process.exit(1);
   }
 
-  const cost = Math.round(row.wallet_lamports_before - afterLamports);
   console.log(`  -> cost_lamports ${cost} (${sol(cost)} SOL of real cost), unwind 'clean',`);
   console.log(`     wallet_lamports_after ${sol(afterLamports)} SOL`);
 
@@ -176,20 +215,16 @@ async function main() {
     return;
   }
 
-  const changed = db
-    .prepare(
-      `UPDATE live_execution_attempts
-          SET cost_lamports = ?, wallet_lamports_after = ?, unwind = 'clean'
-        WHERE id = ? AND outcome = 'failed' AND COALESCE(unwind, 'unknown') IN ('orphan', 'unknown')`,
-    )
-    .run(cost, afterLamports, id);
-  console.log(`WRITTEN: ${changed.changes} row(s).`);
+  const changed = writeSettlement(db, id, cost, afterLamports);
+  console.log(`WRITTEN: ${changed} row(s).`);
   console.log(
     `  -> breaker after: ${sol(spent())} SOL spent on failed attempts in ${window}h ` +
       `(budget ${budget} SOL) -> ${spent() / 1e9 > budget ? 'ENTRIES SHUT' : 'entries allowed'}`,
   );
   db.close();
 }
+
+module.exports = { chainIsClean, planSettlement, writeSettlement };
 
 if (require.main === module) {
   main().catch((e) => {
