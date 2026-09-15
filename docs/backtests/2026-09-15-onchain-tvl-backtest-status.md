@@ -68,8 +68,44 @@ LIVE_CAPITAL_SOL=2.85 LIVE_MAX_POSITION_SOL=1.8 npm run backtest:integrity -- --
 ```
 
 Di server, `LIVE_CAPITAL_SOL` / `LIVE_MAX_POSITION_SOL` sudah ada di `.env`, jadi prefix env tidak perlu.
-**Sebaiknya pakai key Helius terpisah** (`SOLANA_RPC_URL=... npm run ...` hanya untuk proses ini) supaya
-ingest tidak berbagi rate limit dengan engine live.
+
+### Resep: ingest pakai key RPC terpisah (`--tvl-rpc-url`, WO #4)
+
+Engine pm2 tidak membawa `SOLANA_RPC_URL` sendiri — dia membaca `.env` yang sama. Jadi tanpa flag, ingest
+memakai **key yang sama dengan engine live**. `--tvl-rpc-url` mengarahkan HANYA pembacaan TVL on-chain
+(`getTransactionsForAddress`) ke endpoint lain; `.env` tidak disentuh, engine tidak terpengaruh.
+
+```bash
+npm run backtest:integrity -- --per-window-universe --windows=3 --days=91 --end=2026-09-13 --candidates=96 \
+  --tvl=onchain --tvl-cadence-hours=24 --tvl-rps=3 \
+  --tvl-rpc-url 'https://mainnet.helius-rpc.com/?api-key=<KEY_INGEST>'
+```
+
+Validasi model memakai flag yang sama: `npm run validate:tvl -- --end=2026-09-13 --tvl-rpc-url '<url>'`.
+
+Perilaku:
+
+| Kondisi | Hasil |
+|---|---|
+| tanpa flag | `SOLANA_RPC_URL` dari `.env`, persis seperti sebelumnya; log `[tvl] RPC host <host> (default .env — key yang SAMA …)` |
+| flag valid | semua read TVL ke host flag; log `[tvl] RPC host <host> (dari --tvl-rpc-url)` |
+| flag = URL `.env` persis | jalan, tapi log `PERINGATAN … tidak ada yang dipisahkan` |
+| flag kosong / bukan http(s) / tanpa host / tak ter-parse | **exit 1 sebelum window pertama di-load**, URL tidak dicetak |
+| flag tanpa `--per-window-universe` | exit 1 (jalur itu tidak membaca TVL on-chain) |
+| flag dengan `--tvl=model` | peringatan "flag diabaikan" |
+| 429 yang lolos 6 retry | log + error: `HTTP 429 from <host> … lower --tvl-rps (now N) or … --tvl-rpc-url` |
+
+Yang dicetak hanya host. Key tidak ditulis ke log, cache, report, atau manifest (`src/tests/tvlRpc.test.ts`).
+
+Catatan operasional:
+
+- **Kutip URL-nya** (`'…'`): `&` di query string dipotong shell.
+- Key yang diberikan lewat baris perintah **terlihat di `ps` dan riwayat shell** selama proses jalan. Kode ini
+  tidak bisa mencegah itu; kalau itu masalah, pakai key khusus ingest yang boleh dirotasi sesudahnya.
+- Dengan key terpisah, `--tvl-rps` boleh dinaikkan (tabel di atas: 10/detik ≈ 2 jam), tapi batas paket key
+  itu tetap belum terukur.
+- **Ingest penuh (2–6 jam) adalah kerjaan Hermes di server**, bukan sesi Claude lokal. Sisi lokal hanya
+  menyediakan flag + test.
 
 ## Yang tidak bisa diklaim
 
