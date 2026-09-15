@@ -444,6 +444,58 @@ export function exitSlippageCapBps(
   return Math.max(1, Math.min(config.exitMaxSlippageBps, HARD_MAX_EXIT_SLIPPAGE_BPS));
 }
 
+/** Which side of a trade a swap is. An exit puts capital BACK into SOL. */
+export type SwapLeg = "entry" | "exit";
+
+/**
+ * The slippage bound a swap of this leg is QUOTED with — and therefore the bound its quote
+ * is checked against before signing. ONE function for both, on purpose.
+ *
+ * 15 Sep 2026, LEVERCAT-SOL: the auto-unwind fetched its quote at the 300 bps EXIT bound and
+ * `buildJupiterSwap` then refused that quote against the 50 bps ENTRY bound ("Jupiter returned
+ * a quote at 300 bps slippage, above the authorized 50 bps"). Every exit-leg swap wider than
+ * the entry bound was built only to be refused, so the unwind could never sell and the
+ * residual ladder was a one-rung ladder in production. Two call sites each deriving "the
+ * bound" is how they came to disagree; this is the single derivation both now read.
+ *
+ * The entry bound stays exactly as hard as it was: an entry resolves through
+ * `resolveSlippageBps` (auth bound, 50 bps hard cap); only an exit reaches the exit cap.
+ */
+export function swapSlippageBoundBps(
+  auth: Pick<ExecutionAuthorization, "maxSlippageBps">,
+  leg: SwapLeg,
+  requestedBps: number | undefined,
+  config: Pick<OnchainConfig, "exitMaxSlippageBps"> = onchainConfig,
+): number {
+  return leg === "exit"
+    ? resolveExitSlippageBps(requestedBps, config)
+    : resolveSlippageBps(auth as ExecutionAuthorization, requestedBps);
+}
+
+/**
+ * Refuses a quote that echoes a wider bound than the one this leg authorised. FAIL-CLOSED:
+ * `boundBps` is re-clamped here to the leg's own hard cap, so a caller passing a nonsense
+ * bound cannot widen an entry past 50 bps or an exit past the exit cap.
+ */
+export function assertQuoteWithinSlippageBound(
+  auth: Pick<ExecutionAuthorization, "maxSlippageBps">,
+  quote: Pick<JupiterQuote, "slippageBps">,
+  bound: { leg: SwapLeg; bps: number },
+  config: Pick<OnchainConfig, "exitMaxSlippageBps"> = onchainConfig,
+): void {
+  const legCap =
+    bound.leg === "exit"
+      ? exitSlippageCapBps(config)
+      : Math.min(auth.maxSlippageBps, HARD_MAX_SLIPPAGE_BPS);
+  const limit = Number.isFinite(bound.bps) && bound.bps > 0 ? Math.min(Math.floor(bound.bps), legCap) : 0;
+  if (!(Number.isFinite(quote.slippageBps) && quote.slippageBps <= limit)) {
+    throw new ExecutionLimitError(
+      `Jupiter returned a quote at ${quote.slippageBps} bps slippage, above the ` +
+        `authorized ${limit} bps (${bound.leg} leg)`,
+    );
+  }
+}
+
 /**
  * The DLMM deposit's slippage, resolved for one pool, in all three units at once.
  *
@@ -715,6 +767,60 @@ const NARROW_OPEN_REQUOTE_ATTEMPTS = 2;
  * the unwind.
  */
 const WIDE_FUNDING_REQUOTE_ATTEMPTS = 2;
+
+/**
+ * How many times a funding chunk refused MID-FLIGHT for insufficient funds may be shrunk and
+ * rebuilt. One: the second refusal is the operator's problem, and the partial-execution error
+ * it raises is what pages them (through `StrandedSwapError` in the bridge).
+ *
+ * WHY THIS EXISTS (15 Sep 2026, LEVERCAT-SOL). The pre-send check above
+ * (`firstShortFundingChunk`) simulates every chunk against the state BEFORE chunk 1 lands, and
+ * it passed. Chunk 1 then needed two blockhash-expiry rebuilds; chunk 2 was refused at preflight
+ * as a stale active bin and REBUILT against the moved pool — with the original paired total,
+ * never re-checked against what chunk 1 had left in the wallet. The rebuilt chunk asked for
+ * more LEVERCAT than remained (`RebalanceLiquidity`, custom 0x1), which was terminal. The
+ * position held 14 577 of the 40 376 tokens the swap delivered, and the failed unwind that
+ * followed is what cost money.
+ */
+export const WIDE_FUNDING_MIDFLIGHT_SHRINKS = 1;
+
+/**
+ * The smaller paired total to rebuild the REMAINING funding chunks with, after one of them was
+ * refused for insufficient funds; null when no smaller figure can help. PURE.
+ *
+ * Chunks already landed keep what they took. Scaling the total by `f` scales what every
+ * not-yet-landed chunk asks for by `f`, so `f` is chosen so the remaining plan — worst case,
+ * at the program's slippage-widened pull, `x (1 + slippagePercent/100)` — fits what the wallet
+ * holds NOW:
+ *
+ *   consumed  = balanceAtStart - balanceNow        (what the landed chunks actually took)
+ *   remaining = planned - consumed
+ *   f         = min( balanceNow / (remaining x (1 + s)),  1 / (1 + s) )
+ *
+ * The second term always shrinks by at least the slippage margin: the chunk WAS refused, so
+ * "the arithmetic says it fits" is not evidence it will. Only ever DOWN; an unreadable balance
+ * is null (never 0, which would deposit nothing and call it funding).
+ */
+export function shrinkWideFundingDeposit(input: {
+  planned: bigint;
+  balanceAtStart: bigint | null;
+  balanceNow: bigint | null;
+  slippagePercent: number;
+}): bigint | null {
+  const { planned, balanceAtStart, balanceNow } = input;
+  if (balanceNow === null || balanceNow <= 0n || planned <= 0n) return null;
+  const s = Number.isFinite(input.slippagePercent) && input.slippagePercent > 0 ? input.slippagePercent : 0;
+  const consumed = balanceAtStart !== null && balanceAtStart > balanceNow ? balanceAtStart - balanceNow : 0n;
+  const remaining = planned - consumed;
+  if (remaining <= 0n) return null;
+  const SCALE = 1_000_000n;
+  const margin = BigInt(Math.round((1 + s / 100) * 1_000_000)); // (1 + s) in millionths
+  const byBalance = (balanceNow * SCALE * SCALE) / (remaining * margin);
+  const byMargin = (SCALE * SCALE) / margin;
+  const f = byBalance < byMargin ? byBalance : byMargin;
+  const next = (planned * f) / SCALE;
+  return next > 0n && next < planned ? next : null;
+}
 
 export const DLMM_FUNDING_CU_PER_CHUNK = 1_000_000;
 export const DLMM_FUNDING_CU_PER_BIN_ARRAY_INIT = 350_000;
@@ -1274,13 +1380,15 @@ export async function buildJupiterSwap(
    * source. Required makes a caller that forgets a compile error.
    */
   blockhash: BlockhashWithExpiryBlockHeight,
+  /*
+   * The bound the quote was FETCHED with, and which leg it belongs to. REQUIRED for the same
+   * reason `blockhash` is: before 15 Sep 2026 this function compared every quote with the
+   * ENTRY bound, so an exit quote fetched at 300 bps was always refused. Checking against the
+   * bound the quote was built with — never against a different one — is the whole fix.
+   */
+  bound: { leg: SwapLeg; bps: number },
 ): Promise<VersionedTransaction> {
-  if (quote.slippageBps > auth.maxSlippageBps) {
-    throw new ExecutionLimitError(
-      `Jupiter returned a quote at ${quote.slippageBps} bps slippage, above the ` +
-        `authorized ${auth.maxSlippageBps} bps`,
-    );
-  }
+  assertQuoteWithinSlippageBound(auth, quote, bound, config);
 
   const inAmount = Number(quote.inAmount);
   if (quote.inputMint === WSOL_MINT) {
@@ -1370,10 +1478,9 @@ export async function executeJupiterSwap(
   },
 ): Promise<{ result: SendResult; quote: JupiterQuote }> {
   const config = params.config ?? onchainConfig;
-  const slippageBps =
-    params.leg === "exit"
-      ? resolveExitSlippageBps(params.slippageBps, config)
-      : resolveSlippageBps(auth, params.slippageBps);
+  const leg: SwapLeg = params.leg ?? "entry";
+  // The SAME value quotes the swap and bounds the quote in `buildJupiterSwap`.
+  const slippageBps = swapSlippageBoundBps(auth, leg, params.slippageBps, config);
 
   if (params.inputMint === WSOL_MINT) {
     assertWithinSpendLimit(auth, params.amountLamports, "jupiter swap");
@@ -1389,7 +1496,8 @@ export async function executeJupiterSwap(
 
   const result = await sendAndConfirm(
     auth,
-    async ({ blockhash, plan }) => buildJupiterSwap(auth, quote, plan, config, blockhash),
+    async ({ blockhash, plan }) =>
+      buildJupiterSwap(auth, quote, plan, config, blockhash, { leg, bps: slippageBps }),
     {
       config,
       label: "jupiter swap",
@@ -2515,8 +2623,10 @@ async function readAtaBalance(
  * WHAT IT CANNOT PROVE, stated plainly: with no chunk landed, a shortfall caused by the
  * WALLET's balance is visible here — that is the 12 Sep case, where chunk 2 asked for more
  * of the paired token than the wallet held — while a shortfall that only exists in the state
- * a later chunk inherits is not. The caller's recovery path remains the answer for that
- * residue.
+ * a later chunk inherits is not. Since 15 Sep 2026 that residue is handled where it appears:
+ * a chunk refused at preflight for insufficient funds is rebuilt once with a deposit shrunk
+ * against the re-read wallet (`shrinkWideFundingDeposit`), and a second refusal falls to the
+ * caller's recovery path.
  *
  * An RPC that could not simulate is skipped, never reported: "I could not check" is not
  * evidence that a chunk is short, and refusing on it would block opens for an RPC hiccup.
@@ -3443,6 +3553,27 @@ export const dlmmExecutor: DlmmExecutor = {
        * `deriveBinArray` and the Anchor coder come from the SDK, so neither the
        * address derivation nor the instruction identification is reimplemented here.
        */
+      /*
+       * MID-FLIGHT SHORTFALL (15 Sep 2026, LEVERCAT-SOL). The check above proves the sequence
+       * payable against the state BEFORE any chunk lands; it cannot see what a later chunk
+       * inherits, and a stale-active-bin rebuild re-derives a chunk against a moved pool.
+       * So a chunk refused at preflight for insufficient funds is rebuildable too — nothing
+       * was broadcast — and its rebuild re-reads the wallet and shrinks the REMAINING deposit
+       * (`shrinkWideFundingDeposit`), once. A second refusal throws, and the partial-execution
+       * error that follows is what recovers the position and pages the operator.
+       */
+      const pairedAtFundingStart = await readAtaBalance(auth.wallet, pairedMint, pairedTokenProgram);
+      let shortRejectionPending = false;
+      let midflightShrinks = 0;
+      const fundingRejection = (logs: string[] | null, message: string): boolean => {
+        if (isStaleActiveBinRejection(logs, message)) return true;
+        if (isInsufficientFundsRejection(logs, message)) {
+          shortRejectionPending = true;
+          return true;
+        }
+        return false;
+      };
+
       const { deriveBinArray } = await loadDlmmSdk();
       const binArrayForIndex = (index: string): PublicKey | null => {
         try {
@@ -3474,9 +3605,40 @@ export const dlmmExecutor: DlmmExecutor = {
          * the funding transaction never got that far. It was refused in simulation,
          * deterministically, on every attempt it was allowed to make (one).
          */
-        rebuildableRejection: isStaleActiveBinRejection,
+        rebuildableRejection: fundingRejection,
         rebuild: async (index, attempt) => {
           await pool.refetchStates();
+          if (shortRejectionPending) {
+            shortRejectionPending = false;
+            const balanceNow = await readAtaBalance(auth.wallet, pairedMint, pairedTokenProgram);
+            const next =
+              midflightShrinks >= WIDE_FUNDING_MIDFLIGHT_SHRINKS
+                ? null
+                : shrinkWideFundingDeposit({
+                    planned: BigInt(pairedForDeposit.toString()),
+                    balanceAtStart: pairedAtFundingStart,
+                    balanceNow,
+                    slippagePercent: slip.percent,
+                  });
+            if (next === null) {
+              throw new DlmmExecutionError(
+                `funding tx ${index + 1}/${liquidityTxs.length} was refused for INSUFFICIENT FUNDS ` +
+                  `after ${midflightShrinks} mid-flight shrink(s) — NOT sent again. The wallet holds ` +
+                  `${balanceNow === null ? "an unreadable" : balanceNow.toString()} paired base units ` +
+                  `against a remaining deposit of ${pairedForDeposit.toString()} (funding started with ` +
+                  `${pairedAtFundingStart === null ? "an unreadable balance" : pairedAtFundingStart.toString()}). ` +
+                  `Earlier chunks LANDED: the position is funded and must be recovered.`,
+              );
+            }
+            midflightShrinks += 1;
+            console.warn(
+              `[onchain/dlmm] ${positionAddress}: funding tx ${index + 1} refused at preflight for ` +
+                `insufficient funds; re-read the wallet (${balanceNow?.toString()} paired base units) and ` +
+                `shrinking the deposit DOWN from ${pairedForDeposit.toString()} to ${next.toString()} ` +
+                `for the remaining chunk(s) — nothing was broadcast`,
+            );
+            pairedForDeposit = new BN(next.toString());
+          }
           console.log(
             `[onchain/dlmm] ${positionAddress}: rebuilding funding tx ${index + 1} for ` +
               `attempt ${attempt + 1} — active bin ${activeIdAtBuild} -> ` +

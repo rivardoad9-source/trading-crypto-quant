@@ -2961,8 +2961,10 @@ export type { ExecutionAuthorization };
 export {
   HARD_MAX_SLIPPAGE_BPS,
   HARD_MAX_EXIT_SLIPPAGE_BPS,
+  assertQuoteWithinSlippageBound,
   exitSlippageCapBps,
   onchainConfig,
   resolveExitSlippageBps,
   resolveSlippageBps,
+  swapSlippageBoundBps,
 } from "./onchainExecutor.js";

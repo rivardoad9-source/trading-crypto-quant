@@ -171,6 +171,52 @@ describe("the residual sale walks the ladder", () => {
   });
 });
 
+describe("the ladder walks in production, not only in a harness (15 Sep 2026)", () => {
+  /*
+   * The harness above passes whatever it is asked to, so it could not notice that production's
+   * `buildJupiterSwap` refused every rung wider than the ENTRY bound: rung 1 (50) passed, rungs
+   * 2 and 3 threw "above the authorized 50 bps". This harness sells THROUGH the real guard —
+   * Jupiter echoes the rung it was asked for, and the quote is checked exactly as
+   * `executeJupiterSwap` checks it.
+   */
+  function guardedHarness(marketRefuses: number[]): SweepHarness {
+    const h = harness({ fails: [] });
+    h.deps.swapToSol = async (_mint, _amount, slippageBps) => {
+      const bound = live.swapSlippageBoundBps(ENTRY_AUTH, "exit", slippageBps);
+      h.calls.push(bound);
+      live.assertQuoteWithinSlippageBound(ENTRY_AUTH, { slippageBps: bound }, { leg: "exit", bps: bound });
+      if (marketRefuses.includes(bound)) throw new Error(`SlippageToleranceExceeded at ${bound} bps`);
+      return `SIG@${bound}`;
+    };
+    return h;
+  }
+
+  it("refused at the first rung, sold at the WIDER second rung, and says which", async () => {
+    const h = guardedHarness([50]);
+    const result = await live.sweepResidualPairedToken({ pairName: "LEVERCAT-SOL", positionAddress: "Pos10" }, h.deps);
+    assert.equal(result.state, "swept", result.error ?? "");
+    assert.equal(result.signature, "SIG@150");
+    assert.equal(result.slippageBps, 150, "the rung that landed");
+    assert.deepEqual(h.calls, [50, 150]);
+  });
+
+  it("walks exactly the configured ladder before giving up", async () => {
+    const h = guardedHarness([50, 150, 300]);
+    const result = await live.sweepResidualPairedToken({ pairName: "LEVERCAT-SOL", positionAddress: "Pos10" }, h.deps);
+    assert.equal(result.state, "failed");
+    assert.deepEqual(h.calls, live.sweepSlippageLadder(live.exitSlippageCapBps()));
+    assert.deepEqual(h.calls, [50, 150, 300]);
+    assert.ok(!/above the authorized/.test(result.error ?? ""), `a rung was refused by the guard, not the market: ${result.error}`);
+  });
+
+  it("the entry bound still refuses those same quotes", () => {
+    assert.throws(
+      () => live.assertQuoteWithinSlippageBound(ENTRY_AUTH, { slippageBps: 150 }, { leg: "entry", bps: 150 }),
+      /above the authorized 50 bps \(entry leg\)/,
+    );
+  });
+});
+
 describe("which legs may use the wider bound", () => {
   const source = readFileSync(
     join(dirname(fileURLToPath(import.meta.url)), "..", "services", "liveExecution.ts"),
