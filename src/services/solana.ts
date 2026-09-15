@@ -29,6 +29,10 @@ export class SolanaRpcError extends Error {
 
 let requestId = 0;
 
+/**
+ * ONE request, no retry. Used directly only by the calls that must not be retried — see
+ * `RPC_READ_RETRY_METHODS` for why each exclusion exists.
+ */
 async function rpc<T>(
   method: string,
   params: unknown[],
@@ -44,6 +48,213 @@ async function rpc<T>(
   if (body.error) throw new SolanaRpcError(method, body.error);
   if (body.result === undefined) throw new Error(`[solana] ${method} returned no result`);
   return body.result;
+}
+
+/* ------------------------------------------------------------------ */
+/* Read retry (15 Sep 2026)                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Why this exists: on 15 Sep 2026 the engine logged
+ * `[antirug] rejected LEVERCAT-SOL (UNKNOWN): authority check unavailable: AxiosError … 429`.
+ * One candidate lost to a rate limit — the Helius key was shared with a backtest ingest —
+ * not to anything about the token. `rpc()` was a single POST, so one 429 was a verdict.
+ *
+ * The fail-closed rule is untouched: a read that is still failing after its retries throws,
+ * and `screenTokenSafety` still turns that into UNKNOWN, never PASS. Retry only changes
+ * how much evidence "could not run" needs before it is believed.
+ *
+ * ALLOWLIST, not a denylist: a method nobody reviewed gets one attempt. Retried:
+ * idempotent reads whose failure costs a candidate or a gate reading. Deliberately NOT:
+ *  - `sendTransaction` / `sendRawTransaction` / `simulateTransaction` and anything that
+ *    signs: not issued from this module at all (the executor sends through web3.js
+ *    `Connection` under `sendAndConfirm`'s rebroadcast rule), and a retry here would be a
+ *    second, unreviewed resend path. Listed so `readRpc` refuses to retry them by name.
+ *  - `getSlot`: the health probe. Retrying would hide the 429 the widget exists to report,
+ *    and its 2.5 s budget is part of `/api/health` not hanging.
+ *  - `getRecentPrioritizationFees`: called by the executor INSIDE the send/rebuild loop,
+ *    where seconds of backoff are spent from a blockhash lifetime, and whose `Safe` wrapper
+ *    already prices a failure at the configured floor.
+ */
+export const RPC_READ_RETRY_METHODS: ReadonlySet<string> = new Set([
+  "getAccountInfo",
+  "getMultipleAccounts",
+  "getTokenSupply",
+  "getTokenLargestAccounts",
+  "getBalance",
+  "getTransaction",
+]);
+
+export const RPC_NEVER_RETRY_METHODS: ReadonlySet<string> = new Set([
+  "sendTransaction",
+  "sendRawTransaction",
+  "simulateTransaction",
+  "requestAirdrop",
+  "getSlot",
+  "getRecentPrioritizationFees",
+]);
+
+export const RPC_READ_RETRY_POLICY = {
+  maxAttempts: 3,
+  /** Wait before attempt 2, 3, … (only the first two are reachable at 3 attempts). */
+  backoffMs: [500, 1500, 4000] as const,
+  /** ± fraction applied to each wait, so concurrent callers do not retry in lockstep. */
+  jitter: 0.2,
+  /**
+   * Wall-clock budget for the RETRIES of one call, measured from its first attempt: no retry
+   * starts past it, and a retry's own timeout is clamped to what is left. The FIRST attempt
+   * keeps the caller's timeout unchanged, so a call that succeeds today behaves identically.
+   */
+  budgetMs: 6_000,
+  /** A retry with less than this left is not worth starting. */
+  minAttemptMs: 250,
+  /** Consecutive calls of one method exhausting on 429 before retries pause for it. */
+  persistentAfter: 3,
+  /** How long a paused method stays on single attempts before retries are tried again. */
+  pauseMs: 10 * 60_000,
+};
+
+/** Test seam: the clock, the sleep and the jitter source. Production never reassigns it. */
+export const rpcRetryClock = {
+  now: (): number => Date.now(),
+  sleep: (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms)),
+  random: (): number => Math.random(),
+};
+
+export type RpcFailureKind = "rate_limited" | "server" | "timeout" | "network" | "rpc_error" | "http" | "other";
+
+const TRANSIENT_KINDS: ReadonlySet<RpcFailureKind> = new Set(["rate_limited", "server", "timeout", "network"]);
+const NETWORK_CODES = new Set(["ECONNREFUSED", "ECONNRESET", "ENOTFOUND", "EAI_AGAIN", "EPIPE", "EHOSTUNREACH", "ENETUNREACH", "ERR_NETWORK"]);
+
+/** What went wrong, in a form a log line and a funnel bucket can both use. Same split as `http.ts`. */
+export function classifyRpcFailure(err: unknown): { kind: RpcFailureKind; transient: boolean; label: string } {
+  const out = (kind: RpcFailureKind, label: string) => ({ kind, transient: TRANSIENT_KINDS.has(kind), label });
+  if (err instanceof RpcReadError) return out(err.kind, err.lastLabel);
+  if (err instanceof SolanaRpcError) {
+    // Some providers answer HTTP 200 with a JSON-RPC rate-limit code instead of a 429.
+    return err.code === -32429 ? out("rate_limited", `RPC error ${err.code}`) : out("rpc_error", `RPC error ${err.code}`);
+  }
+  if (axios.isAxiosError(err)) {
+    const status = err.response?.status;
+    if (status === 429) return out("rate_limited", "HTTP 429");
+    if (status !== undefined && status >= 500) return out("server", `HTTP ${status}`);
+    if (status !== undefined) return out("http", `HTTP ${status}`);
+    if (err.code === "ECONNABORTED" || err.code === "ETIMEDOUT" || /timeout/i.test(err.message)) return out("timeout", "timeout");
+    return out("network", err.code ?? "network error");
+  }
+  const code = (err as NodeJS.ErrnoException | null)?.code;
+  if (code && NETWORK_CODES.has(code)) return out("network", code);
+  if (code === "ETIMEDOUT") return out("timeout", "timeout");
+  return out("other", err instanceof Error ? err.message.slice(0, 80) : String(err).slice(0, 80));
+}
+
+/** A read that was still failing TRANSIENTLY after its retries. Carries the evidence. */
+export class RpcReadError extends Error {
+  constructor(
+    readonly method: string,
+    readonly attempts: number,
+    readonly kind: RpcFailureKind,
+    readonly lastLabel: string,
+    readonly paused: boolean,
+  ) {
+    super(
+      `${attempts} ${attempts === 1 ? "attempt" : "attempts"}` +
+        (paused ? ` (retries paused: ${lastLabel} persisted across calls)` : "") +
+        `, last ${lastLabel} (${method})`,
+    );
+    this.name = "RpcReadError";
+  }
+}
+
+interface MethodLimitState {
+  exhausted429: number;
+  pausedUntil: number | null;
+}
+const methodLimits = new Map<string, MethodLimitState>();
+
+/** Test seam, and a way to drop limit state that no longer describes this endpoint. */
+export function resetRpcReadState(): void {
+  methodLimits.clear();
+}
+
+/** Methods currently on single attempts because 429 persisted. Diagnostic only. */
+export function pausedRpcMethods(): string[] {
+  const now = rpcRetryClock.now();
+  return [...methodLimits.entries()].filter(([, s]) => s.pausedUntil !== null && s.pausedUntil > now).map(([m]) => m);
+}
+
+function limitState(method: string): MethodLimitState {
+  let s = methodLimits.get(method);
+  if (!s) methodLimits.set(method, (s = { exhausted429: 0, pausedUntil: null }));
+  return s;
+}
+
+/**
+ * `rpc()` with bounded retry for TRANSIENT failures (429, 5xx, timeout, network) on the
+ * allowlisted read methods. Anything else — a non-transient error, a method off the list,
+ * a method in `RPC_NEVER_RETRY_METHODS` — gets exactly one attempt and its original error.
+ *
+ * Persistent rejection is told apart from a passing burst: when one method's calls keep
+ * exhausting on 429 (the public node refuses `getTokenLargestAccounts` permanently), that
+ * method drops to single attempts for `pauseMs` and it is logged ONCE, instead of every
+ * candidate paying the full backoff for a refusal that will not change.
+ */
+export async function readRpc<T>(method: string, params: unknown[], timeoutMs: number = HTTP_TIMEOUT_MS): Promise<T> {
+  const policy = RPC_READ_RETRY_POLICY;
+  const retryable = RPC_READ_RETRY_METHODS.has(method) && !RPC_NEVER_RETRY_METHODS.has(method);
+  if (!retryable) return rpc<T>(method, params, timeoutMs);
+
+  const state = limitState(method);
+  const startedAt = rpcRetryClock.now();
+  const paused = state.pausedUntil !== null && state.pausedUntil > startedAt;
+  if (state.pausedUntil !== null && !paused) {
+    state.pausedUntil = null;
+    state.exhausted429 = 0;
+  }
+  const maxAttempts = paused ? 1 : policy.maxAttempts;
+
+  let attempts = 0;
+  let last: ReturnType<typeof classifyRpcFailure> | null = null;
+  for (;;) {
+    const elapsed = rpcRetryClock.now() - startedAt;
+    const attemptTimeout = attempts === 0 ? timeoutMs : Math.max(1, Math.min(timeoutMs, policy.budgetMs - elapsed));
+    attempts++;
+    try {
+      const result = await rpc<T>(method, params, attemptTimeout);
+      if (state.exhausted429 > 0 || state.pausedUntil !== null) {
+        if (state.pausedUntil !== null) console.warn(`[solana] ${method}: answered again — retries resumed`);
+        state.exhausted429 = 0;
+        state.pausedUntil = null;
+      }
+      return result;
+    } catch (err) {
+      last = classifyRpcFailure(err);
+      if (!last.transient) {
+        if (attempts === 1) throw err; // non-transient: one attempt, original error, as before
+        throw new RpcReadError(method, attempts, last.kind, last.label, paused);
+      }
+      const base = policy.backoffMs[Math.min(attempts - 1, policy.backoffMs.length - 1)]!;
+      const wait = Math.max(0, Math.round(base * (1 + policy.jitter * (2 * rpcRetryClock.random() - 1))));
+      const remaining = policy.budgetMs - (rpcRetryClock.now() - startedAt);
+      if (attempts >= maxAttempts || remaining - wait < policy.minAttemptMs) break;
+      await rpcRetryClock.sleep(wait);
+    }
+  }
+
+  const final = last!;
+  if (final.kind === "rate_limited" && !paused) {
+    state.exhausted429++;
+    if (state.exhausted429 >= policy.persistentAfter) {
+      state.pausedUntil = rpcRetryClock.now() + policy.pauseMs;
+      console.warn(
+        `[solana] ${method}: ${final.label} on ${state.exhausted429} consecutive calls after ${attempts} attempts each — ` +
+          `treating it as a persistent endpoint limit, single attempts for ${Math.round(policy.pauseMs / 60_000)} min (logged once)`,
+      );
+    }
+  } else if (final.kind !== "rate_limited") {
+    state.exhausted429 = 0;
+  }
+  throw new RpcReadError(method, attempts, final.kind, final.label, paused);
 }
 
 /* ------------------------------------------------------------------ */
@@ -349,7 +560,7 @@ interface ParsedMintAccount {
 }
 
 export async function getMintAuthorities(mint: string): Promise<MintAuthorities> {
-  const res = await rpc<ParsedMintAccount>("getAccountInfo", [mint, { encoding: "jsonParsed" }]);
+  const res = await readRpc<ParsedMintAccount>("getAccountInfo", [mint, { encoding: "jsonParsed" }]);
 
   const parsed = res.value?.data?.parsed;
   if (!parsed || parsed.type !== "mint") {
@@ -389,7 +600,7 @@ export interface RawAccount {
  * that does not exist and a node that did not answer must not read the same.
  */
 export async function getRawAccount(address: string): Promise<RawAccount | null> {
-  const res = await rpc<{
+  const res = await readRpc<{
     value: { owner: string; lamports: number; data: [string, string] } | null;
   }>("getAccountInfo", [address, { encoding: "base64" }]);
 
@@ -421,7 +632,7 @@ export interface TransactionMetaReading {
  * Read-only; signs nothing.
  */
 export async function getTransactionMeta(signature: string): Promise<TransactionMetaReading | null> {
-  const res = await rpc<{
+  const res = await readRpc<{
     transaction: { message: { accountKeys: Array<string | { pubkey: string }> } };
     meta: {
       fee: number;
@@ -485,8 +696,8 @@ interface TokenAccountBalance {
  */
 export async function getHolderConcentration(mint: string): Promise<HolderConcentration> {
   const [largest, supply] = await Promise.all([
-    rpc<{ value: TokenAccountBalance[] }>("getTokenLargestAccounts", [mint]),
-    rpc<{ value: { amount: string; decimals: number } }>("getTokenSupply", [mint]),
+    readRpc<{ value: TokenAccountBalance[] }>("getTokenLargestAccounts", [mint]),
+    readRpc<{ value: { amount: string; decimals: number } }>("getTokenSupply", [mint]),
   ]);
 
   const totalSupply = Number(supply.value.amount);
@@ -524,6 +735,28 @@ export interface TokenSafetyReport {
   mintAuthorityRevoked: boolean | null;
   freezeAuthorityRevoked: boolean | null;
   checkedAt: string;
+  /**
+   * Why an UNKNOWN is unknown (15 Sep 2026). Null/absent on PASS and FAIL.
+   *  - "rpc_unavailable": the endpoint did not answer usefully after retries — 429, 5xx,
+   *    timeout, network. A fact about the RPC, not the token; the funnel counts it apart.
+   *  - "unreadable": the endpoint answered and the answer was unusable — not a parsable
+   *    mint, a JSON-RPC error, a non-positive supply. A fact about the data.
+   * When both checks failed for different causes, "rpc_unavailable" wins: the token may be
+   * fine, and naming the data would send the operator after the wrong thing.
+   */
+  unknownCause?: SafetyUnknownCause | null;
+}
+
+export type SafetyUnknownCause = "rpc_unavailable" | "unreadable";
+
+/** Maps a failed check's error to the funnel's two UNKNOWN buckets. */
+export function safetyUnknownCause(err: unknown): SafetyUnknownCause {
+  return classifyRpcFailure(err).transient ? "rpc_unavailable" : "unreadable";
+}
+
+/** An RpcReadError already reads "3 attempts, last HTTP 429 (method)"; anything else as before. */
+function unavailableDetail(err: unknown): string {
+  return err instanceof RpcReadError ? err.message : String(err);
 }
 
 /**
@@ -550,6 +783,7 @@ export async function screenTokenSafety(mint: string): Promise<TokenSafetyReport
   ]);
 
   let unknown = false;
+  const causes: SafetyUnknownCause[] = [];
 
   if (authorities.status === "fulfilled") {
     report.mintAuthorityRevoked = authorities.value.mintAuthorityRevoked;
@@ -563,7 +797,8 @@ export async function screenTokenSafety(mint: string): Promise<TokenSafetyReport
     }
   } else {
     unknown = true;
-    report.reasons.push(`authority check unavailable: ${authorities.reason}`);
+    causes.push(safetyUnknownCause(authorities.reason));
+    report.reasons.push(`authority check unavailable: ${unavailableDetail(authorities.reason)}`);
   }
 
   if (concentration.status === "fulfilled") {
@@ -577,7 +812,8 @@ export async function screenTokenSafety(mint: string): Promise<TokenSafetyReport
     }
   } else {
     unknown = true;
-    report.reasons.push(`holder concentration unavailable: ${concentration.reason}`);
+    causes.push(safetyUnknownCause(concentration.reason));
+    report.reasons.push(`holder concentration unavailable: ${unavailableDetail(concentration.reason)}`);
   }
 
   // A real breach outranks a missing check: a token that definitively failed one rule
@@ -585,6 +821,9 @@ export async function screenTokenSafety(mint: string): Promise<TokenSafetyReport
   const hasRealBreach = report.reasons.some((r) => !r.includes("unavailable"));
 
   report.verdict = hasRealBreach ? "FAIL" : unknown ? "UNKNOWN" : "PASS";
+  if (report.verdict === "UNKNOWN") {
+    report.unknownCause = causes.includes("rpc_unavailable") ? "rpc_unavailable" : "unreadable";
+  }
 
   return report;
 }
@@ -622,7 +861,7 @@ export async function getWalletBalanceSol(
   address: string,
   options: { commitment?: "processed" | "confirmed" | "finalized" } = {},
 ): Promise<WalletBalance> {
-  const result = await rpc<{ value: number } | number>(
+  const result = await readRpc<{ value: number } | number>(
     "getBalance",
     options.commitment ? [address, { commitment: options.commitment }] : [address],
   );
