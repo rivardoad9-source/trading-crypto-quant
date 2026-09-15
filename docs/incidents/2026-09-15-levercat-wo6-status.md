@@ -20,7 +20,7 @@ Nothing deployed, no pm2, no `.env`, no cron, no config value changed.
 |---|---|---|
 | 1 — exit quote checked against the entry bound | **complete** | `dc9edf1` |
 | 2 — ladder walks, tested | **complete** | `dc9edf1` |
-| 3 — self-heal for a failed open's residual | **complete, not run against the chain** | `63c6490` (amended locally before push) |
+| 3 — self-heal for a failed open's residual | **complete, not run against the chain** | `98a49e0` |
 | 4 — the chunk that failed | **fixed, but the diagnosis differs from the WO** | `dc9edf1` |
 
 **1.** `swapSlippageBoundBps()` is the one derivation `executeJupiterSwap` quotes with, and
