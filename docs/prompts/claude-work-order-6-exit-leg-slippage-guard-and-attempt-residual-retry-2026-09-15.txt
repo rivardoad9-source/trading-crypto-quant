@@ -1,0 +1,141 @@
+WORK ORDER #6 — FlowMetrix (from the operator, 15 Sep 2026 ~22:15 WIB)
+
+WHAT HAPPENED (the incident this work order exists for)
+=======================================================
+15 Sep 2026 14:33:47 UTC (21:33 WIB) the engine tried to open LEVERCAT-SOL on pool
+42JnUXw5N9ftMkbM1tMzJw2tnzqs1U9RxWBk5LzNv4gD and half-landed it. Real sequence from
+~/.pm2/logs/flowmetrix-engine-error.log and data/flowmetrix.db:
+
+  1. balancing swap CONFIRMED          swap 2UQVWZRz… , ~1.853 SOL -> 40 376.32 LEVERCAT
+  2. `dlmm openPosition (fund wide position) 1/2` landed after 2 blockhash-expiry retries
+  3. `2/2` REJECTED AT PREFLIGHT       "Transaction simulation failed: Error processing
+                                        Instruction 6: custom program error: 0x1"
+                                        Program log: Instruction: RebalanceLiquidity
+     -> nothing broadcast, but the position 2mun6dhRq… was already FUNDED
+     (14 577 089 650 X / 888 747 537 Y, 0/0 unclaimed fees)
+  4. the new orphan recovery WORKED    "2mun6dhRq…: the open failed but the position IS
+     FUNDED … withdrawing, claiming and closing it" -> close 5Tg89Lrp… , wallet +0.940304 SOL
+  5. the AUTO-UNWIND FAILED            "Auto-unwind back to SOL FAILED ([onchain] Jupiter
+     returned a quote at 300 bps slippage, above the authorized 50 bps)"
+  6. 40 376.32 LEVERCAT (later 40 053.97 after partial movement) sat in the wallet,
+     unmonitored, row marked outcome=failed / unwind=orphan, and TWO brakes held new
+     entries shut: StrandedCapitalError + FailedCostBreakerError reading 0.912959 SOL.
+  7. RECOVERED BY HAND at 21:47 WIB with a NEW ops script (committed c93e413,
+     `scripts/sweepAttemptResidual.ts`) that sold 40 053.97 LEVERCAT -> 0.793026 SOL
+     (sig jfi7qnmE…), and `scripts/settleRecoveredAttempt.cjs --id 10
+     --after-lamports 2893532394` rewrote the row to cost 0.119954428 SOL / unwind clean.
+     Entries are NYALA again. The ATA could not be closed (Token-2022 transfer-fee
+     account, withheld fee balance non-zero) so ~0.002 SOL of rent stays parked.
+
+WHY "AGAIN" — this is the THIRD one
+===================================
+live_execution_attempts, every failed row in the table's life:
+  id 2  12 Sep MANLET-SOL   0.014816  SOL real cost
+  id 5  13 Sep NEARKAT-SOL  0.079110  SOL real cost
+  id 10 15 Sep LEVERCAT-SOL 0.119954  SOL real cost
+All three: swap lands, the deposit side does not, the failed-open unwind fails, capital sits
+in a memecoin nothing monitors. The 12 Sep fix (orphan recovery in the open path) worked
+tonight — step 4 above is NEW and it returned 0.94 SOL. Step 5 is what still costs money.
+
+TASK 1 — THE BUG: an exit-leg quote is authorised against the ENTRY bound
+=========================================================================
+`src/services/onchainExecutor.ts:1278` in `buildJupiterSwap`:
+
+    if (quote.slippageBps > auth.maxSlippageBps) {
+      throw new ExecutionLimitError(
+        `Jupiter returned a quote at ${quote.slippageBps} bps slippage, above the ` +
+          `authorized ${auth.maxSlippageBps} bps`,
+      );
+    }
+
+`auth.maxSlippageBps` is the ENTRY bound (50 bps, HARD_MAX_SLIPPAGE_BPS). But the quote was
+fetched by `executeJupiterSwap` (`onchainExecutor.ts:1373`) with
+
+    params.leg === "exit" ? resolveExitSlippageBps(params.slippageBps, config) : …
+
+which resolves against `EXIT_MAX_SLIPPAGE_BPS` (default 300, HARD_MAX_EXIT_SLIPPAGE_BPS).
+So EVERY exit-leg swap whose bound is wider than the entry bound builds a quote the guard
+then refuses. Consequences, all real:
+
+  * The auto-unwind in `liveExecution.ts:1841` (`leg: "exit"`, "auto-unwind after a failed
+    open") can NEVER sell when the exit cap is 300 and the entry cap is 50 — which is the
+    configured default. That is step 5 above.
+  * The sweep ladder in `sweepResidualPairedToken` (`liveExecution.ts:2229`, rungs
+    50 -> 150 -> 300) is effectively a ONE-RUNG ladder: rung 1 passes the guard, rungs 2 and
+    3 throw exactly here. The "wider rather than repeated at the same width" behaviour the
+    interface documents (ResidualSweepDeps.swapToSol) does not exist in production.
+  * The comment at `onchainExecutor.ts:1360-1367` documents the intent ("Set it for the
+    residual sale after a close and for the auto-unwind after a failed open") and the guard
+    contradicts it. Same for `resolveExitSlippageBps`'s own doc block: "Refusing an entry
+    costs nothing; refusing an exit strands the position's value."
+
+FIX: the guard must compare against the SAME bound the quote was built with, i.e. carry the
+resolved bound (or the leg) into `buildJupiterSwap` and compare
+`quote.slippageBps > <that bound>`. Do NOT simply delete the check and do NOT widen
+`auth.maxSlippageBps`: the entry bound must stay hard for entries — an over-wide entry is
+the failure mode it exists to prevent. Keep it fail-closed: an exit quote above the EXIT cap
+still throws.
+
+TASK 2 — the ladder must actually walk, and be tested
+====================================================
+After Task 1, add tests that fail today and pass after, offline (no chain, no key):
+  * `buildJupiterSwap` (or its unit seam) with a quote at the exit cap (300 bps) and
+    `leg: "exit"` → builds. Same quote with `leg: "entry"` / no leg → throws.
+  * `sweepResidualPairedToken` with deps that refuse the first rung and accept the second:
+    assert the swap is retried at the WIDER rung and that `result.slippageBps` names the
+    rung that landed. Assert the rung sequence is exactly the configured ladder.
+  * An exit quote ABOVE the exit cap still throws (the fail-closed case).
+  * The existing `residualSweep.test.ts:582` expectation about the auto-unwind message must
+    keep passing unchanged.
+
+TASK 3 — the residual of a failed open must be retried by the self-heal, not only by hand
+========================================================================================
+Tonight's token was recoverable only because a human ran a script. `retryResidualSweep.ts`
+(and therefore the `*/2` Hermes self-heal cron) only looks at `simulated_positions` rows
+(`residual_sweep IN ('failed','unmeasured')`), so an attempt-level orphan — a failed open
+with no position row at all — is out of scope. Fold that case in:
+
+  * Extend `scripts/retryResidualSweep.ts` to also select `live_execution_attempts` rows with
+    `outcome='failed'`, `unwind='orphan'`, attempted within `--max-age-hours` (48) — the
+    shape where the engine could not put the capital back.
+  * Keep the existing chain guards: the position account must be ABSENT (if it exists, that
+    is `recoverFundedOrphan.ts`'s job, not this one) and the pool must have no active
+    position / no attempt in the last 15 minutes.
+  * Sell through the SAME `sweepResidualPairedToken` + `defaultResidualSweepDeps` path.
+  * When the sale lands, write the attempt row the way `settleRecoveredAttempt.cjs` does and
+    only when the chain agrees: `cost_lamports` = measured real cost
+    (`wallet_lamports_before - balance now`), `unwind='clean'`, `wallet_lamports_after` =
+    measured balance. Use the script's own proof check — do not invent a new one.
+  * Absorb `scripts/sweepAttemptResidual.ts` (my hand-run version, commit c93e413) into that
+    flow or delete it in favour of it; keep exactly one sell path.
+  * ATC/rent: a Token-2022 ATA with a non-zero withheld fee balance cannot be closed
+    (tonight: `Error: An account can only be closed if its withheld fee balance is zero`).
+    `closeEmptyTokenAccount` should report that as a distinct outcome, not throw, so the
+    retry loop does not treat "rent not reclaimed" as "sale failed".
+
+GUARDRAILS (unchanged, applies to all of the above)
+===================================================
+DO NOT deploy. DO NOT restart or touch pm2. DO NOT touch `.env` or any config value.
+DO NOT create or modify cron jobs. DO NOT change `STARTING_BALANCE_USD`, slippage config
+values, or anything else financial. Branch work, tests, and a written status only.
+
+WHAT I EXPECT BACK
+==================
+1. The branch (work/*) with the guard fix, the ladder tests, and the retry extension.
+2. A short written status: what changed, the exact test output (`npm test`, and `npm run
+   typecheck`), and explicitly which of Task 1/2/3 is complete and which is not.
+3. If any of Task 1/2/3 turns out to be wrong or impossible as described, say so and why —
+   do not silently substitute a different fix.
+
+EVIDENCE THE FIX CAN BE JUDGED AGAINST
+======================================
+Log (verbatim, engine error log):
+  [onchain] dlmm openPosition (fund wide position) 2/2: rejected at preflight by state that
+  has since moved (attempt 1/8); nothing was broadcast, rebuilding against current state
+  [onchain/dlmm] 2mun6dhRq…: the open failed but the position IS FUNDED (14577089650 X,
+  888747537 Y, 0/0 unclaimed fees); withdrawing, claiming and closing it
+  [live] the balancing swap CONFIRMED but the position open failed. … Auto-unwind back to
+  SOL FAILED ([onchain] Jupiter returned a quote at 300 bps slippage, above the authorized
+  50 bps).
+DB: live_execution_attempts id 10 (now: cost 119954428, unwind clean).
+On-chain, for cross-checking: swap 2UQVWZRz… , close 5Tg89Lrp… , hand recovery jfi7qnmE… .
