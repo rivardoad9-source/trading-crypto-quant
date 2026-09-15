@@ -1,0 +1,75 @@
+WORK ORDER #5 untuk Claude Code (LOKAL) — 15 Sep 2026
+Repo: ~/flowmetrix-ai-agent — branch dari `main` TERBARU (kalau branch `work/tvl-ingest-separate-rpc-key` sudah
+di-merge, itu jadi basisnya; kalau belum, tetap dari main dan tulis basis lu di laporan).
+Branch baru: work/rpc-read-retry-and-limit-awareness
+Tema SATU: **panggilan RPC baca-saja tidak boleh kehilangan kandidat cuma karena 429/timeout sesaat.**
+Kerjakan berurutan; jangan sentuh hal lain (jangan parameter TP/gate, jangan `.env`, jangan deploy).
+
+KONTEKS — ini HASIL CEK, bukan dugaan:
+- `src/services/solana.ts` baris 32: `rpc<T>()` = SATU `axios.post`, **TANPA retry**. Error apa pun langsung throw.
+- `src/services/solana.ts` baris 351: `getMintAuthorities()` memanggil `rpc()` satu kali. Baris 566: kalau gagal,
+  alasan yang ditulis cuma `authority check unavailable: <err>`.
+- Efeknya NYATA dan sudah kecatat: log err engine 15 Sep memuat
+  `[antirug] rejected LEVERCAT-SOL (UNKNOWN): authority check unavailable: AxiosError … 429` →
+  **satu kandidat hilang karena rate limit**, bukan karena tokennya jelek. Penyebab saat itu: key Helius dipakai
+  bareng ingest backtest (lihat `docs/backtests/2026-09-15-onchain-tvl-backtest-status.md`).
+- Semantik yang HARUS dipertahankan: `screenTokenSafety()` mengembalikan `UNKNOWN` (bukan `PASS`) saat cek tidak
+  bisa dijalankan. Fail-closed itu benar — jangan diubah jadi PASS.
+- Catatan lama di file yang sama (baris 8-12): `getTokenLargestAccounts` **selalu** 429 di endpoint publik
+  `api.mainnet-beta.solana.com` (penolakan permanen per method). Jadi retry harus punya batas dan tidak boleh
+  mengubah cycle 30-menit jadi lambat.
+- Pola retry yang sudah ada di repo ini (ikut gaya, jangan bikin baru): `src/services/liveExecution.ts` retry
+  pasca-swap (1,5s/3s) dan `src/backtest/onchainTvl.ts` `rateLimiter()` (baris ~268). Ini **bukan** bagian TVL —
+  jangan dikaitkan.
+
+== 1. RETRY TERBATAS DI JALUR BACA (P0) ==
+1a. Tambahkan retry dengan backoff untuk kegagalan TRANSIEN pada panggilan RPC baca-saja:
+    HTTP 429, 5xx, timeout, dan error jaringan. Usulan: maksimal 3 percobaan dengan jeda bertambah
+    (mis. ±500ms, ±1,5s, ±4s) + sedikit jitter, dan **batas total waktu per panggilan** (mis. ≤6 detik) supaya
+    satu endpoint yang sedang marah tidak menahan seluruh cycle.
+1b. Yang di-retry HANYA baca (`getAccountInfo`, `getTokenSupply`, `getTokenLargestAccounts`,
+    `getMultipleAccounts`, …). Jalur kirim/eksekusi (`sendTransaction`, `sendRawTransaction`, apa pun yang
+    menandatangani) **TIDAK di-retry** — tulis di laporan daftar method yang ikut dan yang sengaja dikecualikan.
+    Kalau pengecualian itu tidak bisa dipisah dari satu fungsi, pecah `rpc()` jadi dua: satu read-helper
+    ber-retry, satu mentah tanpa retry.
+1c. Setelah retry habis: tetap `UNKNOWN` (fail-closed) dan pesan errornya **menyebut** jumlah percobaan +
+    status terakhir, mis. `authority check unavailable: 3 attempts, last HTTP 429`. Jangan pernah PASS.
+1d. Penolakan PERMANEN harus terlihat beda dari rate limit sesaat: kalau method yang sama balas 429 berulang
+    lintas kandidat, catat sekali (log ringkas / counter), jangan berulang-ulang per kandidat dengan beban sama.
+1e. Nol perubahan perilaku untuk jalur yang tidak error: kandidat yang lolos tetap lolos dengan jumlah
+    panggilan yang sama (retry hanya jalan saat gagal).
+
+== 2. BEDAKAN "KANDIDAT HILANG KARENA RATE LIMIT" DARI "KARENA DATANYA" (P1) ==
+2a. Bucket funnel `antirug` sekarang cuma bilang `UNKNOWN`. Pecah minimal jadi dua jenis alasan yang bisa dibaca
+    di baris funnel/log: **rate-limited/timeout** vs **mint tidak terbaca/tidak valid**. Boleh lewat field baru di
+    `SafetyReport` + counter di `dlmmTraderAgent.ts` (sekitar baris 1932 tempat counter funnel dirakit) — pilih
+    bentuk paling kecil yang tetap kelihatan di log cycle.
+2b. Kalau lu menambah kolom DB (`scan_funnel_cycles`), pakai `addColumnIfMissing()` (pola yang sudah dipakai di
+    repo) dan tulis nama kolomnya di laporan. Kalau tidak perlu kolom, jangan tambah.
+2c. Tujuan praktisnya: kalau besok ada 429 lagi, baris funnel harus cukup untuk bilang "N kandidat hilang karena
+    rate limit" tanpa harus membuka log mentah.
+
+== 3. TEST (P0, wajib) ==
+3a. Test dengan transport HTTP yang di-stub (jangan jaringan nyata, jangan RPC sungguhan):
+    (a) 429 lalu 200 → hasil akhir tetap bisa PASS/FAIL sesuai data, BUKAN UNKNOWN, dan tercatat 2 percobaan;
+    (b) 429 terus → UNKNOWN + percobaan = batas + pesan memuat status terakhir;
+    (c) timeout lalu 200 → sama seperti (a);
+    (d) kegagalan permanen → tidak ada PASS (fail-closed) dan tidak menggantung lebih lama dari batas waktu;
+    (e) method jalur kirim TIDAK ikut di-retry (assert jumlah percobaan = 1).
+3b. `npm run typecheck` hijau + `npm test`. **Ukur dan tulis sendiri angka baseline lu SEBELUM mengubah apa pun**
+    (`npm test` di branch basis) lalu sesudahnya; jangan mengaku "tidak ada regresi" tanpa dua angka itu.
+    Server Linux terakhir: 1036/1036 pass (main) dan 1050/1050 pass (branch `work/tvl-ingest-separate-rpc-key`).
+3c. Jangan melemahkan test yang mengunci jalur model/v1.1 byte-identik, jangan ubah konstanta `exitCost.ts`.
+
+== ATURAN WAJIB (sama seperti WO1–WO4) ==
+- JANGAN deploy, JANGAN restart pm2, JANGAN ubah `.env`/`.env.example`, JANGAN kirim transaksi on-chain.
+- JANGAN menambah file yang meng-import `src/services/onchainExecutor.ts` (allowlist `onchainExecutor.test.ts`
+  = boundary keamanan; butuh sesuatu? lewat bridge `liveExecution.ts`).
+- String base58 panjang (86–90 char) di `src/` kena test anti-secret → taruh di `docs/**/*.json`.
+- Commit kecil dengan alasan KENAPA (bukan "fix"), push ke branch `work/rpc-read-retry-and-limit-awareness`,
+  JANGAN main.
+- Laporan: Indonesia, tabel, angka mentah, daftar method yang di-retry vs dikecualikan, dan section
+  "yang gw nggak bisa klaim" (mis. kalau lu tidak menguji ke endpoint publik yang benar-benar 429).
+
+CATATAN SIAPA MENGERJAKAN APA: ingest backtest TVL 2–3 jam = kerjaan Hermes di server. Lu cukup pastikan
+engine tidak kehilangan kandidat saat rate limit — jangan coba menjalankan ingest itu dari mesin lu.
