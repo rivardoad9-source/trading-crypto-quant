@@ -39,6 +39,7 @@ import {
   type PoolHistory,
 } from "./historicalData.js";
 import { ensureTvlSeries, heliusTvlDeps, seriesPoints } from "./onchainTvl.js";
+import { TVL_RPC_FLAG, describeTvlRpc, readTvlRpcUrlArg, resolveTvlRpc } from "./tvlRpc.js";
 import { calibrateTvlModel, describeTvlModel, type TvlModel } from "./tvlModel.js";
 import { liveV11Config } from "./runMicroCapital.js";
 import {
@@ -240,6 +241,9 @@ function parseFlags(argv: string[]): Map<string, string> {
     const m = /^--([a-z-]+)(?:=(.*))?$/i.exec(arg);
     if (m) flags.set(m[1]!.toLowerCase(), m[2] ?? "true");
   }
+  // The only flag that also takes the space form: `--tvl-rpc-url https://…` would otherwise drop the URL.
+  const tvlRpcUrl = readTvlRpcUrlArg(argv);
+  if (tvlRpcUrl !== undefined) flags.set(TVL_RPC_FLAG, tvlRpcUrl);
   return flags;
 }
 
@@ -287,6 +291,9 @@ async function main(): Promise<void> {
 
   const perWindowUniverse = flags.has("per-window-universe");
   const ingestOnly = flags.has("ingest-only");
+  if (flags.has(TVL_RPC_FLAG) && !perWindowUniverse) {
+    throw new Error(`--${TVL_RPC_FLAG} only applies to --per-window-universe --tvl=onchain; this run reads no on-chain TVL`);
+  }
   const policy = { maxTransferFeeBps: env.LIVE_MAX_TOKEN_TRANSFER_FEE_BPS };
 
   if (perWindowUniverse) {
@@ -815,7 +822,11 @@ async function runPerWindowUniverse(ctx: {
       return [];
     }
   };
-  const tvlDeps = tvlMode.basis === "onchain" ? heliusTvlDeps(env.SOLANA_RPC_URL, (l) => console.log(l), ".cache", tvlMode.rps) : null;
+  // Resolved here, before any ingest: an unusable --tvl-rpc-url fails now, never two hours in.
+  const tvlRpc = resolveTvlRpc(ctx.flags.get(TVL_RPC_FLAG), env.SOLANA_RPC_URL);
+  if (tvlMode.basis === "onchain") console.log(describeTvlRpc(tvlRpc));
+  else if (tvlRpc.source === "flag") console.warn(`[tvl] --${TVL_RPC_FLAG} diberikan tapi --tvl=model tidak membaca RPC TVL apa pun; flag diabaikan`);
+  const tvlDeps = tvlMode.basis === "onchain" ? heliusTvlDeps(tvlRpc.url, (l) => console.log(l), ".cache", tvlMode.rps) : null;
   let tvlCalls = 0;
   /*
    * The account is the LIVE profile unless a flag says otherwise — the same resolver `main`

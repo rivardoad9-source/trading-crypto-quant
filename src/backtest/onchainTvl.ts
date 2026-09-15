@@ -24,6 +24,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname, resolve } from "node:path";
 
 import type { Bar } from "./historicalData.js";
+import { rpcHostOf } from "./tvlRpc.js";
 
 export const WSOL_MINT = "So11111111111111111111111111111111111111112";
 export const STABLE_SYMBOLS = ["USDC", "USDT", "USDH", "PYUSD", "FDUSD", "DAI", "USD1"];
@@ -280,6 +281,7 @@ export function rateLimiter(perSecond: number, now: () => number = Date.now, sle
 export function heliusTvlDeps(rpcUrl: string, log: (line: string) => void = console.log, cacheDir = ".cache", requestsPerSecond = 3): OnchainTvlDeps {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const pace = rateLimiter(requestsPerSecond);
+  const host = rpcHostOf(rpcUrl);
   return {
     async poolMeta(address) {
       const path = `${cacheDir}/tvl_truth/meta_${address}.json`;
@@ -320,8 +322,14 @@ export function heliusTvlDeps(rpcUrl: string, log: (line: string) => void = cons
           await sleep(1000 * 2 ** attempt);
           continue;
         }
-        // The RPC URL carries the provider key: the error names the method and status only.
-        if (!res.ok) throw new Error(`getTransactionsForAddress HTTP ${res.status}`);
+        // The RPC URL carries the provider key: the error names the method, status and HOST only.
+        if (res.status === 429) {
+          // Surfaced through `log` too: the series ingest counts a throw as a transport failure and drops the text.
+          const msg = `getTransactionsForAddress HTTP 429 from ${host} after ${attempt + 1} attempts — rate limited; lower --tvl-rps (now ${requestsPerSecond}) or give the ingest its own key with --tvl-rpc-url`;
+          log(`[tvl] ${msg}`);
+          throw new Error(msg);
+        }
+        if (!res.ok) throw new Error(`getTransactionsForAddress HTTP ${res.status} from ${host}`);
         const body = (await res.json()) as { result?: { data: unknown[] }; error?: { message: string } };
         if (body.error) throw new Error(`getTransactionsForAddress: ${body.error.message}`);
         const tx = body.result?.data?.[0] as

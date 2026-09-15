@@ -39,6 +39,7 @@ import {
   tvlFromReserves,
   type TvlObservation,
 } from "../backtest/tvlValidation.js";
+import { describeTvlRpc, readTvlRpcUrlArg, resolveTvlRpc, type TvlRpc } from "../backtest/tvlRpc.js";
 
 const SUMMARY_PATH = "backtest_tvl_validation_summary.json";
 const REPORT_PATH = "backtest_tvl_validation_report.txt";
@@ -51,6 +52,19 @@ for (const a of process.argv.slice(2)) {
 }
 const num = (k: string, d: number) => (flags.has(k) ? Number(flags.get(k)) : d);
 
+/*
+ * Same flag as `backtest:integrity`: the chain reads can go to a key of their own instead of the
+ * one the live engine reads from `.env`. Resolved before any request; the URL is never printed.
+ */
+let tvlRpc: TvlRpc;
+try {
+  tvlRpc = resolveTvlRpc(readTvlRpcUrlArg(process.argv.slice(2)), env.SOLANA_RPC_URL);
+} catch (err) {
+  console.error("[tvl] failed:", err instanceof Error ? err.message : err);
+  process.exit(1);
+}
+console.log(describeTvlRpc(tvlRpc));
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const readJson = <T>(p: string): T | null => {
   try {
@@ -62,7 +76,7 @@ const readJson = <T>(p: string): T | null => {
 
 async function rpc<T>(method: string, params: unknown[]): Promise<T> {
   for (let attempt = 0; ; attempt++) {
-    const res = await fetch(env.SOLANA_RPC_URL, {
+    const res = await fetch(tvlRpc.url, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
@@ -71,8 +85,9 @@ async function rpc<T>(method: string, params: unknown[]): Promise<T> {
       await sleep(1500 * (attempt + 1));
       continue;
     }
-    // The RPC URL carries the provider key: never echo it, only the method and status.
-    if (!res.ok) throw new Error(`${method} HTTP ${res.status}`);
+    // The RPC URL carries the provider key: never echo it, only the method, status and host.
+    if (res.status === 429) throw new Error(`${method} HTTP 429 from ${tvlRpc.host} — rate limited; give the validation its own key with --tvl-rpc-url`);
+    if (!res.ok) throw new Error(`${method} HTTP ${res.status} from ${tvlRpc.host}`);
     const body = (await res.json()) as { result?: T; error?: { message: string } };
     if (body.error) throw new Error(`${method}: ${body.error.message}`);
     return body.result as T;
