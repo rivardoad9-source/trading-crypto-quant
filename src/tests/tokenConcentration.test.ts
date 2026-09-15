@@ -4,13 +4,29 @@
  * the tests pin two things above all — report mode keeps the pool, and the funnel still
  * reconciles when enforce mode removes one.
  */
-import { describe, it } from "node:test";
+import { before, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { assessTokenConcentration, type OpenedAttempt } from "../services/tokenConcentration.js";
+import type { OpenedAttempt } from "../services/tokenConcentration.js";
+
+/*
+ * HERMETIC DATABASE, SET BEFORE ANYTHING LOADS env.ts. The first version imported the service
+ * statically (it pulls meteora.ts -> env.ts) and set DATABASE_PATH inside a test, AFTER env had
+ * already resolved it to ./data/flowmetrix.db — so every run wrote a fake funnel row into the
+ * real database, into exactly the shadow-pick columns report:live reads. Every import that can
+ * reach env.ts is dynamic and runs after this line.
+ */
+const tempDir = mkdtempSync(join(tmpdir(), "flowmetrix-concentration-"));
+process.env.DATABASE_PATH = join(tempDir, "t.db");
+
+let assessTokenConcentration: typeof import("../services/tokenConcentration.js").assessTokenConcentration;
+before(async () => {
+  ({ assessTokenConcentration } = await import("../services/tokenConcentration.js"));
+});
 
 const HOUR = 3_600_000;
 const NOW = Date.parse("2026-09-13T13:00:00Z");
@@ -104,10 +120,10 @@ describe("wiring in the engine", () => {
 
 describe("the funnel row carries the new fields", () => {
   it("stores the concentration counts and both picks, and reads them back (null, not empty string, when absent)", async () => {
-    const { mkdtempSync, rmSync } = await import("node:fs");
-    const { tmpdir } = await import("node:os");
-    const dir = mkdtempSync(join(tmpdir(), "flowmetrix-concentration-"));
-    process.env.DATABASE_PATH = join(dir, "t.db");
+    const { rmSync } = await import("node:fs");
+    const { env } = await import("../config/env.js");
+    // The guard the first version lacked: refuse to write unless env resolved to the temp database.
+    assert.ok(resolve(process.cwd(), env.DATABASE_PATH).startsWith(tempDir), `refusing to write: DATABASE_PATH resolved to ${env.DATABASE_PATH}`);
     const dbModule = await import("../database/db.js");
     const repos = await import("../database/repositories.js");
     dbModule.initDatabase();
@@ -139,7 +155,7 @@ describe("the funnel row carries the new fields", () => {
     } finally {
       dbModule.closeDatabase();
       try {
-        rmSync(dir, { recursive: true, force: true });
+        rmSync(tempDir, { recursive: true, force: true });
       } catch {
         // not a test result
       }
