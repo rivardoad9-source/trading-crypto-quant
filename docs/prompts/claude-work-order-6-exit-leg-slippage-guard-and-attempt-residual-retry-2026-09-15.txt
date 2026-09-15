@@ -113,6 +113,21 @@ with no position row at all — is out of scope. Fold that case in:
     `closeEmptyTokenAccount` should report that as a distinct outcome, not throw, so the
     retry loop does not treat "rent not reclaimed" as "sale failed".
 
+TASK 4 — the sizing guard did not cover the chunk that failed
+============================================================
+Tonight's refusal came from the `2/2` chunk (`Instruction 6: RebalanceLiquidity`) as
+`custom program error: 0x1`, which this repo already decodes as InsufficientFunds
+(`onchainExecutor.ts:963` — "the deposit asked to move more of the paired token"), and
+`liveSizingGuard.ts` exists precisely to catch that shape ("Simulates every funding chunk and
+reports the FIRST refusal caused by insufficient funds"). It ran and it did not prevent this.
+So: check why the guard did not shrink the failing chunk — the likely hole is that the guard
+sizes against the balance read BEFORE the balancing swap confirmed, while the `2/2` rebalance
+runs AFTER it with a stale token amount (the swap delivered 40 376.32 LEVERCAT; the position
+only ever got 14 577.09 of it). If the guard only simulates pre-swap, size the later chunk
+against a RE-READ balance, or shrink-and-rebuild it once, and page the operator if the second
+attempt is refused too. This is the half-landing that costs money in all three incidents, so
+it is the highest-value half of this work order.
+
 GUARDRAILS (unchanged, applies to all of the above)
 ===================================================
 DO NOT deploy. DO NOT restart or touch pm2. DO NOT touch `.env` or any config value.
