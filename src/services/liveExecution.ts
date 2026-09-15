@@ -2492,9 +2492,11 @@ async function listWalletTokenBalances(owner: PublicKey): Promise<TokenBalanceRe
  *  - `skipped`    the sell-back did not settle, so the account was not touched: value may
  *                 still be in it, and closing a non-empty account is refused anyway.
  *  - `failed`     the close was attempted and did not land.
+ *  - `withheld-fee` Token-2022: empty, but withheld transfer fees make the program refuse the
+ *                 close. Rent stays parked; the sale is settled regardless (15 Sep 2026).
  */
 export interface TokenAccountReclaim {
-  state: "closed" | "absent" | "not-empty" | "skipped" | "failed";
+  state: "closed" | "absent" | "not-empty" | "skipped" | "failed" | "withheld-fee";
   signature: string | null;
   error: string | null;
 }
@@ -2678,6 +2680,12 @@ export async function reclaimEmptyTokenAccount(
             `${outcome.amount} base units; left open`,
         );
         return { state: "not-empty", signature: null, error: null };
+      case "withheld-fee":
+        console.log(
+          `[live] ${context.pairName}: the empty ${context.mint} account ${outcome.ata} cannot be ` +
+            `closed — ${outcome.detail}; rent stays parked, the sale is unaffected`,
+        );
+        return { state: "withheld-fee", signature: null, error: outcome.detail };
     }
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
@@ -2961,8 +2969,10 @@ export type { ExecutionAuthorization };
 export {
   HARD_MAX_SLIPPAGE_BPS,
   HARD_MAX_EXIT_SLIPPAGE_BPS,
+  assertQuoteWithinSlippageBound,
   exitSlippageCapBps,
   onchainConfig,
   resolveExitSlippageBps,
   resolveSlippageBps,
+  swapSlippageBoundBps,
 } from "./onchainExecutor.js";
