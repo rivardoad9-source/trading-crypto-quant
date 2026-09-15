@@ -59,6 +59,13 @@ import {
   type ExecutionAuthorization,
   type OnchainConfig,
   closeRebuildDecision,
+  assertQuoteWithinSlippageBound,
+  buildJupiterSwap,
+  shrinkWideFundingDeposit,
+  swapSlippageBoundBps,
+  WIDE_FUNDING_MIDFLIGHT_SHRINKS,
+  type JupiterQuote,
+  type PriorityFeePlan,
 } from "../services/onchainExecutor.js";
 
 const srcDir = fileURLToPath(new URL("..", import.meta.url));
@@ -1566,8 +1573,14 @@ describe("wide funding — a rebuild carries a fresh active bin", () => {
     // warn line contains that phrase too, and matching it would pass either way.
     assert.ok(guard.indexOf("continue;") < guard.indexOf("so it never reached the network"));
 
-    // And the wide funding path is what supplies it.
-    assert.match(executorSourceText, /rebuildableRejection: isStaleActiveBinRejection/);
+    // And the wide funding path is what supplies it — the stale-bin rejection still, and
+    // since 15 Sep 2026 the mid-flight shortfall as well (see the LEVERCAT-SOL block below).
+    assert.match(executorSourceText, /rebuildableRejection: fundingRejection/);
+    const handler = executorSourceText.slice(
+      executorSourceText.indexOf("const fundingRejection = "),
+      executorSourceText.indexOf("const { deriveBinArray } = await loadDlmmSdk();"),
+    );
+    assert.match(handler, /if \(isStaleActiveBinRejection\(logs, message\)\) return true;/);
   });
 
   it("only rebuilds on a later attempt, which is what keeps the retry rule intact", () => {
@@ -2006,5 +2019,142 @@ describe("closeRebuildDecision — a close is rebuilt only while the position st
      * and leaves the row ACTIVE for a position that no longer exists.
      */
     assert.equal(closeRebuildDecision("unreadable"), "rebuild");
+  });
+});
+
+/*
+ * 15 Sep 2026, LEVERCAT-SOL: "Auto-unwind back to SOL FAILED ([onchain] Jupiter returned a quote
+ * at 300 bps slippage, above the authorized 50 bps)". The quote was FETCHED at the exit bound
+ * and CHECKED against the entry bound. These fail against the pre-fix `buildJupiterSwap`, which
+ * compared every quote with `auth.maxSlippageBps`.
+ */
+describe("exit-leg swaps are checked against the bound they were quoted with", () => {
+  const EXIT_300 = { exitMaxSlippageBps: 300 };
+  const quoteAt = (slippageBps: number): JupiterQuote => ({
+    inputMint: "LeverCatMint11111111111111111111111111111111",
+    outputMint: WSOL_MINT,
+    inAmount: "40053970000",
+    outAmount: "793026000",
+    otherAmountThreshold: "769235220",
+    slippageBps,
+    priceImpactPct: "0",
+    routePlan: [],
+  });
+  const plan = { microLamportsPerCu: 20_000, computeUnitLimit: 400_000, estimatedLamports: 8_000 } as PriorityFeePlan;
+  const blockhash = { blockhash: "11111111111111111111111111111111", lastValidBlockHeight: 1 };
+  const config = { ...resolveOnchainConfig({}), exitMaxSlippageBps: 300 } as OnchainConfig;
+
+  /** Stubs Jupiter's /swap so a quote that PASSES the guard fails visibly one step later. */
+  async function buildWith(quote: JupiterQuote, bound: { leg: "entry" | "exit"; bps: number }): Promise<unknown> {
+    const realFetch = globalThis.fetch;
+    let swapCalled = false;
+    globalThis.fetch = (async () => {
+      swapCalled = true;
+      return new Response("stubbed: no network in tests", { status: 599 });
+    }) as typeof fetch;
+    try {
+      await buildJupiterSwap(auth(), quote, plan, config, blockhash, bound);
+      return "built";
+    } catch (err) {
+      return swapCalled ? "reached /swap" : err;
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  }
+
+  it("an exit quote AT the exit cap passes the guard", async () => {
+    assert.equal(swapSlippageBoundBps(auth(), "exit", undefined, EXIT_300), 300);
+    assert.equal(await buildWith(quoteAt(300), { leg: "exit", bps: 300 }), "reached /swap");
+  });
+
+  it("the same quote as an entry — or with no exit bound — is refused before any request", async () => {
+    const refused = await buildWith(quoteAt(300), { leg: "entry", bps: 50 });
+    assert.ok(refused instanceof ExecutionLimitError);
+    assert.match((refused as Error).message, /quote at 300 bps slippage, above the authorized 50 bps \(entry leg\)/);
+    // An entry cannot borrow the exit cap by passing a wide bound: re-clamped to 50.
+    const widened = await buildWith(quoteAt(300), { leg: "entry", bps: 300 });
+    assert.ok(widened instanceof ExecutionLimitError);
+    assert.equal(swapSlippageBoundBps(auth(), "entry", 400, EXIT_300), 50, "an entry never resolves past 50");
+  });
+
+  it("an exit quote ABOVE the exit cap still throws (fail-closed)", async () => {
+    const above = await buildWith(quoteAt(301), { leg: "exit", bps: 300 });
+    assert.ok(above instanceof ExecutionLimitError);
+    // A bound wider than the cap is re-clamped, not trusted.
+    const wide = await buildWith(quoteAt(450), { leg: "exit", bps: 5_000 });
+    assert.ok(wide instanceof ExecutionLimitError);
+    assert.throws(() => assertQuoteWithinSlippageBound(auth(), { slippageBps: Number.NaN }, { leg: "exit", bps: 300 }, EXIT_300));
+  });
+
+  it("each rung of the residual ladder is checked against ITS OWN bound", () => {
+    // Jupiter echoes the requested bound; the rung's quote must pass at that rung.
+    for (const rung of [50, 150, 300]) {
+      const bound = swapSlippageBoundBps(auth(), "exit", rung, EXIT_300);
+      assert.equal(bound, rung);
+      assert.doesNotThrow(() => assertQuoteWithinSlippageBound(auth(), { slippageBps: rung }, { leg: "exit", bps: bound }, EXIT_300));
+      // …and a quote echoing a WIDER bound than that rung asked for is refused.
+      assert.throws(() => assertQuoteWithinSlippageBound(auth(), { slippageBps: rung + 1 }, { leg: "exit", bps: bound }, EXIT_300), ExecutionLimitError);
+    }
+  });
+
+  it("executeJupiterSwap quotes and checks with ONE derived bound", () => {
+    const exec = executorSourceText.slice(
+      executorSourceText.indexOf("export async function executeJupiterSwap"),
+      executorSourceText.indexOf("/* Token account housekeeping"),
+    );
+    assert.match(exec, /const slippageBps = swapSlippageBoundBps\(auth, leg, params\.slippageBps, config\);/);
+    assert.match(exec, /buildJupiterSwap\(auth, quote, plan, config, blockhash, \{ leg, bps: slippageBps \}\)/);
+    assert.equal(/quote\.slippageBps > auth\.maxSlippageBps/.test(executorSourceText), false, "the entry-bound comparison is back");
+  });
+});
+
+/*
+ * 15 Sep 2026, LEVERCAT-SOL, the half-landing: chunk 1 landed, chunk 2 was rebuilt against a moved
+ * pool with the ORIGINAL paired total and refused for insufficient funds — terminal, because only
+ * a stale active bin was rebuildable and the rebuild never re-read the wallet.
+ */
+describe("wide funding — a chunk refused mid-flight for insufficient funds is shrunk once", () => {
+  const funding = executorSourceText.slice(
+    executorSourceText.indexOf("MID-FLIGHT SHORTFALL"),
+    executorSourceText.indexOf("prepare: (legacy)"),
+  );
+
+  it("sizes the remaining chunks against what the landed ones left", () => {
+    // The incident's shape: 40 376.32 delivered, 14 577.09 taken by chunk 1, 3% deposit slippage.
+    const next = shrinkWideFundingDeposit({
+      planned: 40_376_320_000n,
+      balanceAtStart: 40_376_320_000n,
+      balanceNow: 25_799_230_350n,
+      slippagePercent: 3,
+    });
+    assert.ok(next !== null);
+    const remainingAfter = next - 14_577_089_650n; // what the unlanded chunks now ask for, at plan
+    assert.ok(remainingAfter * 103n <= 25_799_230_350n * 100n, `remaining ${remainingAfter} does not fit the wallet at the slippage-widened pull`);
+    assert.ok(next < 40_376_320_000n, "only ever down");
+  });
+
+  it("shrinks by at least the slippage margin even when the plan says it fits", () => {
+    const next = shrinkWideFundingDeposit({ planned: 1_000_000n, balanceAtStart: 2_000_000n, balanceNow: 1_900_000n, slippagePercent: 3 });
+    assert.ok(next !== null && next <= (1_000_000n * 100n) / 103n + 1n);
+  });
+
+  it("never invents a figure: unreadable, empty or fully consumed is null", () => {
+    const base = { planned: 1_000n, balanceAtStart: 1_000n, slippagePercent: 3 };
+    assert.equal(shrinkWideFundingDeposit({ ...base, balanceNow: null }), null);
+    assert.equal(shrinkWideFundingDeposit({ ...base, balanceNow: 0n }), null);
+    assert.equal(shrinkWideFundingDeposit({ planned: 500n, balanceAtStart: 2_000n, balanceNow: 1_000n, slippagePercent: 3 }), null);
+  });
+
+  it("makes the shortfall rebuildable, re-reads the wallet in the rebuild, and is bounded to one shrink", () => {
+    assert.equal(WIDE_FUNDING_MIDFLIGHT_SHRINKS, 1);
+    assert.match(funding, /if \(isInsufficientFundsRejection\(logs, message\)\) \{\s*shortRejectionPending = true;\s*return true;/);
+    const rebuild = funding.slice(funding.indexOf("rebuild: async (index, attempt)"));
+    assert.ok(rebuild.indexOf("readAtaBalance(auth.wallet, pairedMint, pairedTokenProgram)") > 0);
+    assert.ok(rebuild.indexOf("shrinkWideFundingDeposit(") < rebuild.indexOf("addLiquidityByStrategyChunkable(depositFor(pairedForDeposit))"));
+    assert.match(rebuild, /midflightShrinks >= WIDE_FUNDING_MIDFLIGHT_SHRINKS/);
+    // The second refusal is a THROW naming the funded position, not another send.
+    assert.match(rebuild, /Earlier chunks LANDED: the position is funded and must be recovered/);
+    // The start-of-funding balance is read before the first chunk is sent.
+    assert.ok(funding.indexOf("const pairedAtFundingStart = await readAtaBalance(") < funding.indexOf("funded = await sendSequentially("));
   });
 });
