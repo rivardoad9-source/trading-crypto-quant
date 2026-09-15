@@ -1,0 +1,58 @@
+WORK ORDER #4 untuk Claude Code (LOKAL) — 15 Sep 2026
+Repo: ~/flowmetrix-ai-agent — branch dari `main` yang sekarang (ujungnya `fa6e4ad`: merge TVL on-chain + measurement loop).
+Branch baru: work/tvl-ingest-separate-rpc-key
+Kerjain SATU hal: **ingest TVL on-chain harus bisa jalan pakai RPC key terpisah dari engine live, lewat flag** —
+tanpa menyentuh `.env`, tanpa bisa mematikan stop-loss engine. Jangan kerjain yang lain.
+
+KONTEKS (angka/fakta ini HASIL CEK — jangan diukur ulang, jangan diganti asumsi lain):
+- Status lengkap: `docs/backtests/2026-09-15-onchain-tvl-backtest-status.md`. Ingest dihentikan sengaja;
+  **belum ada angka backtest on-chain**, pertanyaan TP/gate masih belum terjawab.
+- Bahaya yang mau dihilangkan: ingest memakai `SOLANA_RPC_URL` dari `.env` — **key yang sama dengan engine live**
+  (cuma satu `.env`; engine pm2 tidak membawa `SOLANA_RPC_URL` sendiri, jadi dia baca file yang sama).
+  Run pertama menarik `HTTP 429` di 6 dari 8 panggilan; di log engine ada 429 `authority check unavailable` yang
+  menghilangkan 1 kandidat (cek keamanan tak terbaca).
+- Sekarang `src/backtest/runIntegrity.ts:818` memanggil `heliusTvlDeps(env.SOLANA_RPC_URL, …)` = **hardcode env**,
+  tidak ada flag. `src/scripts/validateTvlModel.ts:65` juga `fetch(env.SOLANA_RPC_URL, …)`.
+  Pola flag sudah ada: `--tvl`, `--tvl-cadence-hours`, `--tvl-rps` + `rateLimiter()` di `onchainTvl.ts:268` — ikut itu.
+- Baseline server Linux setelah merge terakhir: `npm test` **1036/1036 pass, 0 fail**; `npm run typecheck` hijau.
+  (Di Windows lu terakhir lapor 970/970 — kalau beda, sebut angkanya apa adanya, jangan disamakan.)
+
+== A. FLAG `--tvl-rpc-url` (P0) ==
+A1. Tambah `--tvl-rpc-url <url>` yang HANYA dipakai jalur TVL: `runIntegrity.ts` meneruskan URL itu ke
+    `heliusTvlDeps(...)` alih-alih `env.SOLANA_RPC_URL`. Tanpa flag → perilaku sekarang, **byte-identik**
+    (test lama yang mengunci jalur model/hasil harus lulus TANPA diubah).
+A2. `src/scripts/validateTvlModel.ts` dapat jalur yang sama (pakai nama flag yang sama; kalau file itu tidak
+    punya parser flag, tambahkan minimal satu) supaya validasi model tidak ikut menabrak engine.
+A3. **Jangan pernah mencetak URL/key**: log hanya host (mis. `mainnet.helius-rpc.com`) + status "(dari --tvl-rpc-url)"
+    atau "(default .env)". Jangan tulis key ke file output/cache/report/manifest.
+    Test: tangkap stdout+stderr selama satu panggilan, pastikan tidak ada potongan key ≥8 karakter dari URL.
+A4. Flag diberikan tapi URL tidak valid (bukan http/https, kosong, tanpa host) → **gagal di AWAL** dengan pesan
+    jelas, sebelum ingest berjam-jam jalan.
+A5. `.env` dan `.env.example` TIDAK diubah. Key tetap dari `.env` atau baris perintah.
+
+== B. BUKTI (P1) ==
+B1. Test (stub fetch, tanpa jaringan):
+    (a) dengan `--tvl-rpc-url` → request pergi ke host itu dan `env.SOLANA_RPC_URL` tidak dipakai;
+    (b) tanpa flag → env seperti sekarang (test lama tetap lulus);
+    (c) URL invalid → error di awal, bukan tengah ingest;
+    (d) log tidak membocorkan key (A3).
+B2. `npm run typecheck` hijau + `npm test` hijau; sebut angka pass/fail. Jangan melemahkan test yang mengunci
+    jalur model byte-identik dan test batas keamanan `onchainExecutor`.
+B3. Update `docs/backtests/2026-09-15-onchain-tvl-backtest-status.md`: resep ingest pakai key terpisah, contoh:
+    `npm run backtest:integrity -- --per-window-universe --windows=3 --days=91 --end=2026-09-13 --tvl=onchain
+     --tvl-cadence-hours=24 --tvl-rps=3 --tvl-rpc-url https://…` + catatan bahwa **ingest penuh = kerjaan Hermes
+    di server**, bukan lu.
+
+== ATURAN WAJIB (sama seperti WO1–WO3) ==
+- JANGAN deploy, JANGAN restart pm2, JANGAN ubah `.env`/`.env.example`, JANGAN kirim transaksi on-chain.
+- Jangan ubah test baseline V1.1; jangan ubah konstanta `exitCost.ts`.
+- JANGAN tambah file yang meng-import `src/services/onchainExecutor.ts` (allowlist di `onchainExecutor.test.ts`
+  = boundary keamanan). Butuh sesuatu? Lewat bridge `liveExecution.ts`.
+- String base58 panjang (86–90 char, bentuk signature/key) di `src/` kena test anti-secret → taruh di `docs/**/*.json`.
+- Commit kecil, pesan yang jelasin KENAPA. Push ke branch `work/tvl-ingest-separate-rpc-key`, JANGAN main.
+- Laporan: Indonesia, tabel, angka mentah + section "yang gw nggak bisa klaim".
+- Lu TIDAK menjalankan ingest 2–3 jam itu (itu gw di server). Cukup bukti flag + test + satu smoke kecil pakai
+  key lu sendiri kalau ada, atau stub.
+
+PRIORITAS: A dulu, lalu B. Kalau ada waktu sisa dan cuma boleh satu tambahan: pastikan pesan error 429 dari
+`getTransactionsForAddress` menyebut host + saran `--tvl-rps` (bukan cuma "429 Too Many Requests").
