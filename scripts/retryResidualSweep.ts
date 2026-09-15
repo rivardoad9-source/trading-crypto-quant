@@ -54,6 +54,22 @@
  * back in SOL and this balance was measured after it landed", which is exactly what happened —
  * the alternative, a new state string, would make the reconciliation treat a settled trade as
  * unsettled. Precedent for an ops script writing this table: `settleResidualByHand.cjs`.
+ *
+ * FAILED OPENS TOO (15 Sep 2026, LEVERCAT-SOL — the third time)
+ * -------------------------------------------------------------
+ * A failed open whose auto-unwind could not sell leaves the token in the wallet, a
+ * `live_execution_attempts` row with `outcome='failed'`, `unwind='orphan'`, and NO position row —
+ * so this tool never saw it, and ids 2, 5 and 10 were each recovered by a human. Those rows are
+ * now selected as well (same `--max-age-hours`), decided by `src/services/attemptResidualHeal.ts`:
+ * busy pool skipped; the position account must be ABSENT (a funded one is
+ * `recoverFundedOrphan.ts`'s job); the pool's paired mint must be the row's; the sale is the SAME
+ * `sweepResidualPairedToken` + `defaultResidualSweepDeps`; and the row is rewritten only through
+ * `settleRecoveredAttempt.cjs`'s own proof (`chainIsClean`), refusals (`planSettlement`) and write
+ * (`writeSettlement`) — `cost_lamports = wallet_lamports_before - balance now`, `unwind='clean'`.
+ * It replaces the hand-run `scripts/sweepAttemptResidual.ts` (c93e413): one sell path.
+ *
+ *   node --env-file=.env --import tsx scripts/retryResidualSweep.ts --attempt-id 10              # plan one
+ *   node --env-file=.env --import tsx scripts/retryResidualSweep.ts --attempt-id 10 -- --execute
  */
 import fs from "node:fs";
 import { createRequire } from "node:module";
@@ -77,6 +93,14 @@ import {
   sweepResidualPairedToken,
   type ResidualSweep,
 } from "../src/services/liveExecution.js";
+import { healAttemptResidual, type AttemptRowForHeal } from "../src/services/attemptResidualHeal.js";
+
+/** The settle script's own proof, refusal rules and write — reused, not re-implemented. */
+const settle = require("./settleRecoveredAttempt.cjs") as {
+  chainIsClean(pool: string, position: string, mint: string | null, wallet: string, conn: unknown): Promise<string[]>;
+  planSettlement(row: AttemptRowForHeal, afterLamports: number): { refusals: string[]; cost: number | null };
+  writeSettlement(db: unknown, id: number, cost: number, after: number, extras: { rescueSignature: string | null; ataCloseSignature: string | null }): number;
+};
 
 const RETRYABLE = ["failed", "unmeasured"];
 /** Any attempt on the pool inside this window means the pool is busy — do not touch it. */
@@ -93,6 +117,7 @@ function arg(name: string): string | undefined {
 }
 
 const ONLY_ID = arg("id") ? Number(arg("id")) : null;
+const ONLY_ATTEMPT_ID = arg("attempt-id") ? Number(arg("attempt-id")) : null;
 const MAX_AGE_HOURS = Number(arg("max-age-hours") ?? 48);
 const MAX_ROWS = Number(arg("max-rows") ?? 2);
 
@@ -289,10 +314,157 @@ async function retryRow(row: Row, auth: ExecutionAuthorization): Promise<void> {
   console.log(`${outcome} | wallet ${sol(after)} SOL | ${recorded}`);
 }
 
+/* ------------------------------------------------------------------ */
+/* Failed opens: attempt-level orphans                                 */
+/* ------------------------------------------------------------------ */
+
+function eligibleAttempts(): AttemptRowForHeal[] {
+  const Database = require("better-sqlite3");
+  const db = new Database(DB, { readonly: true });
+  const rows = db
+    .prepare(
+      `SELECT id, attempted_at, pair_name, pool_address, token_mint, outcome, unwind,
+              position_address, wallet_lamports_before
+         FROM live_execution_attempts
+        WHERE outcome = 'failed' AND unwind = 'orphan'
+          AND attempted_at >= datetime('now', ?)
+          ${ONLY_ATTEMPT_ID === null ? "" : "AND id = ?"}
+        ORDER BY id DESC
+        LIMIT ?`,
+    )
+    .all(`-${MAX_AGE_HOURS} hours`, ...(ONLY_ATTEMPT_ID === null ? [] : [ONLY_ATTEMPT_ID]), MAX_ROWS) as AttemptRowForHeal[];
+  db.close();
+  return rows;
+}
+
+/**
+ * The same two "do not race a live open" guards, for an attempt row. The row's OWN attempt is
+ * excluded from the recent-attempt count: it is finished (its row is written at the very end of
+ * the failed open, after recovery and unwind), and counting it would make the self-heal wait out
+ * 15 minutes of a moving market for no safety gain. A NEWER attempt on the pool still blocks.
+ */
+function attemptBusyReason(row: AttemptRowForHeal): string | null {
+  const Database = require("better-sqlite3");
+  const db = new Database(DB, { readonly: true });
+  try {
+    const active = db
+      .prepare(`SELECT COUNT(*) c FROM simulated_positions WHERE status = 'ACTIVE' AND execution_mode = 'LIVE' AND pool_address = ?`)
+      .get(row.pool_address) as { c: number };
+    if (active.c > 0) return `an ACTIVE position is open on this pool (${active.c})`;
+    const recent = db
+      .prepare(`SELECT COUNT(*) c FROM live_execution_attempts WHERE pool_address = ? AND id <> ? AND attempted_at >= datetime('now', ?)`)
+      .get(row.pool_address, row.id, `-${BUSY_WINDOW_MINUTES} minutes`) as { c: number };
+    if (recent.c > 0) return `the pool was attempted again in the last ${BUSY_WINDOW_MINUTES} min (${recent.c}) — it is busy`;
+    return null;
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * What else could have moved the wallet since the attempt, making `before - now` not this
+ * recovery's cost: another attempt, or a live position opened or closed after it. Entries are held
+ * by `StrandedCapitalError` while this row says 'orphan', so on a healthy engine this is empty.
+ */
+function walletMovedSince(row: AttemptRowForHeal): string | null {
+  const Database = require("better-sqlite3");
+  const db = new Database(DB, { readonly: true });
+  try {
+    const attempts = db
+      .prepare(`SELECT COUNT(*) c FROM live_execution_attempts WHERE id <> ? AND attempted_at > ?`)
+      .get(row.id, row.attempted_at) as { c: number };
+    const positions = db
+      .prepare(
+        `SELECT COUNT(*) c FROM simulated_positions
+          WHERE execution_mode = 'LIVE' AND (opened_at > ? OR (closed_at IS NOT NULL AND closed_at > ?))`,
+      )
+      .get(row.attempted_at, row.attempted_at) as { c: number };
+    const parts = [
+      attempts.c > 0 ? `${attempts.c} later attempt(s)` : "",
+      positions.c > 0 ? `${positions.c} live position(s) opened or closed since` : "",
+    ].filter(Boolean);
+    return parts.length ? parts.join(", ") : null;
+  } finally {
+    db.close();
+  }
+}
+
+async function healAttempt(row: AttemptRowForHeal, auth: ExecutionAuthorization): Promise<void> {
+  const conn = getConnection();
+  const { PublicKey } = await import("@solana/web3.js");
+  const deps = defaultResidualSweepDeps(auth, row.pool_address);
+  const label = `attempt id=${row.id} ${row.pair_name} (${row.attempted_at} UTC)`;
+
+  if (!EXECUTE) {
+    const busy = attemptBusyReason(row);
+    if (busy) return console.log(`SKIPPED ${label} — ${busy}`);
+    if (!row.position_address) return console.log(`REFUSED ${label} — no position address to verify`);
+    if ((await conn.getAccountInfo(new PublicKey(row.position_address), "confirmed")) !== null) {
+      return console.log(`SKIPPED ${label} — position ${row.position_address} EXISTS: use scripts/recoverFundedOrphan.ts`);
+    }
+    const mint = await deps.resolvePairedMint();
+    if (row.token_mint && row.token_mint !== mint) return console.log(`REFUSED ${label} — pool mint ${mint} != row mint ${row.token_mint}`);
+    const balance = await deps.readBalance(mint);
+    if (balance === null) return console.log(`PLAN ${label} mint=${mint} balance=UNREADABLE (the sweep would page here)`);
+    if (balance === 0n) return console.log(`PLAN ${label} mint=${mint} balance=0 — nothing to sell; re-run with -- --execute to settle the row`);
+    const estimated = await deps.quoteToSol(mint, balance);
+    return console.log(`PLAN ${label} mint=${mint} ${balance} base units ~= ${sol(estimated)} SOL — re-run with -- --execute to sell it back and settle the row`);
+  }
+
+  const outcome = await healAttemptResidual(row, {
+    busyReason: () => attemptBusyReason(row),
+    positionAccountExists: async (address) => (await conn.getAccountInfo(new PublicKey(address), "confirmed")) !== null,
+    resolvePairedMint: () => deps.resolvePairedMint(),
+    sweep: () => sweepResidualPairedToken({ pairName: row.pair_name, positionAddress: row.position_address ?? "none" }, deps),
+    closeTokenAccount: async (mint) => closeEmptyTokenAccount(auth, { mint, tokenProgram: await tokenProgramOf(conn, auth.wallet, mint) }),
+    readWalletLamports: async () => {
+      try {
+        return await conn.getBalance(auth.wallet, "confirmed");
+      } catch {
+        return null;
+      }
+    },
+    walletMovedSince: () => walletMovedSince(row),
+    proof: (mint) => settle.chainIsClean(row.pool_address, row.position_address!, mint, auth.wallet.toBase58(), conn),
+    plan: (after) => settle.planSettlement(row, after),
+    write: (cost, after, extras) => {
+      const Database = require("better-sqlite3");
+      const db = new Database(DB, { readonly: false });
+      try {
+        return settle.writeSettlement(db, row.id, cost, after, extras);
+      } finally {
+        db.close();
+      }
+    },
+  });
+
+  switch (outcome.kind) {
+    case "skipped":
+      return console.log(`SKIPPED ${label} — ${outcome.reason}`);
+    case "refused":
+      return console.log(`REFUSED ${label} — ${outcome.reason}`);
+    case "sale-failed":
+      return console.log(`FAILED ${label} — sweep '${outcome.sweep.state}': ${outcome.sweep.error ?? "?"} (nothing written; the capital is still in the token)`);
+    case "sold-not-recorded":
+      return console.log(
+        `SOLD-NOT-RECORDED ${label} sweep=${outcome.sweep.state} sig=${outcome.sweep.signature ?? "none"} ` +
+          `ata=${outcome.tokenAccount} wallet=${outcome.walletLamports === null ? "UNREAD" : sol(outcome.walletLamports)} — ${outcome.reason}. ` +
+          `Settle by hand with scripts/settleRecoveredAttempt.cjs once resolved.`,
+      );
+    case "recorded":
+      return console.log(
+        `RECOVERED ${label} sweep=${outcome.sweep.state} sig=${outcome.sweep.signature ?? "none"}` +
+          `${outcome.sweep.slippageBps ? ` at ${outcome.sweep.slippageBps} bps` : ""} ata=${outcome.tokenAccount} | ` +
+          `wallet ${sol(outcome.walletLamports)} SOL | cost_lamports ${outcome.costLamports} (${sol(outcome.costLamports)} SOL), unwind clean`,
+      );
+  }
+}
+
 (async () => {
-  const rows = eligibleRows();
-  if (rows.length === 0) {
-    console.log("NO UNSETTLED ROWS — every live close's residual token is settled");
+  const attempts = ONLY_ID === null ? eligibleAttempts() : [];
+  const rows = ONLY_ATTEMPT_ID === null ? eligibleRows() : [];
+  if (rows.length === 0 && attempts.length === 0) {
+    console.log("NO UNSETTLED ROWS — every live close's residual token is settled, and no failed open holds stranded capital");
     return;
   }
   const auth = (() => {
@@ -304,7 +476,8 @@ async function retryRow(row: Row, auth: ExecutionAuthorization): Promise<void> {
     }
   })();
   console.log(
-    `${rows.length} unsettled row(s) | mode ${EXECUTE ? "EXECUTE — will sign and send" : "DRY RUN — nothing signed"} | db ${DB}`,
+    `${rows.length} unsettled position row(s), ${attempts.length} failed-open attempt(s) | ` +
+      `mode ${EXECUTE ? "EXECUTE — will sign and send" : "DRY RUN — nothing signed"} | db ${DB}`,
   );
   for (const row of rows) {
     try {
@@ -312,6 +485,13 @@ async function retryRow(row: Row, auth: ExecutionAuthorization): Promise<void> {
     } catch (err) {
       // One bad row must not stop the others, and must never look like a clean run.
       console.log(`FAILED id=${row.id} ${row.pair_name} — unexpected: ${(err as Error).message}`);
+    }
+  }
+  for (const attempt of attempts) {
+    try {
+      await healAttempt(attempt, auth);
+    } catch (err) {
+      console.log(`FAILED attempt id=${attempt.id} ${attempt.pair_name} — unexpected: ${(err as Error).message}`);
     }
   }
 })();

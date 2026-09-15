@@ -1518,7 +1518,22 @@ export type CloseTokenAccountOutcome =
   /** No such account — already closed, or never created. A success, not an error. */
   | { state: "absent"; ata: string }
   /** The account still holds tokens, so it was NOT touched. */
-  | { state: "not-empty"; ata: string; amount: string };
+  | { state: "not-empty"; ata: string; amount: string }
+  /**
+   * Token-2022 only: the balance is zero but the account still carries WITHHELD TRANSFER FEES,
+   * and the token program refuses to close it ("An account can only be closed if its withheld
+   * fee balance is zero"). Its ~0.002 SOL of rent stays parked. NOT a failure of the sale that
+   * emptied it — 15 Sep 2026 LEVERCAT-SOL is the worked example — so it is reported as its own
+   * outcome instead of a throw a retry loop would read as "the recovery failed".
+   */
+  | { state: "withheld-fee"; ata: string; detail: string };
+
+/** Whether a close refusal is the Token-2022 withheld-fee rule rather than a real failure. */
+export function isWithheldFeeCloseRefusal(message: string, logs: readonly string[] | null = null): boolean {
+  return /withheld fee balance|withheld transfer fee|AccountHasWithheldTransferFees/i.test(
+    [message, ...(logs ?? [])].join(" | "),
+  );
+}
 
 /**
  * Closes the wallet's EMPTY associated token account for `mint` and returns its rent.
@@ -1567,6 +1582,17 @@ export async function closeEmptyTokenAccount(
     return { state: "not-empty", ata: ataAddress, amount: balance.value.amount };
   }
 
+  // Token-2022 withheld fees: asked before sending, so a close the program must refuse costs
+  // nothing. A read that fails falls through to the send, whose refusal is recognised below.
+  const withheld = await withheldTransferFeeOf(connection, ata);
+  if (withheld !== null && withheld !== "0") {
+    return {
+      state: "withheld-fee",
+      ata: ataAddress,
+      detail: `${withheld} base units of transfer fee are withheld in the account; the token program refuses to close it`,
+    };
+  }
+
   const closeIx = createCloseAccountInstruction(ata, auth.wallet, auth.wallet, [], tokenProgram);
 
   try {
@@ -1582,7 +1608,28 @@ export async function closeEmptyTokenAccount(
     // — no account, rent back — is met either way.
     const still = await connection.getAccountInfo(ata, "confirmed").catch(() => undefined);
     if (still === null) return { state: "absent", ata: ataAddress };
+    const message = err instanceof Error ? err.message : String(err);
+    const logs = err instanceof TransactionFailedError ? err.logs : null;
+    if (isWithheldFeeCloseRefusal(message, logs)) {
+      return { state: "withheld-fee", ata: ataAddress, detail: message.slice(0, 300) };
+    }
     throw err;
+  }
+}
+
+/**
+ * The withheld transfer fee a Token-2022 account carries, as a base-unit string; "0" when the
+ * account has no such extension (every SPL Token account); null when it could not be read.
+ */
+async function withheldTransferFeeOf(connection: Connection, ata: PublicKey): Promise<string | null> {
+  try {
+    const info = await connection.getParsedAccountInfo(ata, "confirmed");
+    const parsed = (info.value?.data as { parsed?: { info?: { extensions?: Array<{ extension?: string; state?: { withheldAmount?: number | string } }> } } } | undefined)
+      ?.parsed;
+    const ext = parsed?.info?.extensions?.find((e) => e.extension === "transferFeeAmount");
+    return ext?.state?.withheldAmount === undefined ? "0" : String(ext.state.withheldAmount);
+  } catch {
+    return null;
   }
 }
 

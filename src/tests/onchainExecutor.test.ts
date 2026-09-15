@@ -64,6 +64,7 @@ import {
   shrinkWideFundingDeposit,
   swapSlippageBoundBps,
   WIDE_FUNDING_MIDFLIGHT_SHRINKS,
+  isWithheldFeeCloseRefusal,
   type JupiterQuote,
   type PriorityFeePlan,
 } from "../services/onchainExecutor.js";
@@ -2113,6 +2114,23 @@ describe("exit-leg swaps are checked against the bound they were quoted with", (
  * pool with the ORIGINAL paired total and refused for insufficient funds — terminal, because only
  * a stale active bin was rebuildable and the rebuild never re-read the wallet.
  */
+describe("closeEmptyTokenAccount — a Token-2022 withheld fee is an outcome, not a throw", () => {
+  it("recognises tonight's refusal text, and nothing else", () => {
+    assert.equal(isWithheldFeeCloseRefusal("Error: An account can only be closed if its withheld fee balance is zero"), true);
+    assert.equal(isWithheldFeeCloseRefusal("", ["Program log: Error: AccountHasWithheldTransferFees"]), true);
+    assert.equal(isWithheldFeeCloseRefusal("Transaction simulation failed: insufficient funds"), false);
+  });
+
+  it("asks before sending, and maps a send refusal to the same outcome", () => {
+    const close = executorSourceText.slice(
+      executorSourceText.indexOf("export async function closeEmptyTokenAccount"),
+      executorSourceText.indexOf("async function withheldTransferFeeOf"),
+    );
+    assert.ok(close.indexOf("withheldTransferFeeOf(connection, ata)") < close.indexOf("createCloseAccountInstruction(ata"));
+    assert.match(close, /if \(isWithheldFeeCloseRefusal\(message, logs\)\) \{\s*return \{ state: "withheld-fee"/);
+  });
+});
+
 describe("wide funding — a chunk refused mid-flight for insufficient funds is shrunk once", () => {
   const funding = executorSourceText.slice(
     executorSourceText.indexOf("MID-FLIGHT SHORTFALL"),
