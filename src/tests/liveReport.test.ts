@@ -75,6 +75,19 @@ function seed(dbPath: string): void {
     att.run({ at: stamp(3 * 24 * H), pair: "EMBER-SOL", mint: "EMBERmint", outcome: "opened", stage: null, before: 3_000_000_000, after: null, cost: null, unwind: null, addr: "ADDR2" });
 
     db.prepare(`INSERT INTO exit_economics (position_id, pair_name, mint, exit_fee_lamports, sweep_concession_bps, source) VALUES ('p1', 'EMBER-SOL', 'EMBERmint', 20000, 394.9, 'live')`).run();
+
+    const fun = db.prepare(`INSERT INTO scan_funnel_cycles (cycle_at, shortlist_size, llm_pick_pool, llm_pick_pair, rule_pick_pool, rule_pick_pair, concentration_flagged, exec_token_concentration_rejected)
+      VALUES (@at, @size, @llm, @llmPair, @rule, @rulePair, @flagged, @rejected)`);
+    const cycle = (at: string, size: number | null, llm: string | null, rule: string | null, flagged = 0, rejected = 0) =>
+      fun.run({ at, size, llm, llmPair: llm ? `${llm}-PAIR` : null, rule, rulePair: rule ? `${rule}-PAIR` : null, flagged, rejected });
+    // Two cycles picked `pool` before p1 opened (5h ago): the later one is used, and it is ambiguous.
+    cycle(stamp(6 * H), 4, "pool", "poolY");
+    cycle(stamp(5 * H + 30 * 60_000), 5, "pool", "pool"); // SAME
+    cycle(stamp(4 * H), 3, "poolX", "poolY"); // DIFFERENT
+    cycle(stamp(3 * H), 3, null, "poolY"); // LLM declined
+    cycle(stamp(2 * H + 30 * 60_000), 2, "poolZ", null); // rule made no pick
+    cycle(stamp(2 * H), null, null, null, 2, 1); // no decision; concentration counts only
+    cycle(stamp(3 * 24 * H + 60_000), null, null, null, 1, 0); // an earlier UTC day
   } finally {
     db.close();
   }
@@ -147,6 +160,48 @@ describe("liveReport against a migrated database", () => {
     assert.ok(Math.abs(report.concentration.top!.sharePct - 200 / 3) < 1e-9);
   });
 
+  it("shadow pick: counts SAME / DIFFERENT / declined / rule-null from decision cycles only", () => {
+    const s = report.shadow;
+    assert.equal(s.available, true);
+    assert.deepEqual(
+      { ...s.allTime },
+      { decisions: 5, llmDeclined: 1, same: 1, different: 2, ruleNull: 1, agreementPct: (1 / 3) * 100, shortlistMedian: 3 },
+    );
+    assert.deepEqual(s.window, s.allTime);
+    assert.deepEqual(s.recentDifferent.map((d) => d.llmPair), ["poolX-PAIR", "pool-PAIR"], "newest first");
+    assert.match(text, /SAMA 1 · BEDA 2 · kesepakatan 33\.3%/);
+  });
+
+  it("shadow pick: attributes a live open to the latest matching cycle and marks the ambiguity", () => {
+    const opened = report.shadow.opened.filter((o) => o.match === "position");
+    assert.equal(opened.length, 1);
+    assert.equal(opened[0]!.cycleAt, stamp(5 * H + 30 * 60_000));
+    assert.equal(opened[0]!.ruleSame, true);
+    assert.equal(opened[0]!.ambiguous, true);
+    assert.equal(opened[0]!.bookPnlUsd, 9.66);
+    assert.match(text, /AMBIGU/);
+  });
+
+  it("shadow pick: states the counterfactual is not measurable, and gives no verdict on a small sample", () => {
+    assert.equal(report.shadow.sampleSufficient, false);
+    assert.match(text, /sampel belum cukup untuk menilai LLM \(5\/20 keputusan\)/);
+    assert.match(text, /Hasil kontrafaktual pilihan rule TIDAK terukur dari DB/);
+    assert.equal(/LLM (lebih baik|lebih buruk|better|worse)/i.test(text), false);
+  });
+
+  it("daily concentration: groups opens and funnel counts by UTC day and says the mode is not in the DB", () => {
+    const today = report.dailyConcentration.days.find((d) => d.day === "2026-09-14")!;
+    assert.deepEqual(
+      { liveOpens: today.liveOpens, distinct: today.distinctTokens, top: today.topToken, topCount: today.topCount, flagged: today.flagged, rejected: today.rejected },
+      { liveOpens: 1, distinct: 1, top: "EMBERmint", topCount: 1, flagged: 2, rejected: 1 },
+    );
+    const earlier = report.dailyConcentration.days.find((d) => d.day === "2026-09-11")!;
+    assert.equal(earlier.liveOpens, 1);
+    assert.equal(earlier.flagged, 1);
+    assert.equal(report.dailyConcentration.days.length, 8, "every UTC day the 7-day window touches");
+    assert.match(text, /TIDAK tercatat di DB — itu env LIVE_TOKEN_CONCENTRATION_MODE/);
+  });
+
   it("(e) the handle is read-only: a write throws and the file is untouched", () => {
     const ro = openReportDatabase(dbPath);
     try {
@@ -192,6 +247,40 @@ describe("liveReport without measurements", () => {
     const report = buildLiveReport(input, opts);
     assert.equal(report.positions[0]!.chainDeltaSol, null);
     assert.equal(report.positions[0]!.valueChangeUsd, 4, "derived as book - fees when the column is absent");
+  });
+
+  it("an older database without the shadow / concentration columns renders — and a note, never zeros", () => {
+    const dbPath = join(dir, "old-funnel.db");
+    const old = new Database(dbPath);
+    old.exec(`CREATE TABLE scan_funnel_cycles (id INTEGER PRIMARY KEY, cycle_at TEXT, candidates INTEGER)`);
+    old.prepare(`INSERT INTO scan_funnel_cycles (cycle_at, candidates) VALUES (?, 3)`).run(stamp(H));
+    old.close();
+    const ro = openReportDatabase(dbPath);
+    let input: LiveReportInput;
+    try {
+      input = readLiveReportInput(ro);
+    } finally {
+      ro.close();
+    }
+    assert.ok(input.missing.includes("scan_funnel_cycles.llm_pick_pool"));
+    assert.ok(input.missing.includes("scan_funnel_cycles.concentration_flagged"));
+    const report = buildLiveReport(input, opts);
+    assert.equal(report.shadow.available, false);
+    assert.equal(report.shadow.allTime.decisions, 0);
+    const today = report.dailyConcentration.days.at(-1)!;
+    assert.equal(today.flagged, null);
+    assert.equal(today.funnelCycles, 1);
+    const text = renderLiveReport(report);
+    assert.match(text, /— DB ini belum punya kolom shadow pick/);
+    assert.match(text, /di-flag — · ditolak —/);
+    assert.match(text, /Kolom\/tabel tidak ada di DB ini/);
+  });
+
+  it("includes both new sections in the JSON output", () => {
+    const report = buildLiveReport({ positions: [], attempts: [], exitEconomics: [], missing: [] }, opts);
+    const json = JSON.parse(JSON.stringify(report));
+    assert.ok("shadow" in json && "dailyConcentration" in json);
+    assert.equal(json.shadow.available, false, "a caller that read no funnel is not told there were zero decisions");
   });
 
   it("keeps its settled set identical to reconciliation's", () => {
