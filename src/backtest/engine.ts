@@ -138,6 +138,22 @@ export interface BacktestConfig {
   maxDurationHours: number;
   /** How many positions may be open at once across all pools. */
   maxConcurrentPositions: number;
+  /**
+   * Absolute ceiling on ONE position's notional in USD, applied after
+   * `positionSizePct` and after the free-capital cap.
+   *
+   * WHY IT EXISTS. `positionSizePct` sizes off CURRENT equity, so a compounding run
+   * silently grows the position with the account — a $300 book that reaches $4,000
+   * deploys $2,520 a trade. Live does not: `LIVE_MAX_POSITION_SOL` is an ABSOLUTE SOL
+   * cap an operator has to raise by hand, and it is also what bounds the deposit against
+   * `ONCHAIN_MAX_LAMPORTS_PER_TX`. Reporting a compounded final equity without saying
+   * the position grew with it advertises a result the deployed envelope cannot produce.
+   *
+   * Defaults to Infinity, i.e. no cap, so every pre-existing run, sweep and cached
+   * result is bit-for-bit unchanged — the same inert-default rule `takeProfitNetPct`,
+   * `maxTvlUsd` and the anti-churn gates follow.
+   */
+  maxPositionNotionalUsd: number;
 
   /* ---- Anti-churn gates (mirror of assessPoolCooldown) ---- */
   /**
@@ -242,6 +258,7 @@ export const defaultBacktestConfig = (): BacktestConfig => ({
   ratchetStopNetPct: 0,
   maxDurationHours: 24,
   maxConcurrentPositions: 1,
+  maxPositionNotionalUsd: Number.POSITIVE_INFINITY,
   poolCooldownHours: 0,
   lockoutConsecutiveFailures: 0,
   lockoutHours: 0,
@@ -698,6 +715,35 @@ export interface SimulationInput {
   config?: BacktestConfig;
 }
 
+/**
+ * What ONE position deploys, in USD.
+ *
+ * ONE implementation, because there are two call sites and they must not drift: the entry
+ * GATE, which prices friction against the notional, and the OPEN, which records it. Two
+ * copies is how a cap ends up bounding what the screener ADMITS while the position it
+ * opens ignores it — the advertised-bound-not-enforced defect this repository has already
+ * fixed for bin-array rent and for the deposit ceiling. Keep them sharing this function;
+ * `backtest.test.ts` asserts the cap reaches the position and not only the gate.
+ *
+ * The absolute cap is applied LAST, after the percentage and the free-capital bound, which
+ * is the order live applies `LIVE_MAX_POSITION_SOL` in.
+ */
+export function sizePosition(
+  config: Pick<
+    BacktestConfig,
+    "startingCapitalUsd" | "positionSizePct" | "virtualSol" | "maxPositionNotionalUsd"
+  >,
+  equityUsd: number,
+  freeCapitalUsd: number,
+  solUsd: number,
+): number {
+  const sized =
+    config.startingCapitalUsd !== null
+      ? Math.min(equityUsd * (config.positionSizePct / 100), freeCapitalUsd)
+      : config.virtualSol * solUsd;
+  return Math.min(sized, config.maxPositionNotionalUsd);
+}
+
 export function runSimulation(input: SimulationInput): BacktestResult {
   const config = input.config ?? defaultBacktestConfig();
   const { pools, solUsdBars, tvlModel } = input;
@@ -970,10 +1016,7 @@ export function runSimulation(input: SimulationInput): BacktestResult {
     const deployedUsd = open.reduce((sum, p) => sum + p.notionalUsd, 0);
     const freeCapitalUsd = Math.max(0, equityUsd - deployedUsd);
 
-    const prospectiveNotional =
-      config.startingCapitalUsd !== null
-        ? Math.min(equityUsd * (config.positionSizePct / 100), freeCapitalUsd)
-        : config.virtualSol * (solUsdForSizing ?? 0);
+    const prospectiveNotional = sizePosition(config, equityUsd, freeCapitalUsd, solUsdForSizing ?? 0);
     const gasRoundTripUsd =
       config.gasSolPerTransaction * 2 * (solUsdForSizing ?? 0);
 
@@ -1122,10 +1165,7 @@ export function runSimulation(input: SimulationInput): BacktestResult {
     const entryRatio = pairRatio(bar.c, best.pool.quoteIsUsd, solUsd);
     if (entryRatio === null || !(entryRatio > 0)) continue;
 
-    const notionalUsd =
-      config.startingCapitalUsd !== null
-        ? Math.min(equityUsd * (config.positionSizePct / 100), freeCapitalUsd)
-        : config.virtualSol * solUsd;
+    const notionalUsd = sizePosition(config, equityUsd, freeCapitalUsd, solUsd);
     if (!(notionalUsd > 0)) {
       barsWithNoCandidate++;
       continue;
