@@ -688,3 +688,52 @@ describe("profit ratchet", () => {
     );
   });
 });
+
+describe("maxPositionNotionalUsd — the absolute cap live sizes against", () => {
+  /*
+   * `positionSizePct` sizes off CURRENT equity, so a compounding run grows the position
+   * with the account. Live does not: `LIVE_MAX_POSITION_SOL` is an absolute cap an
+   * operator raises by hand. These bind the cap to the POSITION, not only to the gate —
+   * a cap that only reached the gate would bound what the screener admits while the
+   * position it opens ignores it, which is the advertised-bound-not-enforced defect.
+   */
+  const capConfig = (over: Partial<BacktestConfig> = {}): BacktestConfig =>
+    config({ startingCapitalUsd: 1_000, positionSizePct: 100, ...over });
+
+  it("defaults to no cap, so every pre-existing run is unchanged", () => {
+    assert.equal(defaultBacktestConfig().maxPositionNotionalUsd, Number.POSITIVE_INFINITY);
+  });
+
+  it("bounds the notional the POSITION is opened at, not just the gate's estimate", () => {
+    const pools = [makePool({ bars: makeBars(80, 100, 20_000) })];
+    const uncapped = run(pools, capConfig());
+    const capped = run(pools, capConfig({ maxPositionNotionalUsd: 250 }));
+
+    assert.ok(uncapped.trades.length > 0 && capped.trades.length > 0);
+    // Uncapped deploys the whole 1,000 equity; capped must deploy exactly the cap.
+    assert.equal(uncapped.trades[0]!.notionalUsd, 1_000);
+    assert.equal(capped.trades[0]!.notionalUsd, 250);
+  });
+
+  it("is applied LAST, so a cap above the sized position changes nothing", () => {
+    const pools = [makePool({ bars: makeBars(80, 100, 20_000) })];
+    const uncapped = run(pools, capConfig());
+    const generous = run(pools, capConfig({ maxPositionNotionalUsd: 5_000 }));
+
+    assert.equal(generous.summary.totalTrades, uncapped.summary.totalTrades);
+    assert.equal(generous.summary.endingEquityUsd, uncapped.summary.endingEquityUsd);
+  });
+
+  it("keeps capping as equity compounds past the cap", () => {
+    const pools = [makePool({ bars: makeBars(200, 100, 20_000) })];
+    const capped = run(pools, capConfig({ maxPositionNotionalUsd: 250 }));
+
+    assert.ok(capped.trades.length > 1, "needs several trades for equity to move");
+    for (const trade of capped.trades) {
+      assert.ok(
+        trade.notionalUsd <= 250 + 1e-9,
+        `a trade deployed ${trade.notionalUsd}, above the 250 cap`,
+      );
+    }
+  });
+});
