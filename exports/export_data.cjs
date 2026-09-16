@@ -187,6 +187,30 @@ function writeState(n) {
 function gitPush(commitMsg) {
   if (NO_PUSH) return;
   try {
+    // Fail FAST if the live worktree is not on `main`.
+    //
+    // The cron export always commits in whatever tree it finds and always pushes
+    // `origin main`. If a session left the tree on a feature/backtest branch, the
+    // export commits onto THAT branch and then pushes main unchanged, ending in a
+    // confusing "verify mismatch: local <sha> remote <sha>". That is exactly what
+    // happened on 16 Sep 2026 22:00 — a backtest run had checked out
+    // `backtest/eyyyys-vs-v11`, so the export failed and left a stray commit on the
+    // backtest branch. Checking the branch BEFORE `git add` keeps the tree clean and
+    // turns the failure into an actionable message.
+    let branch = "";
+    try {
+      branch = execSync("git symbolic-ref --short HEAD", { cwd: REPO, stdio: ["ignore", "pipe", "pipe"] })
+        .toString()
+        .trim();
+    } catch {
+      branch = "(detached HEAD)";
+    }
+    if (branch !== "main") {
+      throw new Error(
+        `refusing to export: live worktree is on '${branch}', not 'main'. ` +
+          `No commit was created. Fix with: cd ${REPO} && git checkout main`
+      );
+    }
     execSync("git add exports/", { cwd: REPO, stdio: ["ignore", "pipe", "pipe"] });
     const dirty = execSync("git diff --cached --quiet || echo dirty", { cwd: REPO })
       .toString()
