@@ -229,6 +229,19 @@ export function buildServer(): FastifyInstance {
     const [yearStr, monthStr] = month.split("-") as [string, string];
     const year = Number(yearStr);
     const monthIndex = Number(monthStr) - 1;
+    /*
+     * The shape check above admits `2026-00`, `2026-13` and `2026-99`. Those are not a
+     * harmless empty month: `startDate` becomes `2026-99-01`, `new Date("2026-99-01…")` is
+     * an Invalid Date, and `zonedDayStartUtc` throws `RangeError: Invalid time value` out
+     * of `Intl.DateTimeFormat.formatToParts` before any SQL runs — a 500 on a GET.
+     *
+     * A month that is real but empty must keep answering 200 with an empty day list: that
+     * is "measured, nothing traded", and it is a different fact from "you asked for a month
+     * that does not exist".
+     */
+    if (monthIndex < 0 || monthIndex > 11) {
+      return reply.code(400).send({ error: "month must be between 01 and 12" });
+    }
     // Day 0 of the next month is the last day of this one.
     const daysInMonth = new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate();
 

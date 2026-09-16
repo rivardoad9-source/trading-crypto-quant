@@ -306,7 +306,9 @@ async function simulateClose(conn: Connection, owner: PublicKey, pool: any, posi
       const quote = await getJupiterQuote({
         inputMint: t.mint,
         outputMint: WSOL_MINT,
-        amountLamports: Number(t.amount),
+        // Exact base units. `Number(t.amount)` rounds to nearest above 2^53 and can quote
+        // — and then sell — more than the wallet holds. Same fix as the engine's own paths.
+        amountLamports: t.amount,
         slippageBps: slippage,
       });
       console.log(
@@ -315,7 +317,7 @@ async function simulateClose(conn: Connection, owner: PublicKey, pool: any, posi
       const { result } = await executeJupiterSwap(auth, {
         inputMint: t.mint,
         outputMint: WSOL_MINT,
-        amountLamports: Number(t.amount),
+        amountLamports: t.amount,
         ...(SLIPPAGE_BPS === undefined ? {} : { slippageBps: SLIPPAGE_BPS }),
       });
       console.log(`  sold: ${result.signature}`);

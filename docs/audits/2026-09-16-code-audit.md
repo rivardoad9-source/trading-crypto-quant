@@ -162,14 +162,38 @@ baseline included, drew **88–91%** of its trades from the dead-or-dormant coho
 without a word. The check as written cannot see the condition it exists to catch; a share
 threshold would.
 
-## LOW — 7. `GET /api/pnl-calendar` accepts an impossible month and answers with an empty calendar
+## LOW — 7. `GET /api/pnl-calendar` accepts an impossible month — **CORRECTED: it is a 500, not an empty 200**
 
-`^\d{4}-\d{2}$` admits `2026-00`, `2026-13`, `2026-99`. The handler then builds
-`startDate = "2026-99-01"` and an end date from `new Date(Date.UTC(2026, 99, 0))`, and the
-SQLite string comparison matches nothing. The caller gets HTTP 200 and an empty month,
-which is indistinguishable from a month in which nothing traded — the "not measured vs
-measured zero" distinction this repository enforces elsewhere. No crash; `intParam` guards
-the numeric parameters correctly, this one is the string path.
+`^\d{4}-\d{2}$` admits `2026-00`, `2026-13`, `2026-99`. That root cause stands.
+
+> **CORRECTED 16 Sep 2026.** The original finding said: *"The caller gets HTTP 200 and an
+> empty month, which is indistinguishable from a month in which nothing traded — the 'not
+> measured vs measured zero' distinction this repository enforces elsewhere. No crash."*
+> **That consequence was wrong, and it was reasoned from the code rather than measured.**
+> The operator ran it against the live API; it answers **HTTP 500**
+> `{"error":"internal error","statusCode":500}`. Reproduced offline here afterwards, with
+> the same stack:
+>
+> ```
+> [api] GET /api/pnl-calendar?month=2026-13&cohort=all failed: RangeError: Invalid time value
+>     at DateTimeFormat.formatToParts (<anonymous>)
+>     at offsetMinutesAt (src/services/timezone.ts:40:6)
+>     at zonedDayStartUtc (src/services/timezone.ts:77:55)
+>     at aggregateClosedTradesByDate (src/database/repositories.ts:523:16)
+> ```
+>
+> `new Date("2026-99-01T00:00:00Z")` is an Invalid Date, so the day-start resolver throws
+> **before any SQL runs**. The failure is loud, not silent, so the "not measured vs measured
+> zero" danger invoked above does not occur here. The original claim is kept visible rather
+> than deleted: a wrong evidence line quietly removed is the failure mode this repository
+> keeps paying for, and the lesson is that a consequence read off the code is a hypothesis
+> until it is executed.
+
+The fix is still the same and still right — a 500 on a GET is a bug, and range-checking the
+month is the honest repair for the cause. Fixed under WORK ORDER #7 Task 2 with tests that
+cover both directions: `2026-00` / `2026-13` / `2026-99` → 400, and a real month with no
+trades → 200 with a full, empty day list, because "measured, nothing traded" must stay
+distinguishable from "that month does not exist".
 
 ## LOW — 8. CLAUDE.md understates the executor import allowlist
 
@@ -193,7 +217,7 @@ retires the tripwire.
 | 4 | MEDIUM | no — overstates a window | the `runAnnual.ts` warning |
 | 5 | LOW | no | recording the arm in the JSON |
 | 6 | LOW | no | a share threshold instead of a zero test |
-| 7 | LOW | no | a month range check |
+| 7 | LOW | no — but it is a **500 on a GET**, not the empty 200 this report first claimed | a month range check |
 | 8 | LOW | no | updating the count |
 
 Finding 1 is the only one that can lose capital, and it is the only one whose trigger

@@ -1841,7 +1841,9 @@ export async function openLivePosition(params: {
         const rescue = await executeJupiterSwapFreshQuote(auth, {
           inputMint: pairedMint.toBase58(),
           outputMint: WSOL_MINT,
-          amountLamports: Number(current),
+          // The EXACT balance. `Number(current)` here would round to nearest above 2^53
+          // base units and could ask the token program for more than the wallet holds.
+          amountLamports: current,
           /*
            * An EXIT leg: this swap exists to put the wallet back into SOL, and the same
            * 50 bps entry bound that governs a fresh entry must not be what strands the
@@ -2338,16 +2340,19 @@ export function defaultResidualSweepDeps(
       const quote = await getJupiterQuote({
         inputMint: mint,
         outputMint: WSOL_MINT,
-        amountLamports: Number(amount),
+        // Exact, and the SAME value `swapToSol` sells — the pool route below has always
+        // passed the amount exactly, and two conversions of one balance can disagree.
+        amountLamports: amount,
         slippageBps: resolveExitSlippageBps(slippageBps),
       });
+      // `outAmount` is SOL lamports, which fit a double; the paired token is what does not.
       return Number(quote.outAmount);
     },
     async swapToSol(mint, amount, slippageBps) {
       const sold = await executeJupiterSwapFreshQuote(auth, {
         inputMint: mint,
         outputMint: WSOL_MINT,
-        amountLamports: Number(amount),
+        amountLamports: amount,
         ...(slippageBps === undefined ? {} : { slippageBps }),
         leg: "exit",
       }, "residual sale after an exit");

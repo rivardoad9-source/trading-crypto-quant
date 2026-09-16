@@ -826,7 +826,10 @@ Four properties there are load-bearing:
 
 `src/tests/orphanRecovery.test.ts` is the bridge's half; the executor's half is in
 `onchainExecutor.test.ts`, which is the file allowed to import the signer — **the
-allowlist still has four entries**, and keeping it there is why the tests are split.
+allowlist has SIX entries**, and keeping the bridge's half out of it is why the tests are
+split. The count was documented as four here and in the section below while the test listed
+six; `onchainExecutor.test.ts` now binds this number to the list itself, so the two cannot
+drift again.
 
 The incident is `docs/incidents/2026-09-10-half-landed-open-unmonitored-position.md`,
 which also records the one thing this fix does NOT answer: a `stage: "open"` failure
@@ -1659,8 +1662,13 @@ instead of a signer reachable from wherever an import was convenient.
 `onchainExecutor.test.ts` walks the graph from `src/index.ts`, asserts the bridge is reachable,
 then re-walks with the bridge CUT and asserts the signer is not — that second walk is what
 makes "and nothing else" a test rather than a claim. The allowlist of files that may import the
-executor has four entries; a fifth is the moment to ask whether it should call the bridge
-instead.
+executor has **six** entries — the executor itself, `liveExecution.ts`, its own test, and the
+three operator recovery scripts (`testMicroSwap.ts`, `recoverFundedOrphan.ts`,
+`retryResidualSweep.ts`). **Every ADDITION is the moment to ask whether it should call the
+bridge instead**, which is the rule the old "a fifth is the moment" phrasing was trying to
+express and which stopped being readable the moment the count moved. The number above is
+asserted against the test's own list, so a stale count fails the build rather than quietly
+retiring the tripwire.
 
 Two of the three original locks are unchanged, and they are what still hold:
 

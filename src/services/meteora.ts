@@ -2,6 +2,7 @@ import { z } from "zod";
 import { env } from "../config/env.js";
 import { ENDPOINTS, isFailureStatus } from "../config/constants.js";
 import { getJson } from "./http.js";
+import { parseDbTimestamp } from "./dbTime.js";
 
 /* ------------------------------------------------------------------ */
 /* Raw API shapes                                                      */
@@ -422,24 +423,11 @@ export function screenPools(
 /* ------------------------------------------------------------------ */
 
 /**
- * Parses a timestamp as stored by SQLite.
- *
- * `CURRENT_TIMESTAMP` writes `YYYY-MM-DD HH:MM:SS` in UTC with no zone marker, which
- * `new Date()` would read as local time — a 7-hour error on the default Asia/Jakarta
- * box, enough to let a 4-hour cooldown expire before it ever began. ISO strings (what
- * the tests and seeds write) pass through untouched.
+ * Re-exported so every existing caller is unchanged. The implementation lives in
+ * `dbTime.ts` because `liveReport.ts` needs it and must not import this module — see
+ * that file for why there used to be three copies of this rule and what it cost.
  */
-export function parseDbTimestamp(value: string | null | undefined): Date | null {
-  if (!value) return null;
-  const raw = value.trim();
-  if (raw === "") return null;
-
-  const hasZone = raw.includes("T") || /([zZ]|[+-]\d{2}:?\d{2})$/.test(raw);
-  const normalised = hasZone ? raw : `${raw.replace(" ", "T")}Z`;
-
-  const date = new Date(normalised);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
+export { parseDbTimestamp };
 
 /** Hours between a stored timestamp and `to`. Negative and unparseable spans read 0. */
 export function hoursSince(fromIso: string | null | undefined, to: Date): number {

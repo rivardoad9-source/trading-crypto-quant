@@ -20,6 +20,8 @@
  */
 import Database from "better-sqlite3";
 
+import { parseDbTimestampMs } from "./dbTime.js";
+
 export const LAMPORTS_PER_SOL = 1_000_000_000;
 /** The live-trade count the operator agreed to collect before re-deciding TP / gate / size. */
 export const EVALUATION_TRADES = 30;
@@ -193,11 +195,16 @@ export function readLiveReportInput(db: Database.Database): LiveReportInput {
 /* Derivation (pure)                                                   */
 /* ------------------------------------------------------------------ */
 
-/** Stored timestamps are UTC without a zone marker; same rule as `parseDbTimestamp`. */
+/**
+ * Stored timestamps are UTC without a zone marker. THE one reader, not a copy of it.
+ *
+ * This used to be its own implementation testing only `includes("T")`, so a value carrying
+ * a zone marker after a space returned null here while `parseDbTimestamp` read it fine.
+ * `dbTime.ts` imports nothing, so delegating keeps this module's read-only isolation —
+ * importing `meteora.ts` would pull `config/env.ts`, which parses `.env` at import.
+ */
 export function parseStamp(stamp: string | null | undefined): number | null {
-  if (!stamp) return null;
-  const parsed = Date.parse(stamp.includes("T") ? stamp : `${stamp.replace(" ", "T")}Z`);
-  return Number.isFinite(parsed) ? parsed : null;
+  return parseDbTimestampMs(stamp);
 }
 
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);

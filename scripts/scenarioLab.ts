@@ -17,6 +17,7 @@
  * not the legacy accounting, and they are IDENTICAL across scenarios.
  */
 import { readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 
 import { env } from "../src/config/env.js";
 import {
@@ -31,6 +32,13 @@ import { calibrateTvlModel, describeTvlModel, type TvlModel } from "../src/backt
 import { liveV11Config } from "../src/backtest/runMicroCapital.js";
 import { partitionLiveEligible } from "../src/backtest/liveEligibility.js";
 import { renderTable } from "../src/backtest/report.js";
+import {
+  sweepScenarios,
+  sweepableFields,
+  type Scenario,
+} from "../src/backtest/scenarioSpec.js";
+
+export { sweepScenarios, sweepableFields, type Scenario };
 import type { DlmmPool } from "../src/services/meteora.js";
 
 /* ------------------------------------------------------------------ */
@@ -90,6 +98,17 @@ const SWEEP_ONLY = flags.has("sweeponly");
 /* Formatting                                                          */
 /* ------------------------------------------------------------------ */
 
+/**
+ * A scenario drawing at least this share of its trades from ONE cohort is flagged.
+ *
+ * `runMicroCapital` prints the same kind of warning, and CLAUDE.md says not to suppress it:
+ * it is how the survivor-sampling bug was caught. 80% is a judgement, not a measurement —
+ * chosen below the 88-91% every row of the 16 Sep run sat at, and above an ordinary tilt.
+ */
+const COHORT_CONCENTRATION_PCT = 80;
+/** Below this the composition is noise, and flagging it would train the reader to ignore the flag. */
+const MIN_TRADES_TO_JUDGE_COHORT = 8;
+
 const usd = (n: number, d = 2): string => `${n < 0 ? "-" : ""}$${Math.abs(n).toFixed(d)}`;
 const pct = (n: number, d = 1): string => `${n >= 0 ? "" : "-"}${Math.abs(n).toFixed(d)}%`;
 const pf = (v: number | null): string => (v === null ? "—" : v.toFixed(2));
@@ -98,14 +117,6 @@ const pf = (v: number | null): string => (v === null ? "—" : v.toFixed(2));
 /* Scenarios                                                           */
 /* ------------------------------------------------------------------ */
 
-export interface Scenario {
-  key: string;
-  label: string;
-  family: "baseline" | "entry" | "exit" | "range" | "risk" | "combo";
-  /** What this row changes against scenario A. Printed verbatim. */
-  diff: string;
-  apply: (base: BacktestConfig) => BacktestConfig;
-}
 
 const INF = Number.POSITIVE_INFINITY;
 
@@ -354,30 +365,6 @@ function trimDataset(ds: HistoricalDataset, days: number, endOffsetDays = 0): Hi
   };
 }
 
-/** Builds one scenario per value of one config field, from `--sweep`. */
-function sweepScenarios(spec: string | undefined): Scenario[] {
-  if (!spec) return [];
-  const out: Scenario[] = [];
-  for (const group of spec.split(";").filter(Boolean)) {
-    const [field, list] = group.split(":");
-    if (!field || !list) throw new Error(`--sweep entry "${group}" is not field:v1,v2,...`);
-    const key = field.trim() as keyof BacktestConfig;
-    for (const rawValue of list.split(",").filter(Boolean)) {
-      const value = rawValue.trim() === "off" ? INF : Number(rawValue);
-      if (!Number.isFinite(value) && value !== INF) {
-        throw new Error(`--sweep ${field}: "${rawValue}" is not a number (or "off")`);
-      }
-      out.push({
-        key: `S:${field}=${rawValue}`,
-        family: "combo",
-        label: `${field} = ${rawValue}`,
-        diff: `${field} -> ${rawValue}`,
-        apply: (base) => ({ ...base, [key]: value }) as BacktestConfig,
-      });
-    }
-  }
-  return out;
-}
 
 function summaryRow(sc: Scenario, r: BacktestResult, baseline: BacktestResult | null): string[] {
   const s = r.summary;
@@ -403,9 +390,34 @@ async function main(): Promise<void> {
   const last = ds.solUsdBars[ds.solUsdBars.length - 1]!;
   const iso = (t: number): string => new Date(t * 1000).toISOString().slice(0, 16).replace("T", " ");
 
+  /*
+   * REQUESTED vs ACHIEVED. `trimDataset` takes whatever the cache holds inside the
+   * requested span and never compares the two, so asking a 91-day cache for 200 days used
+   * to print "(200d)" and record `windowDays: 200` — a 91-day result quotable as a 200-day
+   * one. `runAnnual.ts` already solves exactly this and CLAUDE.md says not to remove that
+   * warning; the same disclosure belongs here.
+   */
+  const achievedDays = (last.t - first.t) / 86_400;
+  const shortfall = achievedDays < DAYS - 1;
+  const caveats: string[] = [];
+  if (shortfall) {
+    caveats.push(
+      `WINDOW SHORTFALL: ${DAYS} days were requested but only ${achievedDays.toFixed(1)} were ` +
+        `simulated — ${CACHE} does not go back that far. Every figure below describes the ` +
+        `${achievedDays.toFixed(1)}-day window actually simulated, and must not be quoted as a ` +
+        `${DAYS}-day result. Re-ingest with a longer window, or ask for a shorter one.`,
+    );
+  }
+
   console.log("\n================ SCENARIO LAB ================");
   console.log(`dataset   : ${CACHE} (ingested ${rawDs.fetchedAt})`);
-  console.log(`window    : ${iso(first.t)} -> ${iso(last.t)} UTC (${DAYS}d)`);
+  console.log(
+    `window    : ${iso(first.t)} -> ${iso(last.t)} UTC ` +
+      `(${achievedDays.toFixed(1)}d simulated` +
+      (shortfall ? ` of ${DAYS}d REQUESTED — SHORTFALL` : "") +
+      `)`,
+  );
+  if (shortfall) console.warn(`\n[lab] WARNING: ${caveats[0]}\n`);
   console.log(`account   : $${CAPITAL} / ${SIZEPCT}% per posisi / ${CONCURRENT} posisi / ${GAS_SOL} SOL per tx`);
   console.log(`biaya     : swap ${SWAP_SLIP}% per kaki + ${SWAP_GAS} SOL per kaki, exit model "${EXITCOST}"`);
   console.log(
@@ -422,17 +434,35 @@ async function main(): Promise<void> {
    * universe would compare formulas on pools none of them could enter.
    */
   let pools: PoolHistory[] = ds.pools;
+  /*
+   * WHICH ARM RAN, recorded rather than only printed.
+   *
+   * The JSON used to carry `universe: {pools, survivors, dead}` and nothing else, so a
+   * live-eligible run and a full-universe fallback were indistinguishable in the artefact
+   * and only the console transcript told them apart. Two result files could then be
+   * compared as like-for-like when they were not.
+   */
+  let arm: "live-eligible" | "full" = "full";
+  let armReason = "--full-universe was passed";
+  let rejected: { noWsol: number; unannotated: number; tokenScreen: number } | null = null;
+
   if (ELIGIBLE_ONLY) {
     const part = await partitionLiveEligible(ds.pools, {
       maxTransferFeeBps: env.LIVE_MAX_TOKEN_TRANSFER_FEE_BPS,
     });
+    rejected = { ...part.counts };
     if (part.eligible.length === 0) {
+      armReason =
+        `no pool in this cache is live-eligible (noWsol ${part.counts.noWsol}, ` +
+        `unannotated ${part.counts.unannotated}, token screen ${part.counts.tokenScreen})`;
       console.log(
         `universe  : FULL (${ds.pools.length} pool) - tidak ada pool live-eligible ` +
           `(noWsol ${part.counts.noWsol}, belum di-annotate ${part.counts.unannotated}, ` +
           `token screen ${part.counts.tokenScreen}); arm live-eligible TIDAK bisa dihitung di cache ini`,
       );
     } else {
+      arm = "live-eligible";
+      armReason = `${part.eligible.length} of ${ds.pools.length} pools passed the live token screen`;
       console.log(
         `universe  : LIVE-ELIGIBLE ${part.eligible.length}/${ds.pools.length} pool ` +
           `(ditolak: noWsol ${part.counts.noWsol}, unannotated ${part.counts.unannotated}, ` +
@@ -495,7 +525,7 @@ async function main(): Promise<void> {
   const standard = SWEEP_ONLY
     ? scenarios().filter((sc) => sc.key === "A")
     : [...scenarios(), ...comboScenarios()];
-  const all = [...standard, ...sweepScenarios(SWEEP)].filter(
+  const all = [...standard, ...sweepScenarios(SWEEP, base)].filter(
     (sc) => !ONLY || ONLY.split(",").includes(sc.key),
   );
 
@@ -589,18 +619,47 @@ async function main(): Promise<void> {
    * cohort, so this is printed for every row rather than only for the winner.
    */
   console.log("\n### KOMPOSISI COHORT PER SKENARIO (survivor / dead-or-dormant)");
+  const concentrated: string[] = [];
   for (const { scenario, result } of ranked) {
     const dead = result.summary.tradesOnDeadPools;
     const total = result.summary.totalTrades;
     const surv = total - dead;
-    const flag =
-      total >= 8 && (dead === 0 || surv === 0)
-        ? "  <-- SEMUA dari satu cohort: artefak seleksi, bukan hasil strategi"
-        : "";
+    const deadShare = total > 0 ? (dead / total) * 100 : null;
+
+    /*
+     * A SHARE, not a zero test. The previous check fired only when a cohort contributed
+     * EXACTLY nothing, so every scenario in the 16 Sep run — the baseline included — drew
+     * 88-91% of its trades from the dead-or-dormant cohort and passed without a word. A
+     * check that can only see 0% and 100% cannot see the condition it exists to catch.
+     */
+    let flag = "";
+    if (total >= MIN_TRADES_TO_JUDGE_COHORT && deadShare !== null) {
+      const topShare = Math.max(deadShare, 100 - deadShare);
+      if (dead === 0 || surv === 0) {
+        flag = "  <-- SEMUA dari satu cohort: artefak seleksi, bukan hasil strategi";
+        concentrated.push(scenario.key);
+      } else if (topShare >= COHORT_CONCENTRATION_PCT) {
+        const side = deadShare >= 50 ? "dead-or-dormant" : "survivor";
+        flag =
+          `  <-- ${pct(topShare)} dari cohort ${side}: baca sebagai hasil cohort itu, ` +
+          `bukan hasil strategi`;
+        concentrated.push(scenario.key);
+      }
+    }
+
     console.log(
       `  ${scenario.key.padEnd(4)} ${String(surv).padStart(4)} / ${String(dead).padStart(4)}` +
-        `  (dead ${total > 0 ? pct((dead / total) * 100) : "—"})${flag}`,
+        `  (dead ${deadShare === null ? "—" : pct(deadShare)})${flag}`,
     );
+  }
+  if (concentrated.length > 0) {
+    const warning =
+      `${concentrated.length} of ${ranked.length} scenarios drew at least ` +
+      `${COHORT_CONCENTRATION_PCT}% of their trades from ONE cohort (${concentrated.join(", ")}). ` +
+      `A run concentrated in one cohort is a selection artefact that reads exactly like a ` +
+      `strategy result — compare such rows against each other, never against the live universe.`;
+    console.warn(`\n[lab] WARNING: ${warning}`);
+    caveats.push(warning);
   }
 
   if (baseline) {
@@ -617,9 +676,27 @@ async function main(): Promise<void> {
     JSON.stringify(
       {
         generatedAt: new Date().toISOString(),
-        dataset: { path: CACHE, fetchedAt: rawDs.fetchedAt, windowDays: DAYS },
+        dataset: {
+          path: CACHE,
+          fetchedAt: rawDs.fetchedAt,
+          /* REQUESTED. Kept, but never the only number a later comparison can key on. */
+          windowDays: DAYS,
+          /* ACHIEVED — what was actually simulated. */
+          achievedDays: Number(achievedDays.toFixed(2)),
+          windowShortfall: shortfall,
+        },
+        caveats,
         window: { start: iso(first.t), end: iso(last.t) },
-        universe: { pools: pools.length, survivors: survivors.length, dead: dead.length },
+        universe: {
+          /* Which arm produced these pools. Without it a live-eligible run and a
+             full-universe fallback are indistinguishable outside the transcript. */
+          arm,
+          armReason,
+          rejected,
+          pools: pools.length,
+          survivors: survivors.length,
+          dead: dead.length,
+        },
         account: { capitalUsd: CAPITAL, positionSizePct: SIZEPCT, maxConcurrentPositions: CONCURRENT },
         costs: {
           gasSolPerTransaction: GAS_SOL,
@@ -642,4 +719,14 @@ async function main(): Promise<void> {
   console.log(`\n[lab] JSON -> ${OUT}\n`);
 }
 
-void main();
+/*
+ * Only when RUN, never when imported. `sweepScenarios` and `sweepableFields` are exported
+ * so a test can prove a swept value actually reaches the config — without this guard that
+ * import would execute the whole scenario lab. Same pattern as `runMicroCapital.ts`.
+ */
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    console.error("[lab] failed:", err instanceof Error ? err.message : err);
+    process.exit(1);
+  });
+}

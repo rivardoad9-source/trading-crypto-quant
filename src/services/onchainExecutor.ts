@@ -406,6 +406,61 @@ export function assertWithinSpendLimit(
   }
 }
 
+/**
+ * A raw on-chain amount in base units. Exact by construction.
+ *
+ * WHY THIS TYPE EXISTS. A raw token amount does not fit a double. `Number.MAX_SAFE_INTEGER`
+ * is 9,007,199,254,740,991 — about 9 million tokens at 9 decimals, 9 billion at 6 — and a
+ * balance produced by a swap is an arbitrary number, not a round one. Above that threshold
+ * `Number(balance)` rounds to NEAREST, so it rounds UP roughly half the time, and a
+ * `Math.floor` afterwards cannot undo an upward round. One raw unit over the balance is
+ * enough for SPL `TransferChecked` to refuse the transfer (`0x1`).
+ *
+ * That refusal lands on the two paths whose whole job is to put capital BACK into SOL — the
+ * auto-unwind after a failed open and the residual sale after an exit — and both of them
+ * report rather than retry, so the capital stays in the token.
+ */
+export type RawAmount = bigint | number | string;
+
+/**
+ * Resolves a raw amount to an exact bigint, or THROWS.
+ *
+ * It never rounds. Rounding down would silently leave dust; rounding up would ask the token
+ * program for more than the wallet holds. Refusing to build the request at all is the only
+ * option that cannot move the wrong number of tokens, and the caller is on a path that
+ * already pages an operator.
+ */
+export function exactRawAmount(value: RawAmount, label: string): bigint {
+  if (typeof value === "bigint") {
+    if (value < 0n) throw new Error(`[onchain] ${label}: amount ${value} is negative`);
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const raw = value.trim();
+    if (!/^\d+$/.test(raw)) {
+      throw new Error(`[onchain] ${label}: "${value}" is not a base-unit integer`);
+    }
+    return BigInt(raw);
+  }
+
+  if (!Number.isSafeInteger(value)) {
+    /*
+     * Both halves of this are deliberate. A non-integer is not a base-unit amount at all.
+     * An integer above 2^53 has ALREADY lost precision by the time it arrives here — the
+     * true value is unknowable from the double — so there is nothing to round correctly to
+     * and the caller must pass a bigint or a string instead.
+     */
+    throw new Error(
+      `[onchain] ${label}: ${value} cannot be represented exactly as a base-unit amount ` +
+        `(integers above ${Number.MAX_SAFE_INTEGER} lose precision as a JS number; ` +
+        `pass a bigint or a decimal string)`,
+    );
+  }
+  if (value < 0) throw new Error(`[onchain] ${label}: amount ${value} is negative`);
+  return BigInt(value);
+}
+
 /** Clamps a requested slippage down to the authorized bound. Never widens it. */
 export function resolveSlippageBps(auth: ExecutionAuthorization, requestedBps?: number): number {
   const requested = requestedBps ?? auth.maxSlippageBps;
@@ -1337,16 +1392,18 @@ export interface JupiterQuote {
 export async function getJupiterQuote(params: {
   inputMint: string;
   outputMint: string;
-  amountLamports: number;
+  /** Base units, exact. See `RawAmount` — a large token balance must not arrive as a double. */
+  amountLamports: RawAmount;
   slippageBps: number;
   config?: OnchainConfig;
 }): Promise<JupiterQuote> {
   const config = params.config ?? onchainConfig;
+  const amount = exactRawAmount(params.amountLamports, "jupiter quote");
   const url =
     `${config.jupiterSwapApiUrl}/quote` +
     `?inputMint=${encodeURIComponent(params.inputMint)}` +
     `&outputMint=${encodeURIComponent(params.outputMint)}` +
-    `&amount=${Math.floor(params.amountLamports)}` +
+    `&amount=${amount.toString()}` +
     `&slippageBps=${Math.floor(params.slippageBps)}`;
 
   const res = await fetch(url, { headers: { accept: "application/json" } });
@@ -1462,7 +1519,8 @@ export async function executeJupiterSwap(
   params: {
     inputMint: string;
     outputMint: string;
-    amountLamports: number;
+    /** Base units, exact. See `RawAmount`. */
+    amountLamports: RawAmount;
     slippageBps?: number;
     /**
      * Which side of the trade this swap is. Defaults to `"entry"`.
@@ -1482,14 +1540,26 @@ export async function executeJupiterSwap(
   // The SAME value quotes the swap and bounds the quote in `buildJupiterSwap`.
   const slippageBps = swapSlippageBoundBps(auth, leg, params.slippageBps, config);
 
+  /*
+   * Resolved ONCE and reused, so the quote and the swap it authorises are built from the
+   * SAME exact value. Two independent conversions of one balance can disagree with each
+   * other as well as with the wallet.
+   */
+  const amount = exactRawAmount(params.amountLamports, "jupiter swap");
+
   if (params.inputMint === WSOL_MINT) {
-    assertWithinSpendLimit(auth, params.amountLamports, "jupiter swap");
+    /*
+     * SOL only. The ceiling is a lamport figure well inside a double (the whole supply is
+     * ~6e17 lamports and the ceiling is ~1.8e9), and `exactRawAmount` has already refused
+     * anything that lost precision, so this conversion cannot be the lossy one.
+     */
+    assertWithinSpendLimit(auth, Number(amount), "jupiter swap");
   }
 
   const quote = await getJupiterQuote({
     inputMint: params.inputMint,
     outputMint: params.outputMint,
-    amountLamports: params.amountLamports,
+    amountLamports: amount,
     slippageBps,
     config,
   });

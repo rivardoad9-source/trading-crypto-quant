@@ -1,6 +1,7 @@
 import { getLivePositions } from "../database/repositories.js";
 import { LAMPORTS_PER_SOL } from "../config/liveConfig.js";
 import type { SimulatedPositionRow } from "../database/types.js";
+import { parseDbTimestampMs } from "./dbTime.js";
 
 /**
  * Wallet reconciliation: does the database's PnL agree with what the chain did?
@@ -129,14 +130,15 @@ export interface ReconciliationReport {
 const isLive = (r: SimulatedPositionRow): boolean =>
   r.execution_mode === "LIVE" && Boolean(r.position_address);
 
-/** Milliseconds for a stored UTC timestamp, or null when it cannot be parsed. */
-function ms(stamp: string | null | undefined): number | null {
-  if (!stamp) return null;
-  // Stored timestamps are UTC without a zone marker (SQLite CURRENT_TIMESTAMP), which
-  // `new Date()` would read as local. Same rule `parseDbTimestamp` follows.
-  const parsed = Date.parse(stamp.includes("T") ? stamp : `${stamp.replace(" ", "T")}Z`);
-  return Number.isFinite(parsed) ? parsed : null;
-}
+/**
+ * Milliseconds for a stored UTC timestamp, or null when it cannot be parsed.
+ *
+ * Delegates rather than reimplementing: this used to test only `includes("T")`, so a
+ * zone-marked value with a space separator returned null HERE while the cooldown gate read
+ * it. Null is not a parse detail in this file — it is the difference between a row being
+ * compared against the chain and being excluded from both totals as unmeasured.
+ */
+const ms = (stamp: string | null | undefined): number | null => parseDbTimestampMs(stamp);
 
 /** True when [aOpen, aClose] and [bOpen, bClose] intersect. Unknown bounds never match. */
 function overlaps(a: SimulatedPositionRow, b: SimulatedPositionRow): boolean {

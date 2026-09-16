@@ -65,6 +65,8 @@ import {
   swapSlippageBoundBps,
   WIDE_FUNDING_MIDFLIGHT_SHRINKS,
   isWithheldFeeCloseRefusal,
+  exactRawAmount,
+  getJupiterQuote,
   type JupiterQuote,
   type PriorityFeePlan,
 } from "../services/onchainExecutor.js";
@@ -212,6 +214,28 @@ describe("onchain executor — the engine cannot reach it", () => {
 
     for (const f of importers) {
       assert.ok(allowed.has(f), `${f.slice(repoRoot.length)} references the on-chain executor`);
+    }
+
+    /*
+     * CLAUDE.md states this count, and the count is the tripwire: "every addition is the
+     * moment to ask whether it should call the bridge instead". It said FOUR while this
+     * list held six, which retires the tripwire silently — a reader who trusts the document
+     * cannot tell that two entries were added. Binding the number here means a stale
+     * document fails the build instead.
+     */
+    const claude = readFileSync(join(repoRoot, "CLAUDE.md"), "utf8");
+    const WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
+    const documented = WORDS[allowed.size];
+    assert.ok(documented, `no word for an allowlist of ${allowed.size}; extend WORDS`);
+    const stated = new RegExp(`allowlist[^.]{0,140}?\\b(${WORDS.join("|")})\\b`, "gi");
+    const counts = [...claude.matchAll(stated)].map((m) => m[1]!.toLowerCase());
+    assert.ok(counts.length > 0, "CLAUDE.md no longer states the allowlist size");
+    for (const stale of counts) {
+      assert.equal(
+        stale,
+        documented,
+        `CLAUDE.md says the executor allowlist has ${stale} entries; it has ${allowed.size}`,
+      );
     }
   });
 
@@ -2174,5 +2198,104 @@ describe("wide funding — a chunk refused mid-flight for insufficient funds is 
     assert.match(rebuild, /Earlier chunks LANDED: the position is funded and must be recovered/);
     // The start-of-funding balance is read before the first chunk is sent.
     assert.ok(funding.indexOf("const pairedAtFundingStart = await readAtaBalance(") < funding.indexOf("funded = await sendSequentially("));
+  });
+});
+
+describe("a raw token amount reaches Jupiter exactly, or not at all", () => {
+  /*
+   * A raw token amount does not fit a double. Above 2^53 base units — about 9 million
+   * tokens at 9 decimals, 9 billion at 6 — `Number(balance)` rounds to NEAREST, so it
+   * rounds UP roughly half the time, and `Math.floor` afterwards cannot undo that. One
+   * raw unit over the balance is enough for SPL `TransferChecked` to refuse (`0x1`).
+   *
+   * That refusal lands on the two paths whose whole job is to put capital back into SOL,
+   * and both report rather than retry — so the capital stays in the token.
+   */
+  const OVER_2_53 = 9_007_199_254_740_993n; // 2^53 + 1: the first integer a double cannot hold
+
+  it("exactRawAmount passes a bigint through untouched, at and across the boundary", () => {
+    assert.equal(exactRawAmount(9_007_199_254_740_991n, "t"), 9_007_199_254_740_991n); // 2^53 - 1
+    assert.equal(exactRawAmount(9_007_199_254_740_992n, "t"), 9_007_199_254_740_992n); // 2^53
+    assert.equal(exactRawAmount(OVER_2_53, "t"), OVER_2_53);
+    assert.equal(exactRawAmount(0n, "t"), 0n);
+  });
+
+  it("accepts a number only while it is exactly representable", () => {
+    assert.equal(exactRawAmount(9_007_199_254_740_991, "t"), 9_007_199_254_740_991n);
+    // 2^53 as a double is exact, so it is allowed; 2^53 + 1 is not a safe integer at all.
+    assert.throws(() => exactRawAmount(9_007_199_254_740_993, "t"), /cannot be represented exactly/);
+    assert.throws(() => exactRawAmount(1.5, "t"), /cannot be represented exactly/);
+    assert.throws(() => exactRawAmount(-1, "t"), /negative/);
+  });
+
+  it("REFUSES rather than rounds — the amount is never silently adjusted", () => {
+    /*
+     * The alternative to throwing is rounding, and both directions are wrong: down leaves
+     * dust the sweep was built to clear, up asks for more than the wallet holds. Refusing
+     * to build the request is the only outcome that cannot move the wrong number of tokens.
+     */
+    const lossy = Number(OVER_2_53); // 9007199254740992 — one unit BELOW, this time
+    assert.notEqual(BigInt(lossy), OVER_2_53);
+    assert.throws(() => exactRawAmount(Number(OVER_2_53) + 1, "t"), /cannot be represented exactly/);
+  });
+
+  it("a string is accepted exactly, and a non-integer string is refused", () => {
+    assert.equal(exactRawAmount("9007199254740993", "t"), OVER_2_53);
+    assert.throws(() => exactRawAmount("12.5", "t"), /not a base-unit integer/);
+    assert.throws(() => exactRawAmount("abc", "t"), /not a base-unit integer/);
+  });
+
+  it("the quote URL carries the exact balance, and never asks for more than is held", async () => {
+    /*
+     * The assertion the work order asks for: the amount Jupiter is asked to sell, read
+     * back off the wire as a string, must be <= the wallet balance as a bigint.
+     *
+     * This FAILS against the pre-fix executor, which built the URL from
+     * `Math.floor(params.amountLamports)` after the caller had already collapsed the
+     * balance to a double: for this balance that produced 500000000000000064, which is
+     * 31 base units MORE than the wallet holds.
+     */
+    const balance = 500_000_000_000_000_033n; // ~500M tokens at 9dp — an ordinary memecoin residual
+    assert.ok(balance > BigInt(Number.MAX_SAFE_INTEGER));
+    assert.ok(BigInt(Math.floor(Number(balance))) > balance, "fixture must be one that rounds UP");
+
+    const realFetch = globalThis.fetch;
+    let requested: string | null = null;
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      requested = new URL(String(input)).searchParams.get("amount");
+      return new Response(
+        JSON.stringify({ outAmount: "1000", otherAmountThreshold: "990", slippageBps: 50, routePlan: [] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as typeof fetch;
+    try {
+      await getJupiterQuote({
+        inputMint: USDC_MINT,
+        outputMint: WSOL_MINT,
+        amountLamports: balance,
+        slippageBps: 50,
+      });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+
+    assert.equal(requested, balance.toString());
+    assert.ok(BigInt(requested!) <= balance, "asked Jupiter for more than the wallet holds");
+  });
+
+  it("the bridge's three token->SOL sites pass the amount exactly, like the pool route always did", () => {
+    /*
+     * Source-level, because the alternative is a funded exit. The tell that made this a
+     * finding was an asymmetry inside ONE deps object: the pool route passed
+     * `amount.toString()` and the Jupiter route passed `Number(amount)`.
+     */
+    const bridge = readFileSync(join(srcDir, "services", "liveExecution.ts"), "utf8");
+    assert.ok(
+      !/amountLamports:\s*Number\(/.test(bridge),
+      "a token->SOL amount is being collapsed to a double before Jupiter sees it",
+    );
+    for (const exact of ["amountLamports: current", "amountLamports: amount"]) {
+      assert.ok(bridge.includes(exact), `expected the exact amount at \`${exact}\``);
+    }
   });
 });
