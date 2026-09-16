@@ -39,6 +39,7 @@
     "sweep:exits": "node --import tsx src/scripts/sweepExits.ts",
     "sweep:entry": "node --import tsx src/scripts/sweepEntry.ts",
     "sweep:rr": "node --import tsx src/scripts/sweepRiskReward.ts",
+    "sweep:eyy": "node --import tsx src/scripts/sweepEyyyys.ts",
     "test:swap": "node --import tsx scripts/testMicroSwap.ts",
     "validate:tvl": "tsx src/scripts/validateTvlModel.ts",
     "rehearse:exit-economics": "tsx scripts/rehearseExitEconomics.ts"
