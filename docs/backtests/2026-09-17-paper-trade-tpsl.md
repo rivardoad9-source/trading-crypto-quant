@@ -101,3 +101,54 @@ python3 ~/.hermes/scripts/gate_counterfactual.py --summary 24
 
 DB: `~/.hermes/data/gate_counterfactual.db` (tabel `observations`, `paper_trades`).
 Timestamp UTC; WIB = +7.
+
+## Cross-check menyeluruh — 2026-09-17 20:50 WIB
+
+Uji ulang rantai dari engine sampai paper trade, cari bug. Bukti mentah:
+`docs/backtests/runs/paper_trade/audit_paper_chain.txt` dan `test_paper_e2e.txt`
+(keduanya keluar 0 = konsisten / semua uji lolos).
+
+### Bug yang ketemu & diperbaiki di pass ini (5, semuanya nyata)
+
+| # | Bug | Dampak kalau tidak ketahuan | Fix |
+|---|---|---|---|
+| 1 | `simulate()` balikin **harga TP** waktu tidak ada bar setelah entry | SL/exit kosong ditulis sebagai **menang +5,00% palsu** | balikin `None` → status `unscoreable` |
+| 2 | tidak ada batas percobaan saat data GT kosong | baris `pending` dihajar tiap run 30 menit selamanya (kuota GT dipakai engine) | kolom `attempts`, menyerah setelah 5x |
+| 3 | `gate_counterfactual.py` nulis waktu **WIB**, query lain pakai **UTC** | skor molor 7 jam & jendela bar bisa kelewat | tulis UTC; 2.274 baris lama dinormalkan |
+| 4 | `ratio_live` disimpan dari teks log yang dibulatkan ("2.50x" padahal 2,4978) | 1 baris kelihatan lolos gate live padahal engine menolaknya | hitung ulang dari `fee/cost`; DB di-backfill |
+| 5 | tidak ada kunci proses | cron 30 menit bisa tumpang tindih saat GT balas 429 → panggilan API dobel | `flock` (`/tmp/paper_trade_scorer.lock`) |
+
+### Yang diverifikasi (semua pakai output nyata)
+
+- **Engine:** pm2 `online`, `/api/health` OK (RPC 71 ms, bukan dry-run), **0 posisi terbuka**,
+  `.env` utuh (`LIVE_CAPITAL_SOL=2.85`, `LIVE_MAX_POSITION_SOL=1.8`,
+  `MIN_FEE_COST_COVERAGE=2.5`, `FORCED_EXIT_SLIPPAGE_PCT=2.0`, `MAX_FEE_TVL_RATIO=0.25`).
+  `dist/` (09-15) lebih tua dari `src/` (09-17) → **kode baru memang inert di live**.
+- **Cadence:** tick 5 menit, cadence dasar 30 menit (`DLMM_BASE_CADENCE_MIN`) → jeda log
+  22 menit itu normal, engine tidak menggantung (dibuktikan dari `CRON.DLMM_TICK` + `screenerCadence.ts`).
+- **Gate live tidak berubah:** cycle terakhir `cost-rejected 3`, `opened no (2.5x ...)` — semua
+  kandidat ditolak di gate biaya, persis seperti desain formula lama.
+- **Aritmetika counterfactual:** 2.274 baris dihitung ulang dari angka mentah →
+  0 ketidakcocokan pada `ratio_live`, `ratio_measured`, `pass_live`, `pass_measured`, `cost_ratio`.
+  Ambang dipangku benar: `2,4444% x 2,5 = 6,111%` (live) dan `1,7644% x 2,5 = 4,411%` (bar terukur).
+- **Alamat pool:** 6/6 cocok nama di sumber independen (GeckoTerminal). Semua kandidat
+  ber-nama sama ternyata **mint token yang sama** (harga antar-pool cuma beda ~0,3–4%),
+  jadi risiko salah pool turun jadi "pool lain, token sama" — bukan token lain.
+- **Uji end-to-end di salinan DB** (`/tmp/paper_test.db`): baris siap-skor → `scored` dengan
+  matematika benar (gross −8,00% → net LAMA −10,444% / TERUKUR −9,764%), pool palsu →
+  gagal rapi (`attempts=1`, tidak crash), baris <25 jam → dilewati, run kedua → **idempoten**,
+  dan uji dua proses bareng → yang kedua keluar sendiri (`flock`).
+- **Akurasi simulator vs 7 trade live:** 5/7 verdict cocok, galat abs median 0,31 pt,
+  2 verdict kebalik (arahnya berlawanan) → ledger indikatif, butuh n ≥ 30.
+
+### Yang tetap jadi keterbatasan (bukan bug, tapi jangan dilupakan)
+
+- **Alarm drift engine masih hidup:** `/api/reconciliation` → model $43,12 vs chain $22,74
+  (−$20,38; −47,3% dari model), plus alert wallet-vs-book 0,4168 SOL. Sudah lama diketahui
+  (koncesi entry tak dimodelkan + burn gagal), tidak ada auto-koreksi, halaman alert ditahan.
+- Per-trade verdict bisa kebalik (2/7) karena bar hourly vs polling live.
+- Harga entry = close bar hourly terakhir (basi sampai 1 jam), exit diasumsikan pas di trigger.
+- Batch seed: `event_time` = waktu backfill (log pm2 tidak punya timestamp per baris).
+- Resolusi pool = TVL terbesar di antara nama yang sama (token sama, pool bisa beda).
+- Notional tidak selalu 1,8 SOL (sebagian pool di-cap lebih kecil).
+

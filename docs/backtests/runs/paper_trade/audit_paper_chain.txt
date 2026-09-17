@@ -1,0 +1,46 @@
+
+[1] observations — struktur & isi
+  ✓ 2274 baris · 16 pool unik · 2026-09-17 13:13:50 .. 2026-09-17 13:30:39
+  ✓ collected_at masuk akal (UTC, tidak ada masa depan)
+    (info) duplikat pair+waktu: [('CATE-SOL', '2026-09-17 13:13:50', 642), ('fone-SOL', '2026-09-17 13:13:50', 377), ('SOL-USDC', '2026-09-17 13:13:50', 328)]
+
+[2] aritmetika model — dihitung ulang dari angka mentah
+  ✓ ratio_live: 0 baris tidak konsisten (dari 2274)
+  ✓ ratio_measured: 0 baris tidak konsisten (dari 2274)
+  ✓ pass_live: 0 baris tidak konsisten (dari 2274)
+  ✓ pass_measured: 0 baris tidak konsisten (dari 2274)
+  ✓ cost_ratio: 0 baris tidak konsisten (dari 2274)
+  ✓ impossible: 0 baris tidak konsisten (dari 2274)
+  ✓ lolos bar terukur: 587/2274 (25.8%)
+
+[3] ambang gate — cek angka yang dipangku
+    model LAMA  2.4444% x 2.5 = 6.111% fee/TVL (live pakai ini)
+    model TERUKUR 1.7644% x 2.5 = 4.411% fee/TVL (bar counterfactual)
+  ✓ semua baris pass_measured=1 punya rasio >= 2,5 (range 2.50x .. 3.46x)
+  ✓ baris yang lolos bar terukur: 587 · rasio live tertinggi 2.50x (harus < 2,5)
+
+[4] paper_trades — konsistensi
+    counterfactual   pending      6
+    validate_real    scored       7
+  ✓ pending tanpa pool_address/event_time: 0
+  ✓ pending 6 · 6 di antaranya belum lewat 25 jam (memang belum bisa di-skor)
+  ✓ semua pending menunggu jendela 25 jam — tidak ada yang 'nyangkut' secara logika
+  ✓ pool dengan >1 paper trade (cooldown 24 jam bocor?): []
+  ✓ paper trade dari event yang TIDAK lolos bar terukur: 0
+  ✓ notional_usd != cost_live/2,4444% pada 0 baris (notional harus dari angka engine)
+
+[5] validate_real — akurasi simulator vs kenyataan
+  ✓ 5/7 verdict cocok · galat abs median 0.31 pts · maks 13.68 pts
+
+[6] cron — status job yang dipakai rantai ini
+  ✓ gate-counterfactual  2 run tercatat · terakhir 2026-09-17_20-30-39.md · ok
+  ✓ paper-trade-tpsl     1 run tercatat · terakhir 2026-09-17_20-30-39.md · ok
+  ✓ entrycosts-sweep     3 run tercatat · terakhir 2026-09-17_20-30-39.md · ok
+
+[7] file & script rantai
+  ✓ gate_counterfactual.py 6594 B · mtime 2026-09-17 20:27
+  ✓ paper_trade_scorer.py 19249 B · mtime 2026-09-17 20:33
+  ✓ cache GeckoTerminal: 11 file
+  ✓ syntax kedua script valid
+
+=== HASIL: SEMUA KONSISTEN ===

@@ -1,0 +1,34 @@
+skenario: id 20 (EMBER-SOL) dibackdate 30 jam · bogus id 40 · fresh id 41
+
+[run 1]
+  stdout: [paper] kandidat baru 5 · di-skor 1
+paper trade counterfactual: 14 · {'pending': 12, 'scored': 1, 'unscoreable': 1}
+
+pool             n  TP  SL  net LAMA  net TERUKUR
+EMBER-SOL        1   0   1   -10.44%       -9.76%
+
+agregat: n=1 · gross rata2 -8.0% · net LAMA -10.44% · net TERUKUR -9.76%
+angka ini
+  ✓ script keluar 0 (dapat 0)
+
+  A id20: status=scored entry=0.011684731166823734 exit=0.010749952673477836 alasan=stop-loss
+          gross=-8.0% net_lama=-10.444% net_terukur=-9.764% bar_terpakai=1
+  ✓ A: baris yang siap diskor -> status 'scored'
+  ✓ A: harga entry & exit terisi dan masuk akal
+  ✓ A: alasan exit = TP/SL/umur
+  ✓ A: selisih net_lama vs net_terukur = 0,68 pts (beda model biaya)
+  ✓ A: net_lama = gross - 2,4444
+  ✓ A: bar terpakai dalam 1..24 (1)
+  ✓ A: entry_ref_time tercatat
+  B id40 (pool palsu): status=pending attempts=1 note='uji | GT gagal: HTTP Error 404: Not Found (percobaan 1)'
+  ✓ B: pool palsu tidak dianggap scored
+  ✓ B: percobaan gagal tercatat (attempts naik)
+  ✓ B: alasan gagal tercatat
+  ✓ C: baris <25 jam dilewati (status pending, attempts 0)
+
+[run 2 — idempotensi]
+  stdout: (kosong)
+  ✓ jumlah baris scored tidak berubah antar run ((1, 1) -> (1, 1))
+  ✓ run 2 tidak bikin kandidat baru
+
+=== HASIL UJI: SEMUA LOLOS ===

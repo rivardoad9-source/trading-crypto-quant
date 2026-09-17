@@ -79,7 +79,8 @@ def rows_from_lines(lines, now):
         need_m = NEED_MEASURED_FACTOR * cost
         rows.append((
             now, m.group("pair").strip(), int(m.group("hours")), fee, cost,
-            float(m.group("ratio")), float(m.group("need")),
+            # rasio dihitung ulang dari fee/cost: teks log dibulatkan ("2.50x" bisa aslinya 2,4978)
+            (fee / cost if cost else None), float(m.group("need")),
             cost * COST_RATIO, need_m, fee / (cost * COST_RATIO) if cost else None,
             1 if fee >= NEED * cost else 0,
             1 if fee >= need_m else 0,

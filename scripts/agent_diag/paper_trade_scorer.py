@@ -18,6 +18,7 @@ Aturan kejujuran (sama kayak sisi pengukuran lain):
 Read-only: log/DB dibaca, nol order, nol notional.
 """
 import datetime
+import fcntl
 import json
 import os
 import re
@@ -27,7 +28,7 @@ import time
 import urllib.error
 import urllib.request
 
-DB = "/home/ubuntu/.hermes/data/gate_counterfactual.db"
+DB = os.environ.get("PAPER_DB", "/home/ubuntu/.hermes/data/gate_counterfactual.db")
 REPO = "/home/ubuntu/flowmetrix-ai-agent"
 ENV_FILE = f"{REPO}/.env"
 
@@ -117,13 +118,15 @@ def init_db():
         net_usd_live REAL, net_usd_measured REAL,
         notional_usd REAL, fee_usd_at_event REAL, ratio_measured REAL,
         actual_reason TEXT, actual_pct REAL,   -- cuma utk source=validate_real
+        attempts INTEGER NOT NULL DEFAULT 0, -- berapa kali gagal di-skor (biar tidak dihajar terus)
         status TEXT NOT NULL,               -- pending | scored | unscoreable
         note TEXT
     )""")
     have = {r[1] for r in con.execute("pragma table_info(paper_trades)")}
-    for col in ("net_usd_live", "net_usd_measured"):     # DB lama: tambah kolom tanpa migrasi manual
+    for col in ("net_usd_live", "net_usd_measured", "attempts"):   # DB lama: tambah kolom tanpa migrasi manual
         if col not in have:
-            con.execute(f"ALTER TABLE paper_trades ADD COLUMN {col} REAL")
+            con.execute(f"ALTER TABLE paper_trades ADD COLUMN {col} "
+                        + ("INTEGER NOT NULL DEFAULT 0" if col == "attempts" else "REAL"))
     con.execute("CREATE INDEX IF NOT EXISTS idx_pt_pool ON paper_trades(pool_address, event_time)")
     con.commit()
     return con
@@ -190,7 +193,9 @@ def simulate(bars, entry_ref_ts, entry_price):
             return tp, sl, "take-profit", ts, used
     if last:
         return last[1], sl, f"umur {MAX_AGE_H} jam habis (exit di close bar terakhir)", last[0], used
-    return tp, sl, "tidak ada bar dalam window 24 jam", None, used
+    # PENTING: tidak ada bar setelah entry -> TIDAK bisa dinilai. Jangan pernah balikin harga TP
+    # (dulu baris ini bisa nulis +5,00% palsu).
+    return None, sl, "tidak ada bar hourly setelah event (data GT bolong / pool mati)", None, used
 
 
 def new_row(con, **kw):
@@ -257,6 +262,15 @@ def cmd_score(con, limit=3):     # 3 pool per run: jaga kuota GeckoTerminal (eng
                           where status='pending' and pool_address is not null
                             and event_time <= datetime('now','-25 hours')
                           order by event_time limit ?""", (limit,)).fetchall()
+    def bump(con, tid, why):
+        """catat percobaan gagal; habis 5x jangan dihajar terus (jaga kuota GeckoTerminal)."""
+        n = con.execute("select attempts from paper_trades where id=?", (tid,)).fetchone()[0] + 1
+        done = n >= 5
+        con.execute("""update paper_trades set attempts=?, status=?, note=coalesce(note,'')||' | '||? where id=?""",
+                    (n, "unscoreable" if done else "pending",
+                     f"{why} (percobaan {n})" + (" -> menyerah" if done else ""), tid))
+        con.commit()
+
     scored = 0
     for tid, pair, pool, when, source, fixed_entry, _ar, _ap in rows:
         t_event = int(datetime.datetime.strptime(when, "%Y-%m-%d %H:%M:%S")
@@ -264,20 +278,19 @@ def cmd_score(con, limit=3):     # 3 pool per run: jaga kuota GeckoTerminal (eng
         try:
             bars = gt_bars(pool, t_event + 26 * 3600)
         except Exception as exc:
-            con.execute("update paper_trades set note=note||? where id=?", (f" | GT gagal: {exc}", tid))
-            con.commit()
+            bump(con, tid, f"GT gagal: {exc}")
+            time.sleep(2)
             continue
         prior = [b for b in bars if b[0] <= t_event]
         if not prior:
-            con.execute("""update paper_trades set status='unscoreable',
-                note='tidak ada bar hourly sebelum event (pool baru / data GT kosong)' where id=?""", (tid,))
-            con.commit()
+            bump(con, tid, "tidak ada bar hourly sebelum event (pool baru / data GT kosong)")
+            time.sleep(1.2)
             continue
         entry_ref_ts, entry_price = prior[-1][0], fixed_entry or prior[-1][4]
         exit_price, _sl, reason, exit_ts, used = simulate(bars, t_event, entry_price)
-        if exit_ts is None and exit_price is None:
-            con.execute("""update paper_trades set status='unscoreable',
-                note='tidak ada bar setelah event dalam window 24 jam' where id=?""", (tid,))
+        if exit_price is None or exit_ts is None:
+            con.execute("""update paper_trades set status='unscoreable', attempts=attempts+1,
+                note=coalesce(note,'')||' | '||? where id=?""", (reason, tid))
             con.commit()
             continue
         gross = (exit_price / entry_price - 1) * 100
@@ -360,7 +373,26 @@ def cmd_summary(con):
     print("angka ini hasil paper trade, BUKAN hasil live; entry pakai close bar hourly (galat ~1 jam).")
 
 
+LOCK = "/tmp/paper_trade_scorer.lock"
+
+
+def acquire_lock():
+    """Cuma 1 proses boleh jalan: cron 30 menit bisa tumpang-tindih kalau GT balas 429 terus."""
+    fh = open(LOCK, "w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print("[paper] run sebelumnya masih jalan — dilewati", file=sys.stderr)
+        return None
+    fh.write(str(os.getpid()))
+    fh.flush()
+    return fh
+
+
 if __name__ == "__main__":
+    _lock = acquire_lock()
+    if _lock is None:
+        sys.exit(0)
     con = init_db()
     mode = sys.argv[1] if len(sys.argv) > 1 else "run"
     if mode == "--validate":
@@ -371,5 +403,5 @@ if __name__ == "__main__":
         made = cmd_create(con)
         done = cmd_score(con)
         if made or done:
-            print(f"[paper] kandidat baru {made} · discored {done}")
+            print(f"[paper] kandidat baru {made} · di-skor {done}")
             cmd_summary(con)
