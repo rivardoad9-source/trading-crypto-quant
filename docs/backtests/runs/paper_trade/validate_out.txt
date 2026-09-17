@@ -1,0 +1,10 @@
+pair          paper      actual       paper%  actual%   galat  harga entry
+MANLET-SOL    take-profit Take-profi    5.00%    5.29%  -0.29  db 0.00001153 vs bar 0.00099972
+EMBER-SOL     take-profit Take-profi    5.00%    5.26%  -0.26  db 0.00016496 vs bar 0.02364583
+EMBER-SOL     take-profit Take-profi    5.00%    5.52%  -0.52  db 0.00020109 vs bar 0.01977227
+EMBER-SOL     stop-loss  Take-profi   -8.00%    5.68% -13.68  db 0.00034323 vs bar 0.03574519
+EMBER-SOL     take-profit Take-profi    5.00%    5.31%  -0.31  db 0.00037341 vs bar 0.04194472
+EMBER-SOL     take-profit Stop-loss     5.00%   -8.41% +13.41  db 0.00040215 vs bar 0.03992856
+DOGE-1-SOL    take-profit Take-profi    5.00%    5.14%  -0.14  db 0.00000186 vs bar 0.00017883
+
+verdict cocok: 7 trade diuji · galat abs median 0.31 pts · maks 13.68 pts

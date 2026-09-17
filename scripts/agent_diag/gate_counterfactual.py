@@ -124,7 +124,7 @@ def main():
         if i + 1 < len(sys.argv) and sys.argv[i + 1].isdigit():
             summary_hours = int(sys.argv[i + 1])
     con = init_db()
-    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")   # UTC: biar cocok dgn datetime('now') SQLite
 
     offset = int(open(STATE).read().strip()) if os.path.exists(STATE) else 0
     first_run = offset == 0
