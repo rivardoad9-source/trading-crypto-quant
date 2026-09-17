@@ -38,7 +38,12 @@
  *     --pool 68C62WPY… --position 2uYWjuvEFR65… -- --execute     # close + sell + reclaim rent
  *
  * Flags: --slippage-bps <n> (clamped down to HARD_MAX_SLIPPAGE_BPS), --skip-sell (recover
- * the position and leave the token in the wallet), --skip-rent (leave the ATA open).
+ * the position and leave the token in the wallet), --skip-rent (leave the ATA open),
+ * --skip-close (the position is ALREADY closed — do steps 2 and 3 only: sell whatever token
+ * the wallet still holds and reclaim the ATA's rent. Added 18 Sep 2026 after the controlled
+ * TripleT-SOL validation open: the close withdrew 796.59 TripleT, the sell step had only read
+ * the 23.57 that was in the wallet BEFORE the close, and re-running without this flag stopped
+ * at "position account does not exist" with the capital parked on-chain).
  */
 import BN from "bn.js";
 import {
@@ -72,6 +77,7 @@ function arg(name: string): string | undefined {
 const POOL = arg("pool");
 const POSITION = arg("position");
 const SKIP_SELL = argv.includes("--skip-sell");
+const SKIP_CLOSE = argv.includes("--skip-close");
 const SKIP_RENT = argv.includes("--skip-rent");
 const SLIPPAGE_BPS = arg("slippage-bps") ? Number(arg("slippage-bps")) : undefined;
 
@@ -242,29 +248,49 @@ async function simulateClose(conn: Connection, owner: PublicKey, pool: any, posi
 
   const { info, position, pool } = await readOrphan(conn, owner, POOL!, POSITION!);
   if (info === null) {
-    console.log("\nposition account does not exist — nothing to recover.");
-    return;
-  }
-  console.log(`\nposition account: ${info.lamports} lamports (${sol(info.lamports)} SOL of rent), ${info.data.length} bytes`);
-  if (position === null) {
-    console.log("position could not be decoded by the SDK — refusing to touch it.");
-    process.exit(1);
-  }
+    if (!SKIP_CLOSE) {
+      console.log("\nposition account does not exist — nothing to recover.");
+      return;
+    }
+    /*
+     * `--skip-close`, the 18 Sep 2026 shape: the position was ALREADY closed (a previous run,
+     * or by hand) and the paired token that close withdrew is still sitting in the wallet.
+     * Without this flag the script stops here — correct for an orphan, but it leaves the
+     * capital parked, which is the exact residue class this file exists to clear: after the
+     * controlled TripleT-SOL validation open, `removeLiquidity` returned 796.59 TripleT to the
+     * wallet and the close run's sell step had only known about the 23.57 it read pre-close.
+     * Only step 1 is skipped; the sell and the ATA reclaim below are still the engine's own.
+     */
+    console.log("\n--skip-close: the position account is gone; selling whatever token the wallet still holds.");
+  } else {
+    console.log(`\nposition account: ${info.lamports} lamports (${sol(info.lamports)} SOL of rent), ${info.data.length} bytes`);
+    if (position === null) {
+      console.log("position could not be decoded by the SDK — refusing to touch it.");
+      process.exit(1);
+    }
 
-  const bins = position.positionData.positionBinData;
-  const fundedBins = bins.filter((b: any) => BigInt(b.positionLiquidity ?? 0) > 0n);
-  console.log(
-    `liquidity: ${position.positionData.totalXAmount} X + ${position.positionData.totalYAmount} Y across ` +
-      `${fundedBins.length} of ${bins.length} bins | unclaimed fees ${position.positionData.feeX} X / ${position.positionData.feeY} Y`,
-  );
-  const holdsValue =
-    BigInt(position.positionData.totalXAmount ?? 0) > 0n ||
-    BigInt(position.positionData.totalYAmount ?? 0) > 0n ||
-    BigInt(position.positionData.feeX ?? 0) > 0n ||
-    BigInt(position.positionData.feeY ?? 0) > 0n;
-  if (!holdsValue) console.log("position holds NO liquidity and NO unclaimed fees — rent only.");
+    const bins = position.positionData.positionBinData;
+    const fundedBins = bins.filter((b: any) => BigInt(b.positionLiquidity ?? 0) > 0n);
+    console.log(
+      `liquidity: ${position.positionData.totalXAmount} X + ${position.positionData.totalYAmount} Y across ` +
+        `${fundedBins.length} of ${bins.length} bins | unclaimed fees ${position.positionData.feeX} X / ${position.positionData.feeY} Y`,
+    );
+    const holdsValue =
+      BigInt(position.positionData.totalXAmount ?? 0) > 0n ||
+      BigInt(position.positionData.totalYAmount ?? 0) > 0n ||
+      BigInt(position.positionData.feeX ?? 0) > 0n ||
+      BigInt(position.positionData.feeY ?? 0) > 0n;
+    if (!holdsValue) console.log("position holds NO liquidity and NO unclaimed fees — rent only.");
+  }
 
   if (!EXECUTE) {
+    if (SKIP_CLOSE) {
+      console.log(
+        "\nDRY RUN — close skipped (--skip-close). With `--execute` the script would sell the " +
+          "wallet's token (the step-2 quote is printed then) and reclaim the empty ATA's rent.",
+      );
+      return;
+    }
     console.log("\n--- simulating the close (removeLiquidity 100% + shouldClaimAndClose) ---");
     try {
       const sims = await simulateClose(conn, owner, pool, position);
@@ -282,16 +308,20 @@ async function simulateClose(conn: Connection, owner: PublicKey, pool: any, posi
     return;
   }
 
-  console.log("\n=== 1. closing the funded orphan (withdraw + claim + close) ===");
-  const outcome = await dlmmExecutor.closeOrphanPosition(auth, {
-    poolAddress: POOL!,
-    positionAddress: POSITION!,
-  });
-  console.log(`state=${outcome.state} liquidityX=${outcome.liquidityX} liquidityY=${outcome.liquidityY} fees=${outcome.unclaimedFeeX}/${outcome.unclaimedFeeY}`);
-  for (const s of outcome.signatures) console.log(`  close signature: ${s}`);
-  if (outcome.state !== "closed") {
-    console.log("Nothing was closed. Stopping before the sell so the wallet is left in a state you can inspect.");
-    return;
+  if (SKIP_CLOSE) {
+    console.log("\n=== 1. close skipped (--skip-close) ===");
+  } else {
+    console.log("\n=== 1. closing the funded orphan (withdraw + claim + close) ===");
+    const outcome = await dlmmExecutor.closeOrphanPosition(auth, {
+      poolAddress: POOL!,
+      positionAddress: POSITION!,
+    });
+    console.log(`state=${outcome.state} liquidityX=${outcome.liquidityX} liquidityY=${outcome.liquidityY} fees=${outcome.unclaimedFeeX}/${outcome.unclaimedFeeY}`);
+    for (const s of outcome.signatures) console.log(`  close signature: ${s}`);
+    if (outcome.state !== "closed") {
+      console.log("Nothing was closed. Stopping before the sell so the wallet is left in a state you can inspect.");
+      return;
+    }
   }
 
   const tokenPrograms: Record<string, string> = {};
