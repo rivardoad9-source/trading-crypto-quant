@@ -178,3 +178,50 @@ close.
 
 Berkas dist/engine TIDAK dibangun ulang: engine live tetap menjalankan dist yang lama dan tidak
 tahu-menahu soal tabel baru — nol risiko ke jalur trade.
+
+## Counterfactual gate: sampel tiap CYCLE, bukan tiap trade (17 Sep 2026)
+
+Masalahnya: kalau sampel cuma dari trade yang jalan, kita butuh berminggu-minggu. Tapi engine
+sudah mencatat SETIAP kandidat yang ditolak gate, lengkap dengan angka miliknya sendiri
+(`[friction] rejected <pair>: 24h fee $X covers round-trip cost $Y only Rx (need 2.5x)` di log
+error). Dari situ kita bisa hitung: pool mana yang BAKAL lolos kalau bar-nya pakai biaya terukur.
+
+Model: `cost_terukur / cost_lama = (0,4444% + 1,32%) / (0,4444% + 2,00%) = 0,72183`
+(gas 0,008 SOL & notional 1,8 SOL → rasionya tetap walau harga SOL berubah). Jadi fee yang
+dibutuhkan = `2,5 x cost_lama x 0,72183 = 1,80458 x cost_lama`.
+
+`scripts/agent_diag/gate_counterfactual.py` (cron 15 menit, read-only, nol notional) mencatat
+tiap penolakan ke `~/.hermes/data/gate_counterfactual.db` dan **diam** kalau tidak ada yang baru.
+
+**Backfill seluruh log (2272 penolakan, 16 pool):**
+
+```
+observasi 2272 · pool unik 16 · lolos model LAMA 0 · lolos model TERUKUR 587 (11 pool)
+
+pool             observasi  lolos terukur  rasio terbaik
+fone-SOL               377            162         3,46x
+MANLET-SOL             276             98         2,87x
+EMBER-SOL              114             81         3,43x
+fone-USDC              119             75         3,45x
+STONK-SOL               86             61         3,32x
+Pistacio-SOL           102             55         3,38x
+LEVERCAT-SOL            46             26         3,43x
+ZCAT-SOL                54             23         2,97x
+CATE-SOL               642              3         3,10x
+```
+
+**Cara baca yang jujur — ini BUKAN bukti profitabilitas:**
+
+1. `lolos terukur` = throughput gate, bukan hasil trade. 587 dari 2272 itu **event**, bukan 587
+   peluang independen: pool yang sama muncul ratusan kali dalam ratusan cycle.
+2. Log pm2 tidak punya timestamp per baris, jadi baris backfill semuanya bertanggal waktu
+   backfill — deret waktu baru bisa dibangun dari sweep ke depan, bukan dari data lama.
+3. Kolom `pass_live = 0` itu by construction (baris ini memang hasil penolakan), jadi bukan temuan;
+   yang berguna cuma kolom `pass_measured`.
+4. Rasio terbaik mayoritas 2,9–3,5x — artinya di model terukur mereka cuma lewat tipis di atas
+   2,5x, bukan lewat jauh.
+5. Untuk bisa dipakai memutuskan, tiap event harus diSkor hasilnya (TP +5% / SL −8% / max age 24h)
+   pakai harga setelahnya — belum dikerjakan; butuh resolusi pair → pool address + OHLCV.
+
+Jalan pintas kalau nanti mau skor: `python3 ~/.hermes/scripts/gate_counterfactual.py --summary [jam]`.
+
