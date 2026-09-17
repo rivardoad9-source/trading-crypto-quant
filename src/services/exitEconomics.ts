@@ -122,11 +122,19 @@ export function valueAtPoolPriceLamports(
   return Math.round(human * solPerToken * LAMPORTS_PER_SOL);
 }
 
-/** Which side SOL is on, from the pair label ("TOKEN-SOL" / "SOL-TOKEN"); null when neither. */
+/**
+ * Which side SOL is on, from the pair label ("TOKEN-SOL" / "SOL-TOKEN"); null when neither.
+ *
+ * The QUOTE is the LAST segment, not the second one: a base ticker may itself contain a dash
+ * (`DOGE-1-SOL`), and splitting once gave `quote = "1"` — so DOGE-1's entry concession came
+ * back "cannot tell which side of the pair SOL is" while the pool clearly quotes in SOL.
+ * Found on 17 Sep 2026 when the entry-side measurement hit exactly that pool.
+ */
 export function solIsQuoteFromPairName(pairName: string): boolean | null {
-  const [base, quote] = pairName.toUpperCase().split("-");
-  if (quote === "SOL") return true;
-  if (base === "SOL") return false;
+  const parts = pairName.toUpperCase().split("-").filter(Boolean);
+  if (parts.length === 0) return null;
+  if (parts[parts.length - 1] === "SOL") return true;
+  if (parts[0] === "SOL") return false;
   return null;
 }
 

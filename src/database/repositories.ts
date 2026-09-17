@@ -1,5 +1,6 @@
 import { db } from "./db.js";
 import type { ExitEconomicsRow } from "../services/exitEconomics.js";
+import type { EntryEconomicsRow } from "../services/entryEconomics.js";
 import {
   CLOSED_STATUSES,
   COOLDOWN_STATUSES,
@@ -1495,6 +1496,83 @@ export interface ExitEconomicsDbRow {
   pool_price_after_sweep: number | null;
   sweep_concession_after_sweep_bps: number | null;
   exit_cost_after_sweep_bps: number | null;
+}
+
+/**
+ * Writes one entry measurement. Insert-if-absent on `position_id`, so the scheduled sweep and
+ * a manual backfill can never double-count — the same contract as the exit table.
+ */
+export function insertEntryEconomicsIfAbsent(row: EntryEconomicsRow): boolean {
+  const result = db
+    .prepare(
+      `INSERT OR IGNORE INTO entry_economics (
+         position_id, pair_name, mint, bin_step, notional_lamports, tvl_usd_at_entry,
+         pool_price_at_entry, swap_signature, open_signature, swap_in_lamports, tokens_received,
+         expected_tokens, entry_fee_lamports, entry_concession_bps, entry_cost_bps,
+         pool_price_after_entry, entry_concession_after_price_bps, entry_cost_after_price_bps,
+         source, notes
+       ) VALUES (
+         @positionId, @pairName, @mint, @binStep, @notionalLamports, @tvlUsdAtEntry,
+         @poolPriceAtEntry, @swapSignature, @openSignature, @swapInLamports, @tokensReceived,
+         @expectedTokens, @entryFeeLamports, @entryConcessionBps, @entryCostBps,
+         @poolPriceAfterEntry, @entryConcessionAfterPriceBps, @entryCostAfterPriceBps,
+         @source, @notes
+       )`,
+    )
+    .run({
+      positionId: row.positionId,
+      pairName: row.pairName,
+      mint: row.mint,
+      binStep: row.binStep,
+      notionalLamports: row.notionalLamports,
+      tvlUsdAtEntry: row.tvlUsdAtEntry,
+      poolPriceAtEntry: row.poolPriceAtEntry,
+      swapSignature: row.swapSignature,
+      openSignature: row.openSignature,
+      swapInLamports: row.swapInLamports,
+      tokensReceived: row.tokensReceived,
+      expectedTokens: row.expectedTokens,
+      entryFeeLamports: row.entryFeeLamports,
+      entryConcessionBps: row.entryConcessionBps,
+      entryCostBps: row.entryCostBps,
+      // `?? null`: a row built by an older caller without these fields binds NULL, never undefined.
+      poolPriceAfterEntry: row.poolPriceAfterEntry ?? null,
+      entryConcessionAfterPriceBps: row.entryConcessionAfterPriceBps ?? null,
+      entryCostAfterPriceBps: row.entryCostAfterPriceBps ?? null,
+      source: row.source,
+      notes: row.notes.length ? row.notes.join(" | ") : null,
+    });
+  return result.changes > 0;
+}
+
+export interface EntryEconomicsDbRow {
+  position_id: string;
+  pair_name: string | null;
+  mint: string | null;
+  bin_step: number | null;
+  notional_lamports: number | null;
+  tvl_usd_at_entry: number | null;
+  pool_price_at_entry: number | null;
+  swap_signature: string | null;
+  open_signature: string | null;
+  swap_in_lamports: number | null;
+  tokens_received: string | null;
+  expected_tokens: string | null;
+  entry_fee_lamports: number | null;
+  entry_concession_bps: number | null;
+  entry_cost_bps: number | null;
+  pool_price_after_entry: number | null;
+  entry_concession_after_price_bps: number | null;
+  entry_cost_after_price_bps: number | null;
+  source: string;
+  measured_at: string;
+  notes: string | null;
+}
+
+export function listEntryEconomics(): EntryEconomicsDbRow[] {
+  return db
+    .prepare(`SELECT * FROM entry_economics ORDER BY measured_at, position_id`)
+    .all() as EntryEconomicsDbRow[];
 }
 
 export function listExitEconomics(): ExitEconomicsDbRow[] {

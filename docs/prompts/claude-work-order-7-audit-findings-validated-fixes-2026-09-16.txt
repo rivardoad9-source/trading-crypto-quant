@@ -1,0 +1,229 @@
+WORK ORDER #7 — FlowMetrix (from the operator, 16 Sep 2026 ~23:00 WIB)
+
+WHAT HAPPENED (why this work order exists)
+==========================================
+Your audit `docs/audits/2026-09-16-code-audit.md` (commit `9b0584e`, branch
+`work/backtest-scenario-lab`) reports eight findings and fixes none, which was the point.
+
+The operator then validated all eight independently — by EXECUTING, not by reading — against the
+frozen 91-day micro cache, the live database and the live API on 127.0.0.1:4000. Per finding:
+
+  #1 HIGH   Real code, real bug, real fix — but the "costs money if it fires" trigger is NOT
+            reachable at this engine's position size. Measured: the largest residual ever recorded
+            is 4 498 666 263 raw units (`exit_economics.sweep_in_amount`, EMBER-SOL), 2 002 193x
+            below 2^53-1. At the live $189 position cap, a residual can only exceed 2^53 if the
+            token trades below $2.1e-14. Your rounding table reproduces exactly (20 000 samples
+            per bucket: 25.1/25.4/49.5% up/down/exact, worst over-request 1 unit; 48.9/49.5/1.5%,
+            worst 32; 37.4/37.6/25.0%, worst 2), so your method is sound. The auto-unwind path HAS
+            fired once in production (attempt id 5, NEARKAT-SOL, 13 Sep, `rescue_signature`
+            present, `unwind=clean`) — on an amount small enough to be exact.
+  #2 MEDIUM CONFIRMED. Both copies test only `includes("T")`; the canonical reader does not. Your
+            latency claim is also true empirically: 756 stored timestamp values scanned across
+            every timestamp column of the live DB, 0 in the dangerous form.
+  #3 MEDIUM CONFIRMED AND REPRODUCED. This is the most dangerous finding in the report for the
+            operator, because it turns "not measured" into "measured no effect".
+  #4 MEDIUM CONFIRMED AND REPRODUCED.
+  #5 LOW    CONFIRMED. The JSON records no arm.
+  #6 LOW    CONFIRMED. The flag fires only at the extreme: `0 / 20 (dead 100.0%)`.
+  #7 LOW    ROOT CAUSE CORRECT, STATED CONSEQUENCE WRONG. You wrote "No crash; the caller gets
+            HTTP 200 and an empty month". The live API answers HTTP 500 with
+            `RangeError: Invalid time value`. Details in Task 2.
+  #8 LOW    CONFIRMED, with the exact count (six, not four).
+
+So: seven tasks, each anchored to a measurement. Nothing here changes a strategy decision, and
+nothing here is an incident response — see GUARDRAILS for what must NOT move.
+
+TASK 1 — `--sweep` must refuse a field name that is not a config field (finding #3)
+====================================================================================
+The lever that silently measures nothing, in a tool whose entire product is the measurement.
+
+Reproduced on the frozen cache, 91-day window, `--sweeponly`:
+
+  --sweep=stopLoss:-12          S:stopLoss=-12     20 trade  PF 3.25  $500.64  DD 10.6%  vs A  $0.00
+  --sweep=stopLossPct:-12       S:stopLossPct=-12  16 trade  PF 6.95  $531.31  DD  9.6%  vs A +$30.67
+
+Baseline A on the same cache and window: 20 trade, PF 3.25, $500.64, DD 10.6%. The typo row is
+identical to the baseline in every column and prints `vs A $0.00` — which reads as "this lever
+does nothing", when in fact the flag never applied.
+
+`sweepScenarios` (`scripts/scenarioLab.ts:357-375`):
+
+    const key = field.trim() as keyof BacktestConfig;
+    ...
+    out.push({ ... { config: { ...base, [key]: value } as BacktestConfig } });
+
+The cast asserts a key that was never checked, so an unknown name becomes an inert extra property
+on the config object. Nothing downstream can tell.
+
+FIX. Validate the field name against the config BEFORE any scenario runs and throw with a message
+that names: the offending field, the closest valid field when one is close (`stopLoss` ->
+`stopLossPct`), and the full list of sweepable keys. Derive the allowed set from the base config
+object itself, not from a second hard-coded list, so the two cannot drift apart.
+
+ACCEPTANCE. `--sweep=stopLoss:-12` must exit non-zero having run ZERO scenarios. A valid sweep
+must still run, and its JSON row must actually carry the new value (nothing asserts that today —
+add it; `S:stopLossPct=-12` above changes trades, PF and drawdown, so the value does arrive for a
+real field, and there is no test that would notice if it stopped).
+
+TASK 2 — `GET /api/pnl-calendar` must refuse an impossible month, and the audit's claim must be corrected (finding #7)
+====================================================================================================================
+Your root cause is right: `^\d{4}-\d{2}$` at `src/api/server.ts:225` admits `2026-00`, `2026-13`
+and `2026-99`. Your stated consequence is wrong, and the code that disproves it is the code you
+audited — `git diff ade305f 9b0584e -- src/api/server.ts src/database/repositories.ts
+src/services/timezone.ts` is EMPTY, so the deployed engine is byte-identical to HEAD here.
+
+Measured against the live API:
+
+  month=2026-09 (valid)   ->  HTTP 200
+  month=2026-05 (no trades) -> HTTP 200, 2479 bytes, empty day list  <- this must KEEP working
+  month=2026-99           ->  HTTP 500 {"error":"internal error","statusCode":500}
+  month=2026-00           ->  HTTP 500
+  month=2026-13           ->  HTTP 500
+
+Engine error log, verbatim:
+
+  [api] GET /api/pnl-calendar?month=2026-13&cohort=all failed: RangeError: Invalid time value
+      at DateTimeFormat.formatToParts (<anonymous>)
+      at offsetMinutesAt (/home/ubuntu/flowmetrix-ai-agent/src/services/timezone.ts:40:6)
+      at zonedDayStartUtc (/home/ubuntu/flowmetrix-ai-agent/src/services/timezone.ts:77:55)
+      at aggregateClosedTradesByDate (/home/ubuntu/flowmetrix-ai-agent/src/database/repositories.ts:523:16)
+      at Object.<anonymous> (/home/ubuntu/flowmetrix-ai-agent/src/api/server.ts:240:18)
+
+`new Date("2026-99-01T00:00:00Z")` is an Invalid Date, so the day-start resolver throws before any
+SQL runs. The "not measured vs measured zero" danger you invoked does not occur: the call fails
+loudly. Fixing the check is still right — a 500 on a GET is a bug, and it is the honest fix for
+the cause you found.
+
+FIX.
+  * Range-check the month (1..12) and answer 400 in the same shape as the existing
+    `month must be formatted as YYYY-MM` error; do not let it reach the day-start resolver.
+  * Tests: `2026-00`, `2026-13`, `2026-99` -> 400; `2026-09` and a valid month with no trades ->
+    200 with an empty day list (both must keep working).
+  * CORRECT `docs/audits/2026-09-16-code-audit.md` finding #7 in place: state the measured
+    consequence and keep the original claim visible as corrected. Also fix the "No crash" line in
+    that document's ranking table. Do not delete the finding — a wrong evidence line left standing
+    is exactly the failure mode this repository keeps paying for, and that document is what the
+    next reader trusts.
+
+TASK 3 — a raw token amount must not pass through `Number` on the money path (finding #1)
+=========================================================================================
+Three token -> SOL sites, all confirmed:
+
+  `src/services/liveExecution.ts:1844`   `amountLamports: Number(current)`   auto-unwind after a failed open
+  `src/services/liveExecution.ts:2341`   `amountLamports: Number(amount)`    the sweep's quote
+  `src/services/liveExecution.ts:2350`   `amountLamports: Number(amount)`    the sweep's sale
+
+while the SAME deps object passes `amount.toString()` for the pool route (`:2361`, `:2370`). Your
+"one quantity, two conversions" tell is confirmed and it is the reason to fix this.
+
+FIX — minimal and fail-closed:
+  * The exact raw amount must reach the Jupiter boundary as bigint/string, the way the pool route
+    already does. The quote and the sale must be built from the SAME exact value; today each
+    rounds independently, so they can disagree with each other as well as with the balance.
+  * If a `number` caller cannot be represented exactly, THROW. Never round silently: an
+    over-request is refused by the token program, the sweep then pages the operator, and the
+    capital stays in the token — which is the one failure this ladder exists to prevent.
+  * Boundary test: balances at 2^53-1, 2^53, 2^53+1 and a non-representable value above it.
+    Assert the requested amount, as a string, is <= the balance as a bigint, and that nothing
+    rounds up. This test must FAIL against today's code for the non-representable case.
+  * In your status, rank this by the measured distance, not by the hypothetical: the largest
+    residual ever recorded is 4.5e9 raw units (2 million times below the threshold), the threshold
+    needs a token priced below $2.1e-14 at a $189 cap, and the single production exercise of the
+    auto-unwind (attempt id 5) passed an exact amount. Fix it — it is two lines and it is on the
+    exit path — but I do not want a HIGH whose trigger needs a $1e-14 token.
+
+TASK 4 — `--days` must compare requested against achieved (finding #4)
+======================================================================
+Reproduced: `--days=200` against the 91-day micro cache prints
+
+  window : 2026-06-14 04:00 -> 2026-09-13 03:00 UTC (200d)
+
+and the JSON records `dataset: { ..., windowDays: 200 }` (`scripts/scenarioLab.ts:620`), while the
+span actually delivered is 91 days. `trimDataset` (`:345-355`) never compares the two.
+
+FIX: reuse the requested-vs-achieved warning `runAnnual.ts` already implements, in the header, the
+transcript and the caveats. The JSON must record the ACHIEVED days as its own field
+(`achievedDays`) — keep `windowDays` as the request, but never as the only number a later
+comparison can key on. A 91-day result must never be quotable as a 200-day one.
+
+TASK 5 — the JSON must record which arm ran, and the cohort check must see a share (findings #5, #6)
+===================================================================================================
+Measured JSON from a run: `universe: {"pools":21,"survivors":10,"dead":11}` — no arm. The console
+says `universe : FULL (22 pool) - tidak ada pool live-eligible`, so only the transcript
+distinguishes a live-eligible run from a full-universe one. Your finding #5 also cites the 16 Sep
+run as live-eligible 23/32 for the integrity dataset against full 22/22 for the micro dataset; the
+operator confirmed the micro side (a run header reads `universe : FULL (22 pool) - tidak ada pool
+live-eligible`) and did not re-run the integrity arm, so treat that pair as your claim, not a
+verified one — and record the arm in the JSON so neither number has to be reconstructed from a
+transcript again.
+
+FIX:
+  * `universe.arm: "live-eligible" | "full"` must be IN THE JSON, not only on the console.
+  * The cohort-concentration check must report the SHARE and warn on a threshold, instead of
+    firing only when a cohort contributes exactly zero. Every scenario in the 16 Sep run drew
+    88-91% of its trades from the dead-or-dormant cohort and passed without a word; in the operator's
+    own reproduction the flag only appeared at the extreme (`0 / 20 (dead 100.0%)`). Keep the
+    current wording for the extreme case; a share threshold is what makes the check able to see
+    the condition it exists to catch.
+
+TASK 6 — one implementation of the stored-timestamp rule (finding #2)
+=====================================================================
+Canonical `parseDbTimestamp` (`src/services/meteora.ts:432-440`) tests
+`raw.includes("T") || /([zZ]|[+-]\d{2}:?\d{2})$/.test(raw)`. Both copies test only
+`includes("T")`: `parseStamp` (`src/services/liveReport.ts:197-201`) and `ms`
+(`src/services/reconciliation.ts:133-139`), so `"2026-09-16 10:00:00Z"` and
+`"2026-09-16 10:00:00+07:00"` return null where the canonical returns a number.
+
+Latent, measured: 756 stored timestamp values scanned across every timestamp column of the live
+DB, 0 in the dangerous form. Note where the copies live — in `reconciliation.ts` a null is the
+difference between a row being compared and being excluded from both totals as unmeasured.
+
+FIX: both copies delegate to the canonical reader. Behaviour on every value stored today must be
+identical (assert it); null must keep meaning "unmeasured".
+
+TASK 7 — document the real allowlist size (finding #8)
+======================================================
+`src/tests/onchainExecutor.test.ts:205-211` lists SIX allowed importer paths:
+`onchainExecutor.ts`, `liveExecution.ts`, `onchainExecutor.test.ts`, `scripts/testMicroSwap.ts`,
+`scripts/recoverFundedOrphan.ts`, `scripts/retryResidualSweep.ts`. CLAUDE.md says "four entries"
+at line 829 and line 1662. Update the count, and if the tripwire sentence depends on the number,
+restate it so that a seventh entry is still the moment to ask whether it should call the bridge
+instead.
+
+GUARDRAILS (unchanged, applies to all of the above)
+===================================================
+DO NOT deploy. DO NOT restart or touch pm2. DO NOT touch `.env`, any config value, or anything
+financial (`STARTING_BALANCE_USD`, slippage, caps, limits). DO NOT create or modify cron jobs.
+NO on-chain transactions and no funded-wallet calls; the whole work order is offline.
+
+DO NOT change the exit logic or the range logic of V1.1 — both are frozen by operator decision.
+DO NOT "improve" a backtest result: Task 1 must make the tool fail loudly, Task 4 must disclose,
+Task 5 must label. If any of these changes moves a headline number in `scenario_lab.json`, that is
+a bug in the change, not a result.
+
+Branch work, tests, and a written status only.
+
+WHAT I EXPECT BACK
+==================
+1. The branch with all seven tasks (or the subset you can defend), tests included.
+2. A short written status: what changed per finding, the exact `npm test`, `npm run typecheck` and
+   `npm run build` output, and an explicit COMPLETE / NOT COMPLETE line for each of tasks 1-7.
+3. For finding #1, the severity you would now give it and the number you are ranking it against.
+4. If any task is wrong or impossible as described, say so and why — do not silently substitute a
+   different fix, and do not silently skip a finding.
+
+EVIDENCE THE FIX CAN BE JUDGED AGAINST
+======================================
+All produced by the operator on 16 Sep 2026 against
+`.cache/historical_data_micro_frozen.json` (ingested 2026-09-16T03:01:55Z, 91-day window),
+`git diff` to the deployed main confirming the audited code is the running code.
+
+Finding #3, both runs, verbatim table rows:
+  S:stopLoss=-12    20 trade  85.0%  PF 3.25  $500.64  66.9%  DD 10.6%  vs A   $0.00
+  S:stopLossPct=-12 16 trade  93.8%  PF 6.95  $531.31  77.1%  DD  9.6%  vs A  $30.67
+Finding #4, header: `window : 2026-06-14 04:00 -> 2026-09-13 03:00 UTC (200d)` on a 91-day cache.
+Finding #7, live API: HTTP 500, `{"error":"internal error","statusCode":500}`, stack above.
+Finding #1, database: `SELECT MAX(sweep_in_amount) FROM exit_economics` = 4498666263; attempts with
+`rescue_signature IS NOT NULL` = 1 (id 5).
+Finding #2, database scan: 756 stored timestamps, 0 zone-and-space.
+Finding #5, JSON: `"universe":{"pools":21,"survivors":10,"dead":11}`.

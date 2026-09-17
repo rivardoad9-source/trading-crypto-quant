@@ -129,3 +129,52 @@ python3 scripts/agent_diag/compile_gate_sweep.py                   # tabel 31 sk
 
 Artefak: `docs/backtests/runs/gate_sweep/{TABLE.txt,SUMMARY.json,<tag>.json.gz,<tag>.log.gz}`,
 `~/.hermes/scripts/diag/out/swap_concession.json`.
+
+## Tindak lanjut: `entry_economics` — koncesi leg ENTRY dicatat sistematis (17 Sep 2026)
+
+Sampel exit tidak bisa nambah tanpa close baru, tapi sampel ENTRY bisa: tiap entry live sudah
+menyimpan signature swap-nya. Maka jalur pengukurannya dipindah dari skrip sekali-pakai ke
+mesin, simetris dengan `exit_economics`.
+
+Yang ditambahkan (semua di luar jalur trade — nol perubahan ke engine live):
+
+| Berkas | Isi |
+|---|---|
+| `src/database/db.ts` | tabel `entry_economics` (DDL, + `migrate` aman kalau DB lama) |
+| `src/services/entryEconomics.ts` | derivasi: `lamportsSpentByPayer`, `tokenReceivedByOwner`, `tokensAtPoolPrice`, `measureEntryEconomics` |
+| `src/services/entryEconomicsBackfill.ts` | `runEntryEconomicsBackfill` (idempoten, `insert-if-absent`, `--dry-run`) |
+| `src/scripts/backfillEntryCosts.ts` | CLI `npm run entrycosts:backfill [-- --dry-run]` |
+| `src/database/repositories.ts` | `insertEntryEconomicsIfAbsent`, `listEntryEconomics` |
+| `src/tests/entryEconomics.test.ts` | 16 tes (matematika + aturan "tak terukur = NULL, bukan 0") |
+| `~/.hermes/scripts/entrycosts_sweep.sh` + cron `*/15` | sapuan tiap 15 menit, DIAM kalau tidak ada entry baru |
+
+Aturan yang dipegang sama seperti sisi exit: angka yang tidak terukur ditulis NULL + alasan,
+bukan 0. Harga "landing" (setelah swap mendarat) cuma dipakai kalau sapuan jalan dalam 20 menit
+setelah entry — kalau lebih lambat, ditolak dan alasannya ditulis; `bin_step` tetap diambil
+karena tidak menua.
+
+**Hasil terukur di DB live (10 baris, 17 Sep 2026):**
+
+```
+entry (posisi)   n=7   koncesi median  82,4 bps (0,82%)  mean 110,4 bps  range −43,4..+245,9
+                       biaya/notional median 41,3 bps (0,41%)
+failed open      n=3   biaya/notional 82,3 · 665,2 · 877,2 bps (leg tidak dipisah)
+```
+
+Angka ini mengonfirmasi dua hal: (a) koncesi leg entry nyata dan skalanya sama dengan leg exit
+(bukan nol seperti di model), (b) model gate memang belum punya leg ini sama sekali. Median
+koncesi versi tool kanonik (82,4 bps) cocok dengan pengukuran skrip Python sekali-pakai
+(83,1 bps) — beda ~1 bps karena sumber desimal yang dipakai.
+
+**Perbaikan bug yang ketemu karena pengukuran ini:** `solIsQuoteFromPairName` dulu belah nama
+pair sekali (`split("-")` → `[base, quote]`), jadi `DOGE-1-SOL` terbaca `quote = "1"` dan
+koncesinya ditulis "tidak bisa ditentukan sisi SOL-nya". Sekarang quote = segmen TERAKHIR.
+Dampak: cuma kolom pengukuran (bukan jalur trade), dan cuma menambah angka yang tadinya NULL.
+
+**Batasan yang masih berdiri:** 1 wallet, 10 entry (mayoritas satu pool EMBER-SOL), dan koncesi
+masih campuran slippage + gerak harga antara keputusan dan mendarat. Ini masih terlalu tipis
+untuk mengubah konstanta gate; sampelnya sekarang bertambah otomatis tiap entry, tanpa nunggu
+close.
+
+Berkas dist/engine TIDAK dibangun ulang: engine live tetap menjalankan dist yang lama dan tidak
+tahu-menahu soal tabel baru — nol risiko ke jalur trade.

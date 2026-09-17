@@ -238,6 +238,42 @@ export function initDatabase(): void {
   addColumnIfMissing("exit_economics", "sweep_concession_after_sweep_bps", "REAL");
   addColumnIfMissing("exit_economics", "exit_cost_after_sweep_bps", "REAL");
 
+  /*
+   * What a live ENTRY actually cost, one row per opened position (17 Sep 2026). The entry
+   * gate prices a round trip as `gas + forced-exit slippage` and the entry leg has no term;
+   * measured on-chain (n=7) it is a median 0,42% of notional, so this is where those points
+   * accumulate. Deliberately its own table for the same reason as `exit_economics`: a
+   * measurement can be re-derived without touching the trade row, and a NULL here ("not
+   * measured") must never be confused with a column that did not exist yet. UNIQUE(position_id)
+   * makes `npm run entrycosts:backfill` idempotent — and safe to run on a schedule, which is
+   * how the sample grows without waiting for a close. Written by the backfill only; the trade
+   * path is untouched, so a measurement can never cost an entry.
+   */
+  db.exec(`CREATE TABLE IF NOT EXISTS entry_economics (
+    id                                INTEGER PRIMARY KEY AUTOINCREMENT,
+    position_id                       TEXT NOT NULL UNIQUE,
+    pair_name                         TEXT,
+    mint                              TEXT,
+    bin_step                          INTEGER,
+    notional_lamports                 INTEGER,
+    tvl_usd_at_entry                  REAL,
+    pool_price_at_entry               REAL,
+    swap_signature                    TEXT,
+    open_signature                    TEXT,
+    swap_in_lamports                  INTEGER,
+    tokens_received                   TEXT,
+    expected_tokens                   TEXT,
+    entry_fee_lamports                INTEGER,
+    entry_concession_bps              REAL,
+    entry_cost_bps                    REAL,
+    pool_price_after_entry            REAL,
+    entry_concession_after_price_bps  REAL,
+    entry_cost_after_price_bps        REAL,
+    source                            TEXT NOT NULL,
+    measured_at                       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    notes                             TEXT
+  )`);
+
   initialised = true;
   console.log(`[db] ready at ${dbPath}`);
 }
