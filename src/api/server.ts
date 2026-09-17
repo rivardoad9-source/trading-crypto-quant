@@ -380,7 +380,27 @@ export async function startApiServer(): Promise<FastifyInstance> {
 
   initDatabase();
   const app = buildServer();
-  await app.listen({ port: env.PORT, host: "0.0.0.0" });
+  /*
+   * LOOPBACK ONLY, and this is a change of exposure, not of behaviour.
+   *
+   * Every route here is a GET and there is no auth middleware, so what 0.0.0.0 cost was
+   * information disclosure rather than control: the wallet address, the equity, the open
+   * positions and the reasoning log were readable by anyone who could reach the port.
+   * Nobody can spend money through this surface - the kill switch is Telegram and the
+   * control file - but a wallet address plus a live position size is enough to find the
+   * positions on-chain and trade against them.
+   *
+   * Binding here breaks nothing that was using it. The dashboard never calls this port
+   * from the browser: `dashboard/next.config.mjs` rewrites `/:path*` to
+   * `http://127.0.0.1:4000/api/:path*` SERVER-SIDE, and `NEXT_PUBLIC_API_URL` is empty,
+   * so the bundle ships relative paths. Verified 17 Sep 2026 by grepping .next/static
+   * for a :4000 literal (none) and by fetching :3000/overview (API payload).
+   *
+   * Reaching it from outside is now an SSH tunnel:
+   *     ssh -L 4000:127.0.0.1:4000 ubuntu@<vm>
+   * See docs/OPS-NETWORK.md.
+   */
+  await app.listen({ port: env.PORT, host: "127.0.0.1" });
   instance = app;
 
   console.log(`[api] listening on http://localhost:${env.PORT}/api`);
