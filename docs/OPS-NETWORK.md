@@ -137,3 +137,24 @@ If you are already locked out, the provider's serial/VNC console is the way back
   left alone deliberately: it is the Lynk receiver, outside this change's scope, and
   `cloudflared` reaches it over loopback either way. Binding it to `127.0.0.1` would be
   strictly better and is a separate, small change.
+
+
+## Dashboard is stopped on purpose (17 Sep 2026)
+
+`pm2 stop flowmetrix-dashboard` + `pm2 save`, at the operator's request: he reads history on
+Meteora/Jupiter directly, and this process was the least stable thing on the box (52 restarts,
+a Next.js server-action error). Nothing else depends on `:3000` — the engine API, the cron jobs
+and the Lynk webhook talk to `:4000`, `:8645` and the DB directly.
+
+Stated so a later session does not read it as a crash:
+
+- `:3000` not listening is **expected**, not a failure.
+- `flowmetrix_analytics_refresh.sh` no longer restarts it — it restarts only when the process is
+  already online, so the 4-hourly job cannot revive it by accident. The regenerated
+  `analytics.html` is still copied into `dashboard/public/` and is served the moment a human
+  starts the process again.
+- Restore: `pm2 start flowmetrix-dashboard && pm2 save`.
+- `pm2 save` ran while it was stopped. `pm2 resurrect` after a reboot may still start what is in
+  the dump; if that matters, check `pm2 list` after a reboot and stop it again.
+- The loopback bind in `dashboard/package.json` (`next start -H 127.0.0.1`) stays, so it comes
+  back loopback-only.
