@@ -1,7 +1,7 @@
 {
-  "generatedAt": "2026-09-17T12:18:39.305Z",
+  "generatedAt": "2026-09-17T12:40:28.673Z",
   "dataSource": "GeckoTerminal hourly OHLCV + Meteora point-in-time pool universe",
-  "dataFetchedAt": "2026-09-17T12:18:37.000Z",
+  "dataFetchedAt": "2026-09-17T12:40:26.000Z",
   "windowDays": 120,
   "caveats": [
     "MODELLED TVL — the load-bearing assumption. No free provider serves historical TVL for Meteora DLMM pools, so TVL at each bar is estimated as k x trailing-24h-volume, with k fitted per pool where observable and otherwise from the live cross-sectional median. Every entry filter (MIN_TVL_USD, fee/TVL bounds) runs against that estimate, not a measurement. A snapshot cannot be substituted: a rugged pool reads about $0 TVL today, so a snapshot filter would reject every dead pool and silently restore the survivorship bias.",
