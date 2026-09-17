@@ -3533,6 +3533,52 @@ export const dlmmExecutor: DlmmExecutor = {
       }
 
       /*
+       * RESERVE THE POOL'S SLIPPAGE MARGIN BEFORE THE FIRST CHUNK LANDS (17 Sep 2026, KNOTS-SOL).
+       *
+       * The plan above is bound to what the balancing swap DELIVERED, and the swap is sized to
+       * the deposit's own token need — so the plan asked for the wallet's ENTIRE paired balance
+       * and left nothing for the margin the program pulls with. `RebalanceLiquidity` withdraws
+       * the strategy's amounts widened by the pool slippage setting (3% here), so the sequence
+       * was only payable while the pool did not move at all. It moved: chunk 1 landed 1818.547645
+       * of the 3979.209942 planned, the remaining bins then asked for more of the token than the
+       * 2157.005388 the wallet still held, and chunk 2 was refused — `TransferChecked`,
+       * `Error: insufficient funds`. One shrink of 3% could not undo a shortfall the shrink's own
+       * arithmetic said did not exist, so the open ended as a partial execution: a funded position
+       * to withdraw by hand, 1763.991215 tokens stranded, and 0.094529764 SOL gone.
+       *
+       * Trimming to `balance / (1 + slippage)` makes the sequence payable BY CONSTRUCTION: every
+       * chunk's worst-case pull now fits what the wallet holds, with drift room to spare. The
+       * remainder (s% of the token side) stays in the wallet as dust instead of being asked for
+       * and refused, which is the whole point — a refusal mid-sequence is what costs money, and
+       * capital left in the wallet is not stranded, it is just small.
+       */
+      const headroom = await readAtaBalance(auth.wallet, pairedMint, pairedTokenProgram);
+      if (headroom !== null) {
+        const trimmed = shrinkWideFundingDeposit({
+          planned: BigInt(pairedForDeposit.toString()),
+          balanceAtStart: headroom,
+          balanceNow: headroom,
+          slippagePercent: slip.percent,
+        });
+        if (trimmed !== null) {
+          console.log(
+            `[onchain/dlmm] ${positionAddress}: reserving the pool's slippage margin before the first ` +
+              `chunk — deposit ${pairedForDeposit.toString()} -> ${trimmed.toString()} paired base units ` +
+              `against the ${headroom.toString()} the wallet holds; rebuilding ${liquidityTxs.length} chunk(s)`,
+          );
+          pairedForDeposit = new BN(trimmed.toString());
+          await pool.refetchStates();
+          liquidityTxs = await pool.addLiquidityByStrategyChunkable(depositFor(pairedForDeposit));
+          if (liquidityTxs.length === 0) {
+            throw new DlmmExecutionError(
+              `the SDK produced no liquidity transaction after reserving the slippage margin ` +
+                `(${trimmed.toString()} paired base units)`,
+            );
+          }
+        }
+      }
+
+      /*
        * PROVE THE SEQUENCE IS PAYABLE BEFORE ANY OF IT LANDS (12 Sep 2026).
        *
        * The wide open is the only shape that can leave capital behind, and this is why: it

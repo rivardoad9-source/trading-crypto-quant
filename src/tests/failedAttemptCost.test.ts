@@ -219,7 +219,7 @@ describe("where the new gates sit", () => {
   });
 
   it("records the failed attempt with a balance read taken AFTER the unwind", () => {
-    const rescue = source.indexOf("rescueSignature = rescue.result.signature;");
+    const rescue = source.indexOf("const unwindPasses = await unwindPairedBalance({");
     const after = source.indexOf("const walletLamportsAfter = await readWalletLamports();");
     const record = source.indexOf('outcome: "failed"');
 

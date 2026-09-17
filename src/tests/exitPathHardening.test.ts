@@ -95,13 +95,26 @@ function sweepHarness(plan: {
   poolQuote?: { outLamports: number; minOutLamports: number } | Error;
   poolSellFails?: Error;
   withPoolRoute?: boolean;
+  leftoverAfterSale?: bigint;
 }) {
   const calls: string[] = [];
   const pages: string[] = [];
   const poolSells: Array<{ amount: bigint; minOut: number }> = [];
+  let reads = 0;
   const deps: Parameters<Live["sweepResidualPairedToken"]>[1] = {
     resolvePairedMint: async () => MINT,
-    readBalance: async () => 4_498_666_263n,
+    /*
+     * SCRIPTED, not constant. Since 18 Sep 2026 a landed sale is followed by a RE-READ before
+     * the sweep may call the wallet clear (a confirmed sale is not an empty wallet). A chain
+     * where the sale took everything answers 0 the second time; `leftoverAfterSale` is how a
+     * test says otherwise. A constant read reports every successful sale as an unswept
+     * residual, which is what made these tests catch the re-read instead of modelling it.
+     */
+    readBalance: async () => {
+      reads += 1;
+      if (reads > 1) return plan.leftoverAfterSale ?? 0n;
+      return 4_498_666_263n;
+    },
     quoteToSol: async () => 788_421_000,
     swapToSol: async (_m, _a, bps) => {
       calls.push(`jupiter:${bps}`);

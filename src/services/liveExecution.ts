@@ -162,10 +162,22 @@ export class StrandedSwapError extends Error {
     orphan: OrphanRecovery | null = null,
     costLamports: number | null = null,
     unwind: LiveAttemptUnwind = "unknown",
+    /**
+     * Base units of the paired token still in the wallet AFTER the unwind passes, or null
+     * when the passes never established it. 0n is the only value that licenses the sentence
+     * "re-read empty": the 18 Sep 2026 KNOTS-SOL strand was one sale of a stale balance,
+     * reported as a clean unwind, and the number that would have caught it in the alert was
+     * exactly this one.
+     */
+    remaining: bigint | null = null,
   ) {
     const rescue =
       rescueSignature !== null
-        ? `Auto-unwind back to SOL submitted (${rescueSignature}).`
+        ? remaining !== null && remaining > 0n
+          ? `Auto-unwind sold the balance it had read (${rescueSignature}) but the wallet STILL HOLDS ${remaining} base units — the residual self-heal retries the sale and settles that cost. Do NOT read this as clean.`
+          : remaining === 0n
+            ? `Auto-unwind back to SOL submitted and re-read empty (${rescueSignature}).`
+            : `Auto-unwind back to SOL submitted (${rescueSignature}).`
         : rescueError !== null
           ? `Auto-unwind back to SOL FAILED (${rescueError}). Sell it back or open the position by hand — do NOT assume the SOL is still SOL.`
           : `Auto-unwind found no paired balance to sell. Sell it back or open the position by hand — do NOT assume the SOL is still SOL.`;
@@ -218,6 +230,84 @@ function describeAttemptCost(costLamports: number | null): string {
   return `COST ${(costLamports / LAMPORTS_PER_SOL).toFixed(6)} SOL taken out of the wallet.`;
 }
 
+/** A balance read that answered nothing — neither a number nor a zero. */
+const UNREADABLE_BALANCE = "the paired balance could not be read, so the unwind cannot be proven empty";
+
+/** How many times the auto-unwind may sell in one failed open. Each pass is a real swap. */
+export const UNWIND_MAX_PASSES = 3;
+
+/** Everything the unwind touches, injected so the whole loop is testable without a chain. */
+export interface UnwindPassDeps {
+  /** The wallet's balance of the paired token; null when no read answered. */
+  readBalance(): Promise<bigint | null>;
+  /** Sells that balance and returns the swap signature. Throws when the swap is refused. */
+  sell(amount: bigint): Promise<string>;
+}
+
+export interface UnwindPassResult {
+  /** One signature per confirmed sale, in order. */
+  signatures: string[];
+  /** The balance still in the wallet after the last sale; null when no read answered. */
+  remaining: bigint | null;
+  /** What stopped the passes, if anything did. */
+  error: string | null;
+}
+
+/**
+ * Sell the paired balance until the wallet is EMPTY — and re-read after every sale to prove it.
+ *
+ * WHY A LOOP AND NOT ONE READ-AND-SELL (18 Sep 2026, KNOTS-SOL, ~0.37 SOL parked for hours)
+ * ---------------------------------------------------------------------------------------
+ * The failed open recovers the position it half-funded FIRST, and that withdrawal returns the
+ * paired token to the wallet. A node that has not yet seen the withdrawal answers the next read
+ * with the PRE-withdrawal balance, so a single sale sells exactly what the stale read reported
+ * and the rest stays behind:
+ *
+ *   3,979.209942 KNOTS bought; 1,822.204554 funded the position; the withdrawal returned
+ *   1,763.991215; the unwind sold the 2,157.005388 it had read BEFORE that landed. 1,763.991215
+ *   KNOTS (~0.37 SOL) sat in the wallet, the attempt row was written `clean` so no recovery
+ *   path would ever look at it again, and the unsold token was counted as pure loss — a
+ *   0.461917 SOL "cost" against a 0.15 SOL breaker budget, which shut entries for 24 h on a
+ *   loss that was really 0.094530 SOL.
+ *
+ * The sale is of the balance the read reported, so only a READ AFTER IT can say "the wallet
+ * holds nothing". `passes` bounds the spend; a balance that survives every pass (a withheld-fee
+ * Token-2022 account, a pool that cannot be priced) comes back as `remaining` so the caller
+ * reports capital still on-chain instead of a clean unwind.
+ */
+export async function unwindPairedBalance(
+  deps: UnwindPassDeps,
+  passes = UNWIND_MAX_PASSES,
+): Promise<UnwindPassResult> {
+  const signatures: string[] = [];
+  const read = async (): Promise<{ balance: bigint | null; error: string | null }> => {
+    try {
+      return { balance: await deps.readBalance(), error: null };
+    } catch (err) {
+      return { balance: null, error: err instanceof Error ? err.message : String(err) };
+    }
+  };
+
+  for (let pass = 0; pass < passes; pass++) {
+    const { balance, error } = await read();
+    if (error !== null) return { signatures, remaining: null, error };
+    if (balance === null) return { signatures, remaining: null, error: UNREADABLE_BALANCE };
+    if (balance === 0n) return { signatures, remaining: 0n, error: null };
+    try {
+      signatures.push(await deps.sell(balance));
+    } catch (err) {
+      return { signatures, remaining: balance, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  /* Every allowed sale is sent. Ask once more: "the last swap was submitted" is exactly the
+   * claim that was wrong on 18 Sep, and it is the only claim the operator sees. */
+  const last = await read();
+  if (last.error !== null) return { signatures, remaining: null, error: last.error };
+  if (last.balance === null) return { signatures, remaining: null, error: UNREADABLE_BALANCE };
+  return { signatures, remaining: last.balance, error: null };
+}
+
 /**
  * Turns the two recovery reports into the single verdict above.
  *
@@ -225,14 +315,21 @@ function describeAttemptCost(costLamports: number | null): string {
  * never ran, is an ORPHAN regardless of how the token rescue went — the position holds
  * more value than the leftover dust ever does. A rescue that FAILED, or one whose
  * outcome nobody established, is UNKNOWN rather than clean, for the reason above.
+ *
+ * `remaining` is the balance the unwind left behind, and a NON-ZERO one is the third way to
+ * be an orphan: the position is gone but the token the swap bought is still in the wallet.
+ * The engine used to call that `clean` on the strength of a submitted swap, which is how
+ * 1,763.991215 KNOTS went missing from every recovery path on 18 Sep 2026.
  */
 function classifyUnwind(
   orphan: OrphanRecovery | null,
   rescueSignature: string | null,
   rescueError: string | null,
+  remaining: bigint | null,
 ): LiveAttemptUnwind {
   if (orphan !== null && (orphan.state === "failed" || orphan.state === "empty")) return "orphan";
   if (rescueError !== null) return "orphan";
+  if (remaining !== null && remaining > 0n) return "orphan";
   if (rescueSignature !== null) return "clean";
   /*
    * No signature and no error means the re-read found no balance to sell. On a plain
@@ -800,33 +897,22 @@ export function isLivePositionBinCapActive(): boolean {
 }
 
 /**
- * Reads a token balance from the chain rather than trusting the swap's quote.
+ * Reads a token balance from the chain rather than trusting the swap's quote, with
+ * "could not read" kept apart from "holds nothing".
  *
  * The quote says what Jupiter expected to deliver; only the account says what arrived.
  * Depositing the quoted figure would, on any adverse fill, ask the DLMM program to
  * move tokens the wallet does not have — the transaction fails and the swap's cost has
  * already been paid. Same reasoning as valuing a position from the pool rather than
  * from what we hoped it was worth.
- */
-async function readTokenBalance(
-  owner: PublicKey,
-  mint: PublicKey,
-  tokenProgramId: PublicKey,
-): Promise<bigint> {
-  // No account, or an unreadable one. Zero is the safe reading HERE: it deposits nothing
-  // on that side rather than asserting a balance we could not confirm.
-  return (await readTokenBalanceOrNull(owner, mint, tokenProgramId)) ?? 0n;
-}
-
-/**
- * The same read, with "could not read" kept apart from "holds nothing".
  *
- * `readTokenBalance` collapses both to 0n, which is right for a DEPOSIT (deposit nothing
- * you cannot confirm) and wrong for the residual sweep after an exit: there, a zero means
- * "settled, nothing left to sell" and licenses recording the wallet balance as the trade's
- * final effect. An RPC hiccup must not earn that. A token account that does not exist is a
- * genuine zero — the SDK closes nothing here, but a wallet that never held the mint has no
- * ATA — and is reported as one.
+ * WHY NULL IS NOT ZERO. Until 18 Sep 2026 a `readTokenBalance` wrapper collapsed an
+ * unreadable balance to 0n, and the auto-unwind after a failed open asked it whether
+ * anything was left to sell: an RPC hiccup answered "nothing", the attempt was recorded as
+ * a clean unwind, and nothing looked at the wallet again (13 Sep 2026, NEARKAT-SOL). Zero
+ * licenses the word "settled", so it has to be MEASURED. A token account that does not
+ * exist is a genuine zero — the SDK closes nothing here, but a wallet that never held the
+ * mint has no ATA — and is reported as one.
  */
 async function readTokenBalanceOrNull(
   owner: PublicKey,
@@ -1825,36 +1911,45 @@ export async function openLivePosition(params: {
         : null;
 
     /*
-     * Auto-unwind, best effort: the balancing swap has already moved SOL into the
-     * paired token, so a failed open must put the wallet back to SOL — not leave an
-     * unmonitored memecoin balance behind. Sell the CURRENT on-chain balance (re-read:
-     * a partial open may have consumed some, and the recovery above may have returned
-     * some), then report the failure, the recovery and the rescue outcome in the alert.
+     * Auto-unwind — AND PROVE IT. The balancing swap has already moved SOL into the paired
+     * token, so a failed open must put the wallet back to SOL, not leave an unmonitored
+     * memecoin balance behind.
+     *
+     * The recovery above runs FIRST and its withdrawal returns the paired token to the
+     * wallet, which is why this sells in a LOOP instead of once: on 18 Sep 2026 the single
+     * read answered with the PRE-withdrawal balance, the single sale sold exactly that, and
+     * 1,763.991215 KNOTS (~0.37 SOL) were left in the wallet while the attempt was recorded
+     * `clean` — invisible to every recovery path and counted as pure loss against the
+     * failed-cost breaker. One read and one sale cannot tell "a swap was submitted" from
+     * "the wallet holds nothing"; a read AFTER each sale can.
      */
-    let rescueSignature: string | null = null;
-    let rescueError: string | null = null;
-    let rescueBalance: bigint | null = null;
-    try {
-      const current = await readTokenBalance(auth.wallet, pairedMint, pairedTokenProgram);
-      rescueBalance = current;
-      if (current > 0n) {
-        const rescue = await executeJupiterSwapFreshQuote(auth, {
-          inputMint: pairedMint.toBase58(),
-          outputMint: WSOL_MINT,
-          amountLamports: Number(current),
-          /*
-           * An EXIT leg: this swap exists to put the wallet back into SOL, and the same
-           * 50 bps entry bound that governs a fresh entry must not be what strands the
-           * token here. 13 Sep 2026 is the worked example — a residual sale refused at
-           * 0.5% and finished by hand while the price moved.
-           */
-          leg: "exit",
-        }, "auto-unwind after a failed open");
-        rescueSignature = rescue.result.signature;
-      }
-    } catch (rescueErr) {
-      rescueError = rescueErr instanceof Error ? rescueErr.message : String(rescueErr);
-    }
+    const unwindPasses = await unwindPairedBalance({
+      // Not `readTokenBalance`: that one collapses "unreadable" into 0n, and a read that
+      // never answered must not license the word "empty" (13 Sep 2026, NEARKAT-SOL).
+      readBalance: () => readTokenBalanceOrNull(auth.wallet, pairedMint, pairedTokenProgram),
+      sell: async (amount) => {
+        const rescue = await executeJupiterSwapFreshQuote(
+          auth,
+          {
+            inputMint: pairedMint.toBase58(),
+            outputMint: WSOL_MINT,
+            amountLamports: Number(amount),
+            /*
+             * An EXIT leg: this swap exists to put the wallet back into SOL, and the same
+             * 50 bps entry bound that governs a fresh entry must not be what strands the
+             * token here. 13 Sep 2026 is the worked example — a residual sale refused at
+             * 0.5% and finished by hand while the price moved.
+             */
+            leg: "exit",
+          },
+          "auto-unwind after a failed open",
+        );
+        return rescue.result.signature;
+      },
+    });
+    const rescueSignature = unwindPasses.signatures[0] ?? null;
+    const rescueError = unwindPasses.error;
+    const rescueBalance = unwindPasses.remaining;
 
     /*
      * The unwind empties the paired-token account the balancing swap created, and nothing
@@ -1913,7 +2008,7 @@ export async function openLivePosition(params: {
       walletLamportsBefore !== null && walletLamportsAfter !== null
         ? walletLamportsBefore - walletLamportsAfter
         : null;
-    const unwind = classifyUnwind(orphan, rescueSignature, rescueError);
+    const unwind = classifyUnwind(orphan, rescueSignature, rescueError, rescueBalance);
 
     try {
       recordLiveExecutionAttempt({
@@ -1947,6 +2042,7 @@ export async function openLivePosition(params: {
       orphan,
       costLamports,
       unwind,
+      rescueBalance,
     );
     console.error(stranded.message);
     // Best effort: a failed page must not swallow the original failure.
@@ -2287,6 +2383,96 @@ export async function sweepResidualPairedToken(
     } catch (err) {
       poolError = err instanceof Error ? err.message : String(err);
       result.error = `jupiter: ${jupiterError} | pool: ${poolError}`;
+    }
+  }
+
+  /*
+   * A CONFIRMED SALE IS NOT AN EMPTY WALLET, and only "swept" means the wallet's SOL is the
+   * trade's final effect (`isSettledSweep`). This sweep sells the balance it READ, so it
+   * re-reads before claiming that: a withdrawal that landed after the read, or a node
+   * answering an old balance, leaves tokens behind a state of "swept" — and a wrong
+   * "swept" is invisible forever, because `wallet_lamports_after` is then recorded from a
+   * wallet that still holds value. 18 Sep 2026 is the worked example on the failed-open side
+   * (1,763.991215 KNOTS left behind a verdict of "clean"); this is the same rule applied
+   * where no human is looking at the trade.
+   *
+   * An UNREADABLE second read is NOT a leftover here: this sweep holds a CONFIRMED sale of
+   * exactly the amount it read, which is evidence the first read was right — the evidence the
+   * failed-open unwind lacks, where nothing had confirmed the read at all. So the sale stands
+   * and the doubt is recorded in `error` rather than paged.
+   */
+  if (result.state === "swept") {
+    let after: bigint | null = null;
+    try {
+      after = await deps.readBalance(mint);
+    } catch (err) {
+      result.error =
+        `the sale confirmed (${result.signature}) but the wallet balance could not be re-read: ` +
+        (err instanceof Error ? err.message : String(err));
+    }
+    if (after === null) {
+      result.error ??=
+        `the sale confirmed (${result.signature}) but the wallet balance could not be re-read`;
+    } else if (after > 0n) {
+      /*
+       * A LEFTOVER IS ONLY A LEFTOVER IF SELLING IT IS WORTH THE FEES — the same dust line this
+       * sweep applies to what it FINDS, applied to what it LEFT. A crumb under the line is
+       * `dust`: settled, and logged. Above the line the trade's closing balance is not final, so
+       * the state is not settled and a human is told which token and how much is still there.
+       */
+      let leftoverLamports: number | null = null;
+      try {
+        leftoverLamports = await deps.quoteToSol(mint, after);
+      } catch (err) {
+        result.state = "unmeasured";
+        result.error =
+          `sold ${result.amount} base units but the wallet STILL HOLDS ${after} base units, ` +
+          `and the remainder could not be quoted: ` +
+          (err instanceof Error ? err.message : String(err));
+        console.warn(`[live] ${context.pairName}: ${result.error}`);
+        await page(
+          `RESIDUAL TOKEN PARTLY SWEPT — sold ${result.amount} base units of ${mint} ` +
+            `(${result.signature}), but ${after} base units are STILL in the wallet and their ` +
+            `value could not be quoted. Re-read the wallet and sell the remainder by hand; ` +
+            `wallet_lamports_after was left NULL for this trade, because the balance is not final.`,
+        );
+        return result;
+      }
+      if (leftoverLamports < dustLamports) {
+        result.state = "dust";
+        console.log(
+          `[live] ${context.pairName}: ${after} base units of ${mint} left after the sale at ` +
+            `${(leftoverLamports / LAMPORTS_PER_SOL).toFixed(6)} SOL — dust, not worth a second sale`,
+        );
+        /*
+         * RETURN, do not fall out. `dust` is SETTLED (`isSettledSweep`), but the block below
+         * coerces every state that is not `swept` into `failed` and pages a human. Without
+         * this return a crumb too small to be worth selling was reported as an unswept
+         * residual, paged the operator, and left `wallet_lamports_after` NULL — the same
+         * wrong-verdict shape the re-read above was added to prevent. Caught by
+         * `unwindLoop.test.ts` ("a leftover under the dust line is dust...") on 18 Sep 2026.
+         */
+        return result;
+      }
+
+      /*
+       * Above the line: selling the remainder IS worth the fees, so this trade's closing
+       * balance is not final. Record what is still held, leave `wallet_lamports_after` NULL
+       * (the caller decides with `isSettledSweep`) and page a human to sell it by hand.
+       */
+      result.state = "failed";
+      result.error =
+        `sold ${result.amount} base units but the wallet STILL HOLDS ${after} base units ` +
+        `(~${(leftoverLamports / LAMPORTS_PER_SOL).toFixed(6)} SOL)`;
+      console.warn(`[live] ${context.pairName}: ${result.error}`);
+      await page(
+        `RESIDUAL TOKEN NOT SWEPT — sold ${result.amount} base units of ${mint} ` +
+          `(${result.signature}) but the wallet STILL HOLDS ${after} base units ` +
+          `(~${(leftoverLamports / LAMPORTS_PER_SOL).toFixed(6)} SOL), so the position's token ` +
+          `side is not clear. Re-read the wallet and sell the remainder; wallet_lamports_after ` +
+          `was left NULL for this trade, because the balance is not final.`,
+      );
+      return result;
     }
   }
 

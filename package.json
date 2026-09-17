@@ -29,6 +29,7 @@
     "backtest:integrity": "node --import tsx src/backtest/runIntegrity.ts",
     "report:quant": "python scripts/generate_quant_report.py",
     "exitcosts:backfill": "node --import tsx src/scripts/backfillExitCosts.ts",
+    "entrycosts:backfill": "node --import tsx src/scripts/backfillEntryCosts.ts",
     "report:exitcosts": "node --import tsx src/scripts/reportExitCosts.ts",
     "report:live": "node --import tsx src/scripts/reportLive.ts",
     "test:local": "node --import tsx scripts/test-local.ts",

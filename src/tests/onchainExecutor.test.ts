@@ -1992,13 +1992,15 @@ describe("onchain executor — the WIDE funding path proves it can pay before it
     /*
      * The rebuild closure used to rebuild from the ORIGINAL paired figure. With a re-quote in
      * place that would undo the shrink on the retry meant to rescue it, so every site that
-     * builds chunks must read the mutable value: the first build, the re-quote rebuild, and
-     * the mid-flight rebuild closure.
+     * builds chunks must read the mutable value: the first build, the HEADROOM rebuild that
+     * trims the plan to leave the pool's slippage margin (added 18 Sep 2026), the re-quote
+     * rebuild, and the mid-flight rebuild closure. FOUR sites — and the count IS the assertion,
+     * because a site built from a stale figure is exactly the bug this catches.
      */
     assert.equal(
       (executorSource.match(/addLiquidityByStrategyChunkable\(depositFor\(pairedForDeposit\)\)/g) ?? [])
         .length,
-      3,
+      4,
       "a chunk build went back to a figure other than the re-quoted paired amount",
     );
     assert.equal(
@@ -2174,5 +2176,56 @@ describe("wide funding — a chunk refused mid-flight for insufficient funds is 
     assert.match(rebuild, /Earlier chunks LANDED: the position is funded and must be recovered/);
     // The start-of-funding balance is read before the first chunk is sent.
     assert.ok(funding.indexOf("const pairedAtFundingStart = await readAtaBalance(") < funding.indexOf("funded = await sendSequentially("));
+  });
+});
+
+/*
+ * THE HALF OF THE 17-18 SEP INCIDENT THAT COMES FIRST IN TIME, and the half that PREVENTS it.
+ *
+ * KNOTS-SOL: the wide path planned a deposit equal to the wallet's entire paired balance. The
+ * pool's `RebalanceLiquidity` pulls its slippage margin ON TOP of the planned figure, so chunk 1
+ * landed, chunk 2 was refused for insufficient funds, and the result was a funded position with
+ * no row. The mid-flight shrink above is the recovery; this is the prevention — and it only
+ * prevents anything if it runs BEFORE the pre-send simulation, because the sequence that gets
+ * proven payable must be the sequence that actually gets sent.
+ *
+ * Asserted HERE, not in `unwindLoop.test.ts`: this is the file allowed to import the signer, and
+ * the bridge's test file must not gain that edge for a test's convenience.
+ */
+describe("wide funding — the plan reserves the pool's slippage margin before the first chunk", () => {
+  const headroom = executorSourceText.indexOf("const headroom = await readAtaBalance(");
+  const preflight = executorSourceText.indexOf("firstShortFundingChunk(liquidityTxs, auth.wallet)");
+
+  it("17 Sep KNOTS-SOL: shrinking a plan that equals the wallet's own balance yields the headroom", () => {
+    /*
+     * The live figures. The plan was the swap's entire output (3979.209942) and the wallet held
+     * exactly that, so `consumed` was zero and the only shrink available was the slippage term —
+     * 3863.307494, the figure the engine's own mid-flight shrink produced while chunk 2 was
+     * already being refused.
+     */
+    const trimmed = shrinkWideFundingDeposit({
+      planned: 3_979_209_942n,
+      balanceAtStart: 3_979_209_942n,
+      balanceNow: 3_979_209_942n,
+      slippagePercent: 3,
+    });
+
+    assert.equal(trimmed, 3_863_307_494n);
+    // And the margin it buys is real: the pool's widest pull on the trimmed plan fits the wallet.
+    assert.ok((trimmed! * 103n) / 100n <= 3_979_209_942n);
+  });
+
+  it("runs BEFORE the pre-send simulation, so the sequence that is proven payable is the trimmed one", () => {
+    assert.ok(headroom > 0 && preflight > 0, "the headroom trim or the preflight check is missing");
+    assert.ok(headroom < preflight, "trimming after the preflight would prove the wrong plan payable");
+    // The plan must be rebuilt from the trimmed figure, not left at the figure it replaced.
+    const trimBlock = executorSourceText.slice(headroom, preflight);
+    assert.match(trimBlock, /pairedForDeposit = new BN\(trimmed\.toString\(\)\)/);
+    assert.ok(
+      trimBlock.includes("liquidityTxs = await pool.addLiquidityByStrategyChunkable(depositFor(pairedForDeposit));"),
+      "the chunks must be rebuilt from the trimmed plan",
+    );
+    // Both jaws are the wallet's own balance: consumed = 0, so the margin term is what shrinks.
+    assert.match(trimBlock, /balanceAtStart: headroom,\s*\n\s*balanceNow: headroom,/);
   });
 });

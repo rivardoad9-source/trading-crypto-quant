@@ -94,15 +94,28 @@ interface SweepHarness {
   deps: Parameters<Live["sweepResidualPairedToken"]>[1];
 }
 
-function harness(plan: { fails: number[]; balance?: bigint }): SweepHarness {
+function harness(plan: { fails: number[]; balance?: bigint; leftoverAfterSale?: bigint }): SweepHarness {
   const calls: number[] = [];
   const pages: string[] = [];
+  let reads = 0;
   return {
     calls,
     pages,
     deps: {
       resolvePairedMint: async () => "So11111111111111111111111111111111111111112",
-      readBalance: async () => plan.balance ?? 1_568_253_230n,
+      /*
+       * A SCRIPTED WALLET, not a constant one. Since 18 Sep 2026 the sweep RE-READS the
+       * balance after a sale that landed, because a confirmed sale is not proof the wallet is
+       * empty (`unwindLoop.test.ts` holds that property). A chain where the sale took
+       * everything answers 0 the second time; a chain where it did not answers the leftover.
+       * A constant read could not tell those apart, and would report every successful sale as
+       * an unswept residual.
+       */
+      readBalance: async () => {
+        reads += 1;
+        if (reads > 1) return plan.leftoverAfterSale ?? 0n;
+        return plan.balance ?? 1_568_253_230n;
+      },
       quoteToSol: async () => 600_000_000,
       swapToSol: async (_mint, _amount, slippageBps) => {
         const bps = slippageBps ?? -1;

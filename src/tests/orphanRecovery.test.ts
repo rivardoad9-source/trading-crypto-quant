@@ -181,7 +181,14 @@ describe("orphan recovery — ordering and gating", () => {
      * the withdrawn tokens behind.
      */
     const recovery = liveSource.indexOf("await recoverPartiallyFundedPosition(");
-    const unwind = liveSource.indexOf("let rescueSignature: string | null = null;");
+    /*
+     * The unwind's anchor is its CALL SITE, not a variable inside it. Until 18 Sep 2026 this
+     * pointed at `let rescueSignature: string | null = null;`; that single sale became a loop
+     * that re-reads the wallet after every sale (`unwindPairedBalance`), so the variable the
+     * old anchor named is gone and the call itself is the stable marker of where the unwind
+     * begins.
+     */
+    const unwind = liveSource.indexOf("await unwindPairedBalance({");
     assert.ok(recovery > 0 && unwind > 0);
     assert.ok(recovery < unwind, "the wallet unwind now runs before the position recovery");
   });

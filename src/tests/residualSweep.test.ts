@@ -438,7 +438,7 @@ describe("token account rent — the emptied account is closed once the sweep se
 
   it("the FAILED-open unwind closes the account too, only after an unwind that did not fail", () => {
     const source = readFileSync("src/services/liveExecution.ts", "utf8");
-    const rescue = source.indexOf("rescueSignature = rescue.result.signature;");
+    const rescue = source.indexOf("const unwindPasses = await unwindPairedBalance({");
     const reclaim = source.indexOf("closeEmptyTokenAccount(auth, {", rescue);
     const after = source.indexOf("const walletLamportsAfter = await readWalletLamports();", rescue);
     assert.ok(rescue > 0 && reclaim > rescue && after > reclaim, "the unwind's account close is missing or misordered");
@@ -558,8 +558,11 @@ describe("residual sweep — the FAILED-open path is untouched", () => {
     assert.ok(openStart > 0 && openEnd > openStart);
     assert.equal(openBody.includes("sweepResidualPairedToken"), false);
     assert.equal(openBody.includes("isSettledSweep"), false);
-    // The unwind still sells the re-read balance and still measures cost after it.
-    assert.ok(openBody.includes("rescueSignature = rescue.result.signature;"));
+    // The unwind still sells the re-read balance — now in a loop that cannot stop at a stale
+    // read (18 Sep 2026) — and still measures cost after it.
+    assert.ok(openBody.includes("const unwindPasses = await unwindPairedBalance({"));
+    assert.ok(openBody.includes("readBalance: () => readTokenBalanceOrNull("));
+    assert.ok(openBody.includes("const rescueSignature = unwindPasses.signatures[0] ?? null;"));
     assert.ok(openBody.includes("const walletLamportsAfter = await readWalletLamports();"));
     assert.ok(openBody.includes("throw stranded;"));
   });
