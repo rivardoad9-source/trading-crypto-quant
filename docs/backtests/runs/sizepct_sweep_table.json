@@ -1,0 +1,267 @@
+{
+  "dataset": {
+    "path": "pinned .cache/historical_data_micro.json",
+    "realFetch": "2026-09-13 (frozen copy 2026-09-16), re-pinned 2026-09-17 so the 6h TTL does not force a GeckoTerminal re-ingest",
+    "windowUtc": "2026-06-14T04:00Z -> 2026-09-13T03:00Z",
+    "days": 91,
+    "bars": 2184,
+    "pools": 22,
+    "survivors": 10,
+    "dead_or_dormant": 12
+  },
+  "account": {
+    "startingCapitalUsd": 300.0,
+    "maxConcurrentPositions": 1,
+    "gasSolPerTransaction": 0.004,
+    "takeProfitNetPct": 5,
+    "stopLossPct": -8,
+    "maxDurationHours": 24,
+    "minFeeCostCoverage": 2.5,
+    "rangePct": {
+      "downside": 45,
+      "upside": 15
+    },
+    "forcedExitSlippagePct": 2,
+    "swapSlippagePct": 0,
+    "poolCooldownHours": 4
+  },
+  "accounting": "OLD/harness: swap free, forced exit flat 2% \u2014 this arm is NOT the live-cost arm",
+  "rows": [
+    {
+      "sizepct": 40,
+      "notional_first_usd": 120.0,
+      "trades": 31,
+      "win_rate_pct": 83.87,
+      "net_usd": 204.2,
+      "net_pct": 68.07,
+      "end_equity_usd": 504.2,
+      "profit_factor": 3.19,
+      "max_dd_usd": 30.84,
+      "max_dd_pct": 6.99,
+      "avg_hold_h": 8.48,
+      "fees_usd": 180.54,
+      "gas_usd": 20.12,
+      "exit_slippage_usd": 18.83,
+      "lp_value_change_usd": 62.61,
+      "exit_mix": {
+        "OUT_OF_RANGE": 7,
+        "TAKE_PROFIT": 18,
+        "TIMEOUT": 2,
+        "STOP_LOSS": 4
+      },
+      "fixed_size_counterfactual_net_usd": 160.97,
+      "fixed_size_counterfactual_end_usd": 460.97,
+      "compounding_premium_usd": 43.23,
+      "live_eligible": {
+        "pools": 16,
+        "trades": 20,
+        "net_usd": 121.92,
+        "profit_factor": 3.26,
+        "max_dd_pct": 7.1
+      }
+    },
+    {
+      "sizepct": 50,
+      "notional_first_usd": 150.0,
+      "trades": 31,
+      "win_rate_pct": 83.87,
+      "net_usd": 280.13,
+      "net_pct": 93.38,
+      "end_equity_usd": 580.13,
+      "profit_factor": 3.186,
+      "max_dd_usd": 41.98,
+      "max_dd_pct": 8.57,
+      "avg_hold_h": 8.48,
+      "fees_usd": 245.19,
+      "gas_usd": 20.12,
+      "exit_slippage_usd": 25.76,
+      "lp_value_change_usd": 80.81,
+      "exit_mix": {
+        "OUT_OF_RANGE": 7,
+        "TAKE_PROFIT": 18,
+        "TIMEOUT": 2,
+        "STOP_LOSS": 4
+      },
+      "fixed_size_counterfactual_net_usd": 206.07,
+      "fixed_size_counterfactual_end_usd": 506.07,
+      "compounding_premium_usd": 74.06,
+      "live_eligible": {
+        "pools": 16,
+        "trades": 20,
+        "net_usd": 162.86,
+        "profit_factor": 3.29,
+        "max_dd_pct": 8.7
+      }
+    },
+    {
+      "sizepct": 60,
+      "notional_first_usd": 180.0,
+      "trades": 32,
+      "win_rate_pct": 84.38,
+      "net_usd": 374.95,
+      "net_pct": 124.98,
+      "end_equity_usd": 674.95,
+      "profit_factor": 3.214,
+      "max_dd_usd": 55.15,
+      "max_dd_pct": 10.17,
+      "avg_hold_h": 8.38,
+      "fees_usd": 324.9,
+      "gas_usd": 20.93,
+      "exit_slippage_usd": 33.81,
+      "lp_value_change_usd": 104.79,
+      "exit_mix": {
+        "OUT_OF_RANGE": 7,
+        "TAKE_PROFIT": 18,
+        "TIMEOUT": 2,
+        "END_OF_DATA": 1,
+        "STOP_LOSS": 4
+      },
+      "fixed_size_counterfactual_net_usd": 255.2,
+      "fixed_size_counterfactual_end_usd": 555.2,
+      "compounding_premium_usd": 119.74,
+      "live_eligible": {
+        "pools": 16,
+        "trades": 20,
+        "net_usd": 206.94,
+        "profit_factor": 3.3,
+        "max_dd_pct": 10.3
+      }
+    },
+    {
+      "sizepct": 63,
+      "notional_first_usd": 189.0,
+      "trades": 32,
+      "win_rate_pct": 84.38,
+      "net_usd": 403.61,
+      "net_pct": 134.54,
+      "end_equity_usd": 703.61,
+      "profit_factor": 3.204,
+      "max_dd_usd": 59.54,
+      "max_dd_pct": 10.65,
+      "avg_hold_h": 8.38,
+      "fees_usd": 349.81,
+      "gas_usd": 20.93,
+      "exit_slippage_usd": 36.46,
+      "lp_value_change_usd": 111.19,
+      "exit_mix": {
+        "OUT_OF_RANGE": 7,
+        "TAKE_PROFIT": 18,
+        "TIMEOUT": 2,
+        "END_OF_DATA": 1,
+        "STOP_LOSS": 4
+      },
+      "fixed_size_counterfactual_net_usd": 268.92,
+      "fixed_size_counterfactual_end_usd": 568.92,
+      "compounding_premium_usd": 134.69,
+      "live_eligible": {
+        "pools": 16,
+        "trades": 20,
+        "net_usd": 220.8,
+        "profit_factor": 3.3,
+        "max_dd_pct": 10.8
+      }
+    },
+    {
+      "sizepct": 70,
+      "notional_first_usd": 210.0,
+      "trades": 32,
+      "win_rate_pct": 84.38,
+      "net_usd": 474.62,
+      "net_pct": 158.21,
+      "end_equity_usd": 774.62,
+      "profit_factor": 3.178,
+      "max_dd_usd": 70.63,
+      "max_dd_pct": 11.77,
+      "avg_hold_h": 8.38,
+      "fees_usd": 412.09,
+      "gas_usd": 20.93,
+      "exit_slippage_usd": 43.1,
+      "lp_value_change_usd": 126.56,
+      "exit_mix": {
+        "OUT_OF_RANGE": 7,
+        "TAKE_PROFIT": 18,
+        "TIMEOUT": 2,
+        "END_OF_DATA": 1,
+        "STOP_LOSS": 4
+      },
+      "fixed_size_counterfactual_net_usd": 300.9,
+      "fixed_size_counterfactual_end_usd": 600.9,
+      "compounding_premium_usd": 173.72,
+      "live_eligible": {
+        "pools": 16,
+        "trades": 20,
+        "net_usd": 254.32,
+        "profit_factor": 3.29,
+        "max_dd_pct": 11.9
+      }
+    },
+    {
+      "sizepct": 80,
+      "notional_first_usd": 240.0,
+      "trades": 32,
+      "win_rate_pct": 84.38,
+      "net_usd": 586.76,
+      "net_pct": 195.59,
+      "end_equity_usd": 886.76,
+      "profit_factor": 3.137,
+      "max_dd_usd": 88.69,
+      "max_dd_pct": 13.37,
+      "avg_hold_h": 8.38,
+      "fees_usd": 511.9,
+      "gas_usd": 20.93,
+      "exit_slippage_usd": 53.8,
+      "lp_value_change_usd": 149.58,
+      "exit_mix": {
+        "OUT_OF_RANGE": 7,
+        "TAKE_PROFIT": 18,
+        "TIMEOUT": 2,
+        "END_OF_DATA": 1,
+        "STOP_LOSS": 4
+      },
+      "fixed_size_counterfactual_net_usd": 346.51,
+      "fixed_size_counterfactual_end_usd": 646.51,
+      "compounding_premium_usd": 240.25,
+      "live_eligible": {
+        "pools": 16,
+        "trades": 20,
+        "net_usd": 305.16,
+        "profit_factor": 3.27,
+        "max_dd_pct": 13.5
+      }
+    },
+    {
+      "sizepct": 100,
+      "notional_first_usd": 300.0,
+      "trades": 32,
+      "win_rate_pct": 84.38,
+      "net_usd": 853.51,
+      "net_pct": 284.5,
+      "end_equity_usd": 1153.51,
+      "profit_factor": 3.048,
+      "max_dd_usd": 133.9,
+      "max_dd_pct": 16.58,
+      "avg_hold_h": 8.38,
+      "fees_usd": 755.28,
+      "gas_usd": 20.93,
+      "exit_slippage_usd": 80.0,
+      "lp_value_change_usd": 199.17,
+      "exit_mix": {
+        "OUT_OF_RANGE": 7,
+        "TAKE_PROFIT": 18,
+        "TIMEOUT": 2,
+        "END_OF_DATA": 1,
+        "STOP_LOSS": 4
+      },
+      "fixed_size_counterfactual_net_usd": 437.5,
+      "fixed_size_counterfactual_end_usd": 737.5,
+      "compounding_premium_usd": 416.02,
+      "live_eligible": {
+        "pools": 16,
+        "trades": 20,
+        "net_usd": 417.88,
+        "profit_factor": 3.22,
+        "max_dd_pct": 16.7
+      }
+    }
+  ]
+}

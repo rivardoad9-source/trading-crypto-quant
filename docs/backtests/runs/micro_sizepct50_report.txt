@@ -1,0 +1,185 @@
+MICRO-CAPITAL BACKTEST — LIVE V1.1 FORMULA, $100 ACCOUNT
+══════════════════════════════════════════════════════════════════════════════
+
+Window          : 2026-05-31T11:00 → 2026-08-30T10:00 (2184 hourly bars)
+Universe        : 22 pools — 10 survivors + 12 dead/dormant
+TVL model       : TVL modelled as k x 24h volume; k median 0.179 (IQR 0.092–0.447) from 10 live pools
+Sizing          : 27.5% of equity per position, max 3 concurrent, capped at free capital
+Friction        : 0.0005 SOL/tx x2 per position, 2% forced-exit slippage
+Gates           : age>=48h · surge1h<=10% · TVL $50k-$500k · fee coverage>=2.5x
+Exits           : TP +5% net · SL -8% net · timeout 24h · range -45%/+15%
+Anti-churn      : 4h cooldown · 2 consecutive failures → 24h lockout
+
+══════════════════════════════════════════════════════════════════════════════
+1. HEADLINE — UNBIASED UNIVERSE, FULL V1.1 RULES
+══════════════════════════════════════════════════════════════════════════════
+
+┌──────────────────────────┬─────────┐
+│ Metric                   │   Value │
+├──────────────────────────┼─────────┤
+│ Initial balance          │ $100.00 │
+│ Final equity             │ $127.35 │
+│ Net realized PnL ($)     │  $27.35 │
+│ Net realized PnL (%)     │  27.35% │
+│                          │         │
+│ Total trades             │      20 │
+│ Wins / losses            │  16 / 4 │
+│ Win rate                 │  80.00% │
+│ Profit factor            │    3.10 │
+│                          │         │
+│ Max drawdown ($)         │   $6.40 │
+│ Max drawdown (%)         │   6.40% │
+│                          │         │
+│ Gross fees earned        │  $18.63 │
+│ LP value change          │  $12.95 │
+│ Gas paid                 │   $1.52 │
+│ Slippage paid            │   $2.72 │
+│ TOTAL FRICTION PAID      │   $4.23 │
+│ Friction as % of capital │   4.23% │
+│ Friction vs gross fees   │   0.23x │
+│                          │         │
+│ Trades on dead pools     │      20 │
+│ Rugged exits             │       0 │
+│ Catastrophic (<= -80%)   │       0 │
+│ Account wiped out        │      no │
+└──────────────────────────┴─────────┘
+
+══════════════════════════════════════════════════════════════════════════════
+2. EXIT TRIGGER DISTRIBUTION (unbiased, full rules)
+══════════════════════════════════════════════════════════════════════════════
+
+┌──────────────┬───────┬───────┬─────────┬───────────┐
+│ Exit trigger │ Count │ Share │ Net PnL │ Avg/trade │
+├──────────────┼───────┼───────┼─────────┼───────────┤
+│ STOP_LOSS    │     4 │ 20.0% │ -$13.02 │    -$3.25 │
+│ OUT_OF_RANGE │     5 │ 25.0% │  $21.16 │     $4.23 │
+│ TAKE_PROFIT  │    11 │ 55.0% │  $19.20 │     $1.75 │
+└──────────────┴───────┴───────┴─────────┴───────────┘
+
+══════════════════════════════════════════════════════════════════════════════
+3. COOLDOWN IMPACT — 4h pool cooldown + 24h lockout, ON vs OFF
+══════════════════════════════════════════════════════════════════════════════
+
+┌──────────────────────┬────────┬──────────┬───────────────┬─────────┬──────────────┬────────┬──────────┐
+│ Scenario             │ Trades │ Win rate │ Profit factor │ Net PnL │ Final equity │ Max DD │ Friction │
+├──────────────────────┼────────┼──────────┼───────────────┼─────────┼──────────────┼────────┼──────────┤
+│ WITH cooldown (V1.1) │     20 │    80.0% │          3.10 │  $27.35 │      $127.35 │   6.4% │    $4.23 │
+│ WITHOUT cooldown     │     47 │    72.3% │          1.72 │  $35.05 │      $135.05 │   6.8% │   $12.04 │
+└──────────────────────┴────────┴──────────┴───────────────┴─────────┴──────────────┴────────┴──────────┘
+
+Cooldown blocked 68 candidate entries; the lockout blocked 72.
+
+══════════════════════════════════════════════════════════════════════════════
+4. SURVIVORSHIP BIAS — same rules, survivors only vs full universe
+══════════════════════════════════════════════════════════════════════════════
+
+┌─────────────────────────┬────────┬──────────┬───────────────┬─────────┬──────────────┬────────┬──────────┐
+│ Scenario                │ Trades │ Win rate │ Profit factor │ Net PnL │ Final equity │ Max DD │ Friction │
+├─────────────────────────┼────────┼──────────┼───────────────┼─────────┼──────────────┼────────┼──────────┤
+│ BIASED (survivors only) │      0 │     0.0% │     undefined │   $0.00 │      $100.00 │   0.0% │    $0.00 │
+│ UNBIASED (incl. dead)   │     20 │    80.0% │          3.10 │  $27.35 │      $127.35 │   6.4% │    $4.23 │
+└─────────────────────────┴────────┴──────────┴───────────────┴─────────┴──────────────┴────────┴──────────┘
+
+══════════════════════════════════════════════════════════════════════════════
+5. GAS SENSITIVITY — the friction assumption is not a measurement
+══════════════════════════════════════════════════════════════════════════════
+
+┌─────────────────┬────────┬──────────┬───────────────┬─────────┬──────────────┬────────┬──────────┐
+│ Scenario        │ Trades │ Win rate │ Profit factor │ Net PnL │ Final equity │ Max DD │ Friction │
+├─────────────────┼────────┼──────────┼───────────────┼─────────┼──────────────┼────────┼──────────┤
+│ 0.000005 SOL/tx │     32 │    75.0% │          2.61 │  $38.65 │      $138.65 │   7.1% │    $4.70 │
+│ 0.0001 SOL/tx   │     32 │    75.0% │          2.58 │  $38.07 │      $138.07 │   7.2% │    $5.16 │
+│ 0.0005 SOL/tx   │     20 │    80.0% │          3.10 │  $27.35 │      $127.35 │   6.4% │    $4.23 │
+│ 0.001 SOL/tx    │     20 │    80.0% │          2.92 │  $25.53 │      $125.53 │   6.6% │    $5.73 │
+│ 0.002 SOL/tx    │     20 │    80.0% │          2.59 │  $21.90 │      $121.90 │   6.8% │    $8.73 │
+│ 0.0035 SOL/tx   │     20 │    80.0% │          2.13 │  $16.46 │      $116.46 │   7.3% │   $13.23 │
+│ 0.01 SOL/tx     │      0 │     0.0% │     undefined │   $0.00 │      $100.00 │   0.0% │    $0.00 │
+└─────────────────┴────────┴──────────┴───────────────┴─────────┴──────────────┴────────┴──────────┘
+
+══════════════════════════════════════════════════════════════════════════════
+6. TVL-MODEL SENSITIVITY — the load-bearing assumption, stressed
+══════════════════════════════════════════════════════════════════════════════
+
+┌────────────────────────────────┬────────┬──────────┬───────────────┬─────────┬──────────────┬────────┬──────────┐
+│ Scenario                       │ Trades │ Win rate │ Profit factor │ Net PnL │ Final equity │ Max DD │ Friction │
+├────────────────────────────────┼────────┼──────────┼───────────────┼─────────┼──────────────┼────────┼──────────┤
+│ k = p25 (0.092) — fees richer  │     31 │    83.9% │          2.62 │  $25.11 │      $125.11 │  13.9% │    $4.11 │
+│ k = median (0.179) — headline  │     20 │    80.0% │          3.10 │  $27.35 │      $127.35 │   6.4% │    $4.23 │
+│ k = p75 (0.447) — fees thinner │     20 │    65.0% │          1.31 │   $7.32 │      $107.32 │   8.0% │    $5.80 │
+└────────────────────────────────┴────────┴──────────┴───────────────┴─────────┴──────────────┴────────┴──────────┘
+
+══════════════════════════════════════════════════════════════════════════════
+7. COHORT COMPOSITION — which cohort did the trades actually come from?
+══════════════════════════════════════════════════════════════════════════════
+
+┌─────────────────┬───────────────┬────────┬─────────────────┬─────────┐
+│ Cohort          │ Pools offered │ Trades │ Share of trades │ Net PnL │
+├─────────────────┼───────────────┼────────┼─────────────────┼─────────┤
+│ survivor        │            10 │      0 │            0.0% │   $0.00 │
+│ dead-or-dormant │            12 │     20 │          100.0% │  $27.35 │
+└─────────────────┴───────────────┴────────┴─────────────────┴─────────┘
+
+WARNING: every trade came from the "dead-or-dormant" cohort. That is a
+selection artefact of the universe or the TVL model, not a property of the
+strategy. Treat the headline PnL as describing that cohort only.
+
+══════════════════════════════════════════════════════════════════════════════
+8. FRICTION FEASIBILITY — the fee/TVL window a $100 account must hit
+══════════════════════════════════════════════════════════════════════════════
+
+Position notional $27.50 · median SOL/USD over the window $75.31 · coverage 2.5x · slippage 2%
+The breakeven gate demands fee/TVL >= coverage x (gasRoundTrip/notional + slippage).
+MAX_FEE_TVL_RATIO caps the same quantity at 25.0%.
+
+┌────────────┬────────────────┬──────────────────────┬──────────────────┬────────┬────────┐
+│ Gas SOL/tx │ Round-trip gas │ Gas as % of notional │ Required fee/TVL │ Window │ Trades │
+├────────────┼────────────────┼──────────────────────┼──────────────────┼────────┼────────┤
+│   0.000005 │         $0.001 │                0.00% │             5.0% │   open │     32 │
+│     0.0001 │         $0.015 │                0.05% │             5.1% │   open │     32 │
+│     0.0005 │         $0.075 │                0.27% │             5.7% │   open │     20 │
+│      0.001 │         $0.151 │                0.55% │             6.4% │   open │     20 │
+│      0.002 │         $0.301 │                1.10% │             7.7% │   open │     20 │
+│     0.0035 │         $0.527 │                1.92% │             9.8% │   open │     20 │
+│       0.01 │         $1.506 │                5.48% │            18.7% │   open │      0 │
+└────────────┴────────────────┴──────────────────────┴──────────────────┴────────┴────────┘
+
+══════════════════════════════════════════════════════════════════════════════
+9. WHY ENTRIES WERE REFUSED (unbiased, full rules)
+══════════════════════════════════════════════════════════════════════════════
+
+┌───────────────────┬────────────┬───────┐
+│ Gate              │ Rejections │ Share │
+├───────────────────┼────────────┼───────┤
+│ lowFeeTvl         │      11910 │ 40.6% │
+│ lowTvl            │       7102 │ 24.2% │
+│ belowBreakeven    │       4135 │ 14.1% │
+│ highTvl           │       3638 │ 12.4% │
+│ lowVolume         │       1603 │  5.5% │
+│ tooYoung          │        549 │  1.9% │
+│ surged            │        227 │  0.8% │
+│ lockout           │         72 │  0.2% │
+│ cooldown          │         68 │  0.2% │
+│ pumped            │         57 │  0.2% │
+│ volatilityUnknown │          1 │  0.0% │
+└───────────────────┴────────────┴───────┘
+
+Bars with no eligible candidate: 2164 of 2184.
+
+══════════════════════════════════════════════════════════════════════════════
+CAVEATS — READ BEFORE QUOTING ANY NUMBER ABOVE
+══════════════════════════════════════════════════════════════════════════════
+
+1. MODELLED TVL — the load-bearing assumption. No free provider serves historical TVL for Meteora DLMM pools, so TVL at each bar is estimated as k x trailing-24h-volume, with k fitted per pool where observable and otherwise from the live cross-sectional median. Every entry filter (MIN_TVL_USD, fee/TVL bounds) runs against that estimate, not a measurement. A snapshot cannot be substituted: a rugged pool reads about $0 TVL today, so a snapshot filter would reject every dead pool and silently restore the survivorship bias.
+
+2. Fee income is modelled as feeRate x barVolume x (positionValue / modelledTVL), a pro-rata share of the whole pool. DLMM concentration multipliers are not credited, so fees are a conservative lower bound.
+
+3. Bar volume is the pool's total USD volume and is credited only for bars whose close sits inside the range.
+
+4. Exits happen on an hourly close, so price can gap past the bin edge before the position closes. Forced exits are charged slippage, and positions whose liquidity vanished are marked to the worst forward price rather than the unobtainable exit-bar price.
+
+5. The unbiased universe is a SAMPLE of Meteora's ~123k pools, not the whole of it. It combines today's volume leaders with pools created around the window whose lifetime volume shows real past activity but whose current volume has collapsed. Sampling deeper would surface more failures, so the residual bias still points optimistic.
+
+6. Forward bars are consulted only to decide whether an exit was executable at all — whether there was anyone left to sell to. They never inform an entry or exit decision, which would be look-ahead bias in the strategy itself.
+
+
+[micro] full results written to backtest_micro_capital.json

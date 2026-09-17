@@ -1,0 +1,155 @@
+
+════════════════════════════════════════════════════════════════════════════════════════════════
+BACKTEST INTEGRITY — V1.1 dengan biaya & universe yang live benar-benar hadapi
+════════════════════════════════════════════════════════════════════════════════════════════════
+
+Profile         : NOT THE LIVE PROFILE
+  capital       : $300.00 (4.3588 SOL)
+  size          : 60.00% per position = $180.00 / 2.6153 SOL notional
+  concurrent    : 1
+  gas           : 0.004 SOL/tx
+  SOL/USD       : $68.83 (window start)
+  ** WARNING   : --capital, --sizepct overrode the live profile (live: $196.16, 63.16%, 1 concurrent). These numbers describe a DIFFERENT account and must not be read as the live engine's. **
+Dataset         : .cache/historical_data_window_2026-06-14_2026-09-13.json · fetched 2026-09-14T03:32:34.546Z · 32 pools (21 survivor / 11 dead)
+TVL model       : TVL modelled as k x 24h volume; k median 0.405 (IQR 0.296–1.106) from 21 live pools
+Gates / exits   : coverage 2.5x · TP +5% · SL -8% · age 24h · range -45%/+15% · forced exit 2%
+Swap (baru)     : 0.25%/kaki + 0.004 SOL gas/kaki
+Token screen    : max transfer fee 0 bps + hook + non-transferable ditolak (catatan: switch live LIVE_TOKEN_FEE_SCREEN_ENABLED=false di env ini)
+Window W1       : 2026-06-13 → 2026-09-12 · 91.0 hari data · 32 pools
+
+════════════════════════════════════════════════════════════════════════════════════════════════
+0. UNIVERSE — siapa yang live-eligible
+════════════════════════════════════════════════════════════════════════════════════════════════
+
+live-eligible 17 / 32 pools · noWsol 9 · token screen 6 · unread 0
+  🎒-SOL             tokenScreen: Token-2022 transfer fee 1% (100 bps) over the 0% (0 bps) limit — the fee is charged on BOTH legs of the round trip, and the take-profit cannot clear it
+  BTC-SOL            tokenScreen: Token-2022 transfer fee 3% (300 bps) over the 0% (0 bps) limit — the fee is charged on BOTH legs of the round trip, and the take-profit cannot clear it
+  PURR-SOL           tokenScreen: Token-2022 transfer fee 3% (300 bps) over the 0% (0 bps) limit — the fee is charged on BOTH legs of the round trip, and the take-profit cannot clear it
+  AGI-SOL            tokenScreen: Token-2022 transfer fee 1% (100 bps) over the 0% (0 bps) limit — the fee is charged on BOTH legs of the round trip, and the take-profit cannot clear it
+  GPRO-SOL           tokenScreen: Token-2022 transfer hook: every transfer is routed through a third-party program that can gate or refuse it, so the exit depends on code this engine does not control
+  DFDVx-SOL          tokenScreen: Token-2022 transfer hook: every transfer is routed through a third-party program that can gate or refuse it, so the exit depends on code this engine does not control
+
+════════════════════════════════════════════════════════════════════════════════════════════════
+1. KALIBRASI BIAYA EXIT (dari live, per kaki, bersih dari transfer fee)
+════════════════════════════════════════════════════════════════════════════════════════════════
+
+┌─────────────┬──────────┬──────────────┬──────────┬───────┬──────────┐
+│ Obs         │ bin_step │ notional/TVL │ observed │   fit │ envelope │
+├─────────────┼──────────┼──────────────┼──────────┼───────┼──────────┤
+│ MANLET-SOL  │       80 │       0.206% │    0.60% │ 0.71% │    1.58% │
+│ EMBER-SOL   │      200 │       0.097% │    3.95% │ 1.36% │    3.95% │
+│ NEARKAT-SOL │      400 │       0.180% │    1.43% │ 2.70% │    7.90% │
+└─────────────┴──────────┴──────────────┴──────────┴───────┴──────────┘
+
+fit      = fit (0.631%/bin-step% + 1.015%/TVL%)
+envelope = envelope (1.975%/bin-step%)
+
+════════════════════════════════════════════════════════════════════════════════════════════════
+2. NET SAAT TP +5% SETELAH BIAYA (notional $180.00, TVL $100k, SOL $101.74)
+════════════════════════════════════════════════════════════════════════════════════════════════
+
+┌──────────┬──────────┬─────────────┬──────────┬─────────────┐
+│ bin_step │ exit fit │ net @TP fit │ exit env │ net @TP env │
+├──────────┼──────────┼─────────────┼──────────┼─────────────┤
+│       10 │    0.25% │       4.30% │    0.20% │       4.32% │
+│       20 │    0.31% │       4.27% │    0.40% │       4.23% │
+│       50 │    0.50% │       4.17% │    0.99% │       3.93% │
+│       80 │    0.69% │       4.08% │    1.58% │       3.63% │
+│      100 │    0.81% │       4.02% │    1.98% │       3.43% │
+│      150 │    1.13% │       3.86% │    2.96% │       2.93% │
+│      200 │    1.44% │       3.70% │    3.95% │       2.43% │
+│      250 │    1.76% │       3.54% │    4.94% │       1.92% │
+│      300 │    2.07% │       3.38% │    5.93% │       1.42% │
+│      400 │    2.70% │       3.06% │    7.90% │       0.39% │
+└──────────┴──────────┴─────────────┴──────────┴─────────────┘
+
+bin_step terbesar yang TP masih profit: fit 400 · envelope 400 (gas round trip 0.45% notional, swap masuk 0.25% x 0.5)
+Ini TP yang kena TEPAT di +5% gross. Harga yang lompat melewati TP antar bar menaikkan angka ini; exit paksa pakai max(model, flat).
+
+════════════════════════════════════════════════════════════════════════════════════════════════
+3. BASELINE V1.1 — akuntansi LAMA vs BARU, per window (tidak dirata-rata)
+════════════════════════════════════════════════════════════════════════════════════════════════
+
+-- W1 (2026-06-13 → 2026-09-12) --
+┌──────────────────────────────────────────────┬──────────┬──────────┬─────────┬──────────┬──────────┬─────────┬─────────────┬───────┬───────────┐
+│ Akuntansi                                    │ elig trd │ elig net │ elig PF │ full trd │ full net │ full PF │ selisih net │  swap │ exit slip │
+├──────────────────────────────────────────────┼──────────┼──────────┼─────────┼──────────┼──────────┼─────────┼─────────────┼───────┼───────────┤
+│ LAMA: swap gratis, exit flat 2% (paksa saja) │       37 │  -$22.73 │    0.92 │       38 │   -$8.92 │    0.97 │     +$13.80 │ $0.00 │    $39.86 │
+│ +swap 0.25%/kaki                             │        0 │    $0.00 │       — │        3 │   -$3.74 │    0.00 │      -$3.74 │ $3.77 │     $0.00 │
+│ +swap, exit flat 2% SEMUA exit               │        0 │    $0.00 │       — │        3 │   -$8.34 │    0.00 │      -$8.34 │ $3.10 │     $5.26 │
+│ +swap, exit bin_step (fit)                   │        0 │    $0.00 │       — │        3 │   -$3.95 │    0.00 │      -$3.95 │ $3.10 │     $0.88 │
+│ +swap, exit bin_step (envelope)              │        0 │    $0.00 │       — │        3 │   -$4.11 │    0.00 │      -$4.11 │ $3.10 │     $1.04 │
+└──────────────────────────────────────────────┴──────────┴──────────┴─────────┴──────────┴──────────┴─────────┴─────────────┴───────┴───────────┘
+
+W1 fit: turun karena BIAYA (full, lama→baru) +$4.97 · hilang karena UNIVERSE (baru, full→eligible) +$3.95 · total lama-full → baru-eligible +$8.92
+   (a) live-eligible : 17 pools · 0 trades · net +$0.00 · PF undefined · maxDD 0.0%
+   (b) full universe : 32 pools · 3 trades · net -$3.95 · PF 0.00 · maxDD 1.3%
+   (c) selisih (b-a) : 15 pools · 3 trades · net -$3.95 (dropped: 9 noWsol, 6 token screen, 0 unread)
+
+W1 envelope: turun karena BIAYA (full, lama→baru) +$4.81 · hilang karena UNIVERSE (baru, full→eligible) +$4.11 · total lama-full → baru-eligible +$8.92
+   (a) live-eligible : 17 pools · 0 trades · net +$0.00 · PF undefined · maxDD 0.0%
+   (b) full universe : 32 pools · 3 trades · net -$4.11 · PF 0.00 · maxDD 1.4%
+   (c) selisih (b-a) : 15 pools · 3 trades · net -$4.11 (dropped: 9 noWsol, 6 token screen, 0 unread)
+
+
+════════════════════════════════════════════════════════════════════════════════════════════════
+4. VARIAN TP & GATE — (live-eligible | full universe | selisih), OOS = split tengah window
+════════════════════════════════════════════════════════════════════════════════════════════════
+
+-- W1 · biaya exit fit --
+┌────────────────────────────────┬──────────┬──────────┬───────────┬─────────┬─────────┬────────────┬─────────┬─────────────────────────┬──────────┬─────────┐
+│ Varian                         │ elig trd │ elig net │ Δ vs base │ elig PF │ elig DD │ IS/OOS trd │ OOS exp │              OOS (elig) │ full net │ selisih │
+├────────────────────────────────┼──────────┼──────────┼───────────┼─────────┼─────────┼────────────┼─────────┼─────────────────────────┼──────────┼─────────┤
+│ V1.1 (TP 5, cov 2.5)           │        0 │    $0.00 │         — │       — │    0.0% │        0/0 │  +$0.00 │ belum bisa diverifikasi │   -$3.95 │  -$3.95 │
+│ TP 6%                          │        0 │    $0.00 │    +$0.00 │       — │    0.0% │        0/0 │  +$0.00 │ belum bisa diverifikasi │   -$3.95 │  -$3.95 │
+│ TP 8%                          │        0 │    $0.00 │    +$0.00 │       — │    0.0% │        0/0 │  +$0.00 │ belum bisa diverifikasi │   -$3.95 │  -$3.95 │
+│ TP 10%                         │        0 │    $0.00 │    +$0.00 │       — │    0.0% │        0/0 │  +$0.00 │ belum bisa diverifikasi │   -$3.95 │  -$3.95 │
+│ coverage 2.0x                  │       37 │  -$19.59 │   -$19.59 │    0.93 │   31.3% │       0/37 │  -$0.53 │ belum bisa diverifikasi │   $11.45 │ +$31.04 │
+│ coverage 1.5x                  │       55 │  -$74.46 │   -$74.46 │    0.80 │   46.5% │       0/55 │  -$1.35 │ belum bisa diverifikasi │ -$153.24 │ -$78.78 │
+│ gate pakai biaya exit bin_step │       55 │  -$74.46 │   -$74.46 │    0.80 │   46.5% │       0/55 │  -$1.35 │ belum bisa diverifikasi │  -$66.05 │  +$8.42 │
+└────────────────────────────────┴──────────┴──────────┴───────────┴─────────┴─────────┴────────────┴─────────┴─────────────────────────┴──────────┴─────────┘
+
+-- W1 · biaya exit envelope --
+┌────────────────────────────────┬──────────┬──────────┬───────────┬─────────┬─────────┬────────────┬─────────┬─────────────────────────┬──────────┬─────────┐
+│ Varian                         │ elig trd │ elig net │ Δ vs base │ elig PF │ elig DD │ IS/OOS trd │ OOS exp │              OOS (elig) │ full net │ selisih │
+├────────────────────────────────┼──────────┼──────────┼───────────┼─────────┼─────────┼────────────┼─────────┼─────────────────────────┼──────────┼─────────┤
+│ V1.1 (TP 5, cov 2.5)           │        0 │    $0.00 │         — │       — │    0.0% │        0/0 │  +$0.00 │ belum bisa diverifikasi │   -$4.11 │  -$4.11 │
+│ TP 6%                          │        0 │    $0.00 │    +$0.00 │       — │    0.0% │        0/0 │  +$0.00 │ belum bisa diverifikasi │   -$4.11 │  -$4.11 │
+│ TP 8%                          │        0 │    $0.00 │    +$0.00 │       — │    0.0% │        0/0 │  +$0.00 │ belum bisa diverifikasi │   -$4.11 │  -$4.11 │
+│ TP 10%                         │        0 │    $0.00 │    +$0.00 │       — │    0.0% │        0/0 │  +$0.00 │ belum bisa diverifikasi │   -$4.11 │  -$4.11 │
+│ coverage 2.0x                  │       37 │  -$27.56 │   -$27.56 │    0.90 │   31.5% │       0/37 │  -$0.74 │ belum bisa diverifikasi │  -$16.44 │ +$11.12 │
+│ coverage 1.5x                  │       55 │  -$89.94 │   -$89.94 │    0.75 │   47.6% │       0/55 │  -$1.64 │ belum bisa diverifikasi │ -$163.06 │ -$73.12 │
+│ gate pakai biaya exit bin_step │        9 │  -$72.64 │   -$72.64 │    0.33 │   24.6% │        0/9 │  -$8.07 │ belum bisa diverifikasi │  -$76.93 │  -$4.29 │
+└────────────────────────────────┴──────────┴──────────┴───────────┴─────────┴─────────┴────────────┴─────────┴─────────────────────────┴──────────┴─────────┘
+
+
+════════════════════════════════════════════════════════════════════════════════════════════════
+5. JAWABAN: naikin TP (6/8/10) dan/atau gate 2.0x/1.5x menaikkan NET live-eligible di KEDUA window?
+════════════════════════════════════════════════════════════════════════════════════════════════
+
+fit      TP 6%                            W1 +$0.00 (0 trd, OOS belum bisa diverifikasi)  →  BELUM BISA DIVERIFIKASI (kurang dari 2 window)
+fit      TP 8%                            W1 +$0.00 (0 trd, OOS belum bisa diverifikasi)  →  BELUM BISA DIVERIFIKASI (kurang dari 2 window)
+fit      TP 10%                           W1 +$0.00 (0 trd, OOS belum bisa diverifikasi)  →  BELUM BISA DIVERIFIKASI (kurang dari 2 window)
+fit      coverage 2.0x                    W1 -$19.59 (37 trd, OOS belum bisa diverifikasi)  →  BELUM BISA DIVERIFIKASI (kurang dari 2 window)
+fit      coverage 1.5x                    W1 -$74.46 (55 trd, OOS belum bisa diverifikasi)  →  BELUM BISA DIVERIFIKASI (kurang dari 2 window)
+fit      gate pakai biaya exit bin_step   W1 -$74.46 (55 trd, OOS belum bisa diverifikasi)  →  BELUM BISA DIVERIFIKASI (kurang dari 2 window)
+envelope TP 6%                            W1 +$0.00 (0 trd, OOS belum bisa diverifikasi)  →  BELUM BISA DIVERIFIKASI (kurang dari 2 window)
+envelope TP 8%                            W1 +$0.00 (0 trd, OOS belum bisa diverifikasi)  →  BELUM BISA DIVERIFIKASI (kurang dari 2 window)
+envelope TP 10%                           W1 +$0.00 (0 trd, OOS belum bisa diverifikasi)  →  BELUM BISA DIVERIFIKASI (kurang dari 2 window)
+envelope coverage 2.0x                    W1 -$27.56 (37 trd, OOS belum bisa diverifikasi)  →  BELUM BISA DIVERIFIKASI (kurang dari 2 window)
+envelope coverage 1.5x                    W1 -$89.94 (55 trd, OOS belum bisa diverifikasi)  →  BELUM BISA DIVERIFIKASI (kurang dari 2 window)
+envelope gate pakai biaya exit bin_step   W1 -$72.64 (9 trd, OOS belum bisa diverifikasi)  →  BELUM BISA DIVERIFIKASI (kurang dari 2 window)
+
+════════════════════════════════════════════════════════════════════════════════════════════════
+CAVEATS
+════════════════════════════════════════════════════════════════════════════════════════════════
+
+1. MODELLED TVL — the load-bearing assumption. No free provider serves historical TVL for Meteora DLMM pools, so TVL at each bar is estimated as k x trailing-24h-volume, with k fitted per pool where observable and otherwise from the live cross-sectional median. Every entry filter (MIN_TVL_USD, fee/TVL bounds) runs against that estimate, not a measurement. A snapshot cannot be substituted: a rugged pool reads about $0 TVL today, so a snapshot filter would reject every dead pool and silently restore the survivorship bias.
+2. Fee income is modelled as feeRate x barVolume x (positionValue / modelledTVL), a pro-rata share of the whole pool. DLMM concentration multipliers are not credited, so fees are a conservative lower bound.
+3. Bar volume is the pool's total USD volume and is credited only for bars whose close sits inside the range.
+4. Exits happen on an hourly close, so price can gap past the bin edge before the position closes. Forced exits are charged slippage, and positions whose liquidity vanished are marked to the worst forward price rather than the unobtainable exit-bar price.
+5. The unbiased universe is a SAMPLE of Meteora's ~123k pools, not the whole of it. It combines today's volume leaders with pools created around the window whose lifetime volume shows real past activity but whose current volume has collapsed. Sampling deeper would surface more failures, so the residual bias still points optimistic.
+6. Forward bars are consulted only to decide whether an exit was executable at all — whether there was anyone left to sell to. They never inform an entry or exit decision, which would be look-ahead bias in the strategy itself.
+7. Biaya exit dikalibrasi dari TIGA observasi live yang tercampur faktor lain (momentum, routing Jupiter, TVL hari ini). Fit vs envelope beda ~3x; percayai kesimpulan hanya kalau sama di keduanya.
+8. Gas 0.004 SOL/tx adalah asumsi, bukan seri historis.
+9. Arm live-eligible memakai ekstensi mint HARI INI; fee Token-2022 bisa berubah per epoch.
