@@ -1,7 +1,7 @@
 /**
  * Which route a live exit takes, and what it does when the atomic one cannot.
  *
- * 20 Sep 2026. The engine's exit was sequential — close the position, then sell what came
+ * 19 Sep 2026. The engine's exit was sequential — close the position, then sell what came
  * back — and the gap between those two transactions is where 51.067138 CATE was stranded on
  * 19 Sep 2026 when the process died mid-swap. The zap close (withdraw + claim + close + swap
  * + unwrap in ONE transaction) removes that gap, and the operator chose it for every future

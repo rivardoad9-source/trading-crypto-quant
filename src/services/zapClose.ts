@@ -1,7 +1,7 @@
 /**
  * The arithmetic of a Zap-Out close, kept away from the I/O so it can be tested directly.
  *
- * WHY THIS EXISTS (20 Sep 2026). The engine's exit used to be a SEQUENCE: remove liquidity,
+ * WHY THIS EXISTS (19 Sep 2026). The engine's exit used to be a SEQUENCE: remove liquidity,
  * claim fees, close the position — then sell the residual token in a SEPARATE transaction.
  * Between those two steps the position is gone and the token is not: whatever fails in the
  * second step leaves a balance sitting in the wallet with nothing tracking it. That is

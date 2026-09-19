@@ -2971,7 +2971,7 @@ export async function closeLivePosition(
   }
 
   /*
-   * WHICH ROUTE (20 Sep 2026). The zap is tried first when the deps offer it: it closes the
+   * WHICH ROUTE (19 Sep 2026). The zap is tried first when the deps offer it: it closes the
    * position AND sells the token in one transaction, so the stranded-token window that cost
    * a manual recovery on 19 Sep 2026 does not exist in that route. When the zap cannot be
    * built or cannot land, the chain — not the error — decides what happens next.
