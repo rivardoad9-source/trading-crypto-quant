@@ -22,6 +22,13 @@ import type { LbPosition, StrategyType } from "@meteora-ag/dlmm";
 import { z } from "zod";
 import { env } from "../config/env.js";
 import { getPriorityFeeEstimateSafe } from "./solana.js";
+import {
+  MAX_TRANSACTION_BYTES,
+  ZAP_CLOSE_COMPUTE_UNITS_FLOOR,
+  ZapCloseUnavailableError,
+  swapInputAfterTransferFee,
+  zapCloseFits,
+} from "./zapClose.js";
 
 /**
  * On-chain execution: wallet loading, transaction signing, submission and
@@ -187,6 +194,20 @@ const OnchainSchema = z.object({
   ONCHAIN_MAX_BUILD_ATTEMPTS: numeric(8),
   /** Jupiter swap API base. Keyless lite tier; matches ENDPOINTS.JUPITER_PRICE's host. */
   JUPITER_SWAP_API_URL: z.string().url().default("https://lite-api.jup.ag/swap/v1"),
+  /**
+   * Which route a live CLOSE takes: `zap` (default) or `legacy`.
+   *
+   * `zap` composes withdraw + claim + close + swap + unwrap into ONE transaction, so there
+   * is no window in which the token is out of the position and unsold — the stranded-token
+   * failure of 19 Sep 2026 has nowhere to happen. It is not always POSSIBLE: the DLMM SDK
+   * can split a withdrawal across transactions for a wide position, and the composed
+   * message has a 1 232-byte limit. An impossible zap close FALLS BACK to the sequential
+   * path rather than failing, so this switch picks the preferred route, not the only one.
+   *
+   * `legacy` forces the sequential close. The escape hatch, if the zap program ever
+   * behaves in a way that costs money; one restart to set.
+   */
+  EXIT_ROUTE: z.enum(["zap", "legacy"]).default("zap"),
 });
 
 export type OnchainConfig = {
@@ -207,6 +228,8 @@ export type OnchainConfig = {
   readonly priorityEscalation: number;
   readonly maxBuildAttempts: number;
   readonly jupiterSwapApiUrl: string;
+  /** Preferred route for a live close: the atomic zap, or the sequential fallback. */
+  readonly exitRoute: "zap" | "legacy";
 };
 
 export function resolveOnchainConfig(source: NodeJS.ProcessEnv = process.env): OnchainConfig {
@@ -237,6 +260,7 @@ export function resolveOnchainConfig(source: NodeJS.ProcessEnv = process.env): O
     priorityEscalation: parsed.ONCHAIN_PRIORITY_ESCALATION,
     maxBuildAttempts: parsed.ONCHAIN_MAX_BUILD_ATTEMPTS,
     jupiterSwapApiUrl: parsed.JUPITER_SWAP_API_URL,
+    exitRoute: parsed.EXIT_ROUTE,
   });
 }
 
@@ -1815,6 +1839,26 @@ export interface DlmmExecutor {
     params: ClosePositionParams,
   ): Promise<DlmmSendResult>;
   /**
+   * Closes a tracked position as ONE ATOMIC transaction: withdraw + claim fees + close +
+   * swap the paired token to SOL + unwrap WSOL, all in a single message with a single
+   * signature.
+   *
+   * This is the exit that has no window in it. The sequential close leaves the token in the
+   * wallet between two transactions, and whatever fails in the second one strands it (19 Sep
+   * 2026, 51.067138 CATE) — here the withdrawal and the sale are the same transaction, so a
+   * failure reverts the withdrawal too and the position is simply still there, tracked.
+   *
+   * Throws `ZapCloseUnavailableError` when the composition cannot be built — a withdrawal
+   * the DLMM SDK splits across transactions, a pool with no wSOL side, or a message that
+   * would not fit in 1 232 bytes. That means "take the sequential path", NOT "the exit
+   * failed", and the caller is expected to fall back rather than report a close that never
+   * happened. See `zapClose.ts` for the measured constraints.
+   */
+  closePositionWithZap(
+    auth: ExecutionAuthorization,
+    params: ClosePositionParams,
+  ): Promise<ZapCloseResult>;
+  /**
    * Recovers a position the engine created but does not own a row for.
    *
    * Separate from `closePosition` and deliberately not a flag on it, because the two
@@ -1872,6 +1916,30 @@ export interface PoolSaleQuote {
   /** `outLamports` less the slippage bound, as the SDK computes it. */
   minOutLamports: string;
   slippageBps: number;
+}
+
+/**
+ * What an atomic zap close did, in the terms an operator (and the reconciliation) needs to
+ * check it against the chain: the single signature, what was swapped, and the floor it was
+ * swapped under.
+ */
+export interface ZapCloseResult {
+  /** The one transaction that withdrew, claimed, closed, swapped and unwrapped. */
+  sent: SendResult[];
+  /** The X-side amount withdrawn from the position, before the transfer fee. */
+  swapInput: string;
+  /**
+   * What the pool actually receives, i.e. `swapInput` less the Token-2022 transfer fee. The
+   * floor is quoted from THIS number, not from `swapInput`.
+   */
+  swapInputAfterFee: string;
+  /** The transfer fee withheld on the way back into the pool. Zero for a classic SPL token. */
+  transferFeeUnits: string;
+  /** Lamports of SOL the swap may not undershoot. */
+  floorLamports: string;
+  swapSlippageBps: number;
+  /** Serialized message size, checked against the 1 232-byte limit before sending. */
+  transactionBytes: number;
 }
 
 /**
@@ -3145,6 +3213,249 @@ async function withdrawClaimAndClose(
   return sendSequentially(auth, transactions, { operation, position: address, beforeRebuild });
 }
 
+/* ------------------------------------------------------------------ */
+/* Zap-out close (atomic: withdraw + claim + close + swap + unwrap)    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The zap program's SDK, loaded on first use exactly like the DLMM one: type-only import
+ * at the top, real value through `createRequire` here, so nothing that merely imports this
+ * module pulls an Anchor program into memory.
+ */
+function loadZapSdk(): Promise<typeof import("@meteora-ag/zap-sdk")> {
+  zapSdk ??= (async () => {
+    const { createRequire } = await import("node:module");
+    const require = createRequire(import.meta.url);
+    const cjsModule = require("@meteora-ag/zap-sdk");
+    return { default: cjsModule, ...cjsModule };
+  })();
+  return zapSdk;
+}
+let zapSdk: Promise<typeof import("@meteora-ag/zap-sdk")> | null = null;
+
+/**
+ * The transfer fee a mint charges on a transfer, right now.
+ *
+ * A Token-2022 mint carries two fee schedules and the mint's own `epoch` fields decide which
+ * one applies — reading `olderTransferFee` on the day the newer one activated would quote a
+ * floor from the wrong rate, so the epoch is read rather than assumed. A classic SPL token,
+ * and a Token-2022 mint with no fee extension, both report zero and the arithmetic in
+ * `zapClose.ts` becomes a no-op.
+ */
+async function readMintTransferFee(
+  mint: PublicKey,
+): Promise<{ feeBps: number; maximumFee: bigint | null }> {
+  const connection = getConnection();
+  const info = await connection.getAccountInfo(mint, "confirmed");
+  if (info === null) {
+    throw new DlmmExecutionError(`mint ${mint.toBase58()} could not be read from the chain`);
+  }
+
+  const { TOKEN_2022_PROGRAM_ID, getTransferFeeConfig, unpackMint } = await import(
+    "@solana/spl-token"
+  );
+  if (!info.owner.equals(TOKEN_2022_PROGRAM_ID)) return { feeBps: 0, maximumFee: null };
+
+  const config = getTransferFeeConfig(unpackMint(mint, info, TOKEN_2022_PROGRAM_ID));
+  if (!config) return { feeBps: 0, maximumFee: null };
+
+  const { epoch } = await connection.getEpochInfo();
+  const schedule =
+    Number(config.newerTransferFee.epoch) <= epoch ? config.newerTransferFee : config.olderTransferFee;
+
+  return {
+    feeBps: Number(schedule.transferFeeBasisPoints),
+    maximumFee: BigInt(schedule.maximumFee.toString()),
+  };
+}
+
+/**
+ * The atomic close itself: DLMM's own withdraw+claim+close composed with the zap program's
+ * swap and WSOL unwrap, in ONE message with ONE signature.
+ *
+ * The order is not a preference. The zap swaps what the withdrawal put in the wallet, so the
+ * withdrawal instruction has to come first in the same message; the zap program reads the
+ * amount at runtime (that is what `amountIn`/`maxSwapAmount` bound), which is what makes the
+ * composition legal without knowing the fee-adjusted number in advance.
+ *
+ * Everything that makes it impossible throws `ZapCloseUnavailableError` BEFORE anything is
+ * signed, and the caller falls back to the sequential close. Nothing here reports a failed
+ * exit: a composition that cannot be built leaves the position untouched and tracked.
+ */
+async function composeAndSendZapClose(
+  auth: ExecutionAuthorization,
+  pool: DlmmPool,
+  position: LbPosition,
+  requestedSlippageBps?: number,
+): Promise<ZapCloseResult> {
+  const address = position.publicKey.toBase58();
+  const data = position.positionData;
+  const fromBinId = data.positionBinData.at(0)?.binId;
+  const toBinId = data.positionBinData.at(-1)?.binId;
+  if (fromBinId === undefined || toBinId === undefined) {
+    throw new DlmmExecutionError(`position ${address} reports no bins; refusing to guess its range`);
+  }
+
+  /*
+   * The withdrawal, built by the DLMM SDK exactly as the sequential close builds it —
+   * 100% of the bins with `shouldClaimAndClose`, so fees are claimed and the account closed
+   * in the same instruction set. `removeLiquidity` CHUNKS: one transaction per bin-array
+   * group, and more than one means the withdrawal and the swap can no longer be atomic.
+   */
+  const transactions = await pool.removeLiquidity({
+    user: auth.wallet,
+    position: position.publicKey,
+    fromBinId,
+    toBinId,
+    bps: new BN(10_000),
+    shouldClaimAndClose: true,
+  });
+
+  if (transactions.length !== 1) {
+    throw new ZapCloseUnavailableError(
+      `the withdrawal of ${address} splits into ${transactions.length} transactions, so it ` +
+        `cannot share one atomic transaction with the swap`,
+    );
+  }
+  const removal = transactions[0];
+  if (!removal) {
+    throw new ZapCloseUnavailableError(`the withdrawal of ${address} produced no transaction`);
+  }
+
+  // A position holding nothing has no swap to make and the sequential path handles the rent.
+  const withdrawnX = BigInt(data.totalXAmount.toString()) + BigInt(data.feeX.toString());
+  if (withdrawnX <= 0n) {
+    throw new ZapCloseUnavailableError(
+      `position ${address} would withdraw no X (${withdrawnX}); there is nothing to zap`,
+    );
+  }
+
+  // Which side of the pool the position's token is, and that the OTHER side is wSOL: a zap
+  // close pays out in SOL, so a pool without a wSOL side has no zap close to offer.
+  const wsol = new PublicKey(WSOL_MINT);
+  const pairedMint = pool.tokenY.publicKey.equals(wsol)
+    ? pool.tokenX.publicKey
+    : pool.tokenX.publicKey.equals(wsol)
+      ? pool.tokenY.publicKey
+      : null;
+  if (pairedMint === null) {
+    throw new ZapCloseUnavailableError(
+      `pool ${pool.pubkey.toBase58()} pairs no token with wSOL, so there is no SOL exit to zap into`,
+    );
+  }
+  const { swapForY } = poolSaleSide(pool, {
+    poolAddress: pool.pubkey.toBase58(),
+    mint: pairedMint.toBase58(),
+    amount: withdrawnX.toString(),
+  });
+
+  /*
+   * THE FLOOR. Quoted from what the pool will RECEIVE, not from what the wallet holds: a
+   * Token-2022 transfer fee is charged on the way out of the position and again on the way
+   * back in, and a floor quoted on the full amount is a false positive that reverts on-chain
+   * (measured: it passed by 0-1 lamport at the 300 bps exit cap and reverted at 100 bps with
+   * DLMM `Swap2` Custom:6003). One fee is subtracted — the amount the quote itself covers.
+   */
+  const { feeBps, maximumFee } = await readMintTransferFee(pairedMint);
+  const { swappedIn, feeUnits } = swapInputAfterTransferFee({
+    amount: withdrawnX,
+    feeBps,
+    maximumFee,
+  });
+
+  const slippageBps = resolveExitSlippageBps(requestedSlippageBps);
+  const binArrays = await pool.getBinArrayForSwap(swapForY);
+  const quote = pool.swapQuote(new BN(swappedIn.toString()), swapForY, new BN(slippageBps), binArrays);
+  const floorLamports = BigInt(quote.minOutAmount.toString());
+  if (floorLamports <= 0n) {
+    throw new ZapCloseUnavailableError(
+      `the pool quotes no SOL for ${swappedIn} of ${pairedMint.toBase58()}; refusing an exit with no floor`,
+    );
+  }
+
+  const connection = getConnection();
+  const { Zap, getTokenProgramFromMint } = await loadZapSdk();
+  const zap = new Zap(connection);
+  const zapTransaction = await zap.zapOutThroughDlmm({
+    user: auth.wallet,
+    lbPairAddress: pool.pubkey,
+    inputMint: pairedMint,
+    outputMint: wsol,
+    inputTokenProgram: await getTokenProgramFromMint(connection, pairedMint),
+    outputTokenProgram: await getTokenProgramFromMint(connection, wsol),
+    amountIn: new BN(withdrawnX.toString()),
+    minimumSwapAmountOut: new BN(floorLamports.toString()),
+    maxSwapAmount: new BN(withdrawnX.toString()),
+    percentageToZapOut: 100,
+  });
+
+  /*
+   * Extra signers are refused rather than dropped. `asVersionedTransaction` signs with the
+   * wallet alone, so a composition that wants a second signature would be sent, refused at
+   * preflight, and reported as an unavailable zap — better to say so before the attempt.
+   * Both SDK builders publish the signers they expect in `signatures`; the wallet's own
+   * entry is the one we sign ourselves.
+   */
+  const foreignSigners = [...removal.signatures, ...zapTransaction.signatures].filter(
+    (signature) => !signature.publicKey.equals(auth.wallet),
+  );
+  if (foreignSigners.length > 0) {
+    throw new ZapCloseUnavailableError(
+      `the composed close needs ${foreignSigners.length} signature(s) beyond the wallet`,
+    );
+  }
+
+  const composed = new Transaction();
+  composed.add(...removal.instructions, ...zapTransaction.instructions);
+
+  let transactionBytes = 0;
+  const sent = await sendAndConfirm(
+    auth,
+    async ({ blockhash, plan }) => {
+      const tx = asVersionedTransaction(
+        composed,
+        blockhash,
+        plan,
+        auth.wallet,
+        [],
+        ZAP_CLOSE_COMPUTE_UNITS_FLOOR,
+      );
+      /*
+       * Measured BEFORE the send: an oversized message is refused by the runtime, and the
+       * SDK does not warn — the composition just fails. Checked here so it costs a rebuild
+       * and a fallback, never a transaction. The blockhash only shifts the size by a few
+       * bytes, hence the explicit check on the real message rather than an estimate.
+       */
+      transactionBytes = tx.message.serialize().length;
+      if (!zapCloseFits(transactionBytes)) {
+        throw new ZapCloseUnavailableError(
+          `the composed close of ${address} is ${transactionBytes} bytes, over the ` +
+            `${MAX_TRANSACTION_BYTES}-byte limit`,
+        );
+      }
+      return tx;
+    },
+    { label: `zap close of ${address}` },
+  );
+
+  console.log(
+    `[onchain/zap] ${address}: closed ATOMICALLY in one transaction (${sent.signature}, ` +
+      `${transactionBytes}/${MAX_TRANSACTION_BYTES} bytes); swapped ${swappedIn} ` +
+      `(transfer fee withheld ${feeUnits}) with a floor of ${floorLamports} lamports at ` +
+      `${slippageBps} bps`,
+  );
+
+  return {
+    sent: [sent],
+    swapInput: withdrawnX.toString(),
+    swapInputAfterFee: swappedIn.toString(),
+    transferFeeUnits: feeUnits.toString(),
+    floorLamports: floorLamports.toString(),
+    swapSlippageBps: slippageBps,
+    transactionBytes,
+  };
+}
+
 export const dlmmExecutor: DlmmExecutor = {
   async ensureBinArrays(
     auth: ExecutionAuthorization,
@@ -3904,6 +4215,15 @@ export const dlmmExecutor: DlmmExecutor = {
     const position = await requirePosition(pool, auth.wallet, params.positionAddress);
     const sent = await withdrawClaimAndClose(auth, pool, position, "closePosition");
     return { sent, position: params.positionAddress };
+  },
+
+  async closePositionWithZap(
+    auth: ExecutionAuthorization,
+    params: ClosePositionParams,
+  ): Promise<ZapCloseResult> {
+    const pool = await openPool(params.poolAddress);
+    const position = await requirePosition(pool, auth.wallet, params.positionAddress);
+    return composeAndSendZapClose(auth, pool, position, params.slippageBps);
   },
 
   async closeOrphanPosition(

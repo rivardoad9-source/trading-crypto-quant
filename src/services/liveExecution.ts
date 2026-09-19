@@ -2588,6 +2588,18 @@ export interface LiveCloseOutcome {
    * weeks ago would otherwise unsettle every trade that follows.
    */
   nonPaired: NonPairedResiduals;
+  /**
+   * Which route closed the position, for the operator's reconciliation.
+   *
+   * `zap` — one atomic transaction: withdraw + claim + close + swap + unwrap. There was no
+   * moment in which the token sat in the wallet unsold.
+   * `legacy` — the sequential path: close, then sell the residual in a later transaction. The
+   * window that stranded 51.067138 CATE on 19 Sep 2026 is in THIS route, which is why the
+   * zap is tried first and the fallbacks to it are logged loudly.
+   */
+  route: LiveCloseRoute;
+  /** Why the zap was not used, when `route` is `legacy`. Null when the zap closed it. */
+  routeFallbackReason: string | null;
 }
 
 /** Everything `closeLivePosition` does to the outside world, injected for offline tests. */
@@ -2607,6 +2619,21 @@ export interface LiveCloseDeps {
   readPositionState?(params: { poolAddress: string; positionAddress: string }): Promise<PositionChainState>;
   /** The newest successful signature on the position address — its close, once it is gone. */
   findCloseSignature?(positionAddress: string): Promise<string | null>;
+  /**
+   * The ATOMIC close: withdraw + claim fees + close + swap the token to SOL + unwrap, in ONE
+   * transaction. Returns the confirmed signature(s).
+   *
+   * Optional, and absent means "use the sequential path": every harness written before
+   * `EXIT_ROUTE` existed keeps its behaviour, and `EXIT_ROUTE=legacy` disarms the zap by
+   * simply not providing this.
+   *
+   * It throws `ZapCloseUnavailableError` when the composition is impossible (a withdrawal
+   * the DLMM SDK splits, a pool with no wSOL side, a message over 1 232 bytes). That is a
+   * request to FALL BACK, not a failed exit: `closeLivePosition` re-reads the chain and
+   * decides, so a caller must not treat the throw as "the position is still open" or as
+   * "the position is closed" — only the chain says which.
+   */
+  closeWithZap?(params: { poolAddress: string; positionAddress: string }): Promise<string[]>;
 }
 
 function defaultLiveCloseDeps(poolAddress: string): LiveCloseDeps {
@@ -2630,6 +2657,19 @@ function defaultLiveCloseDeps(poolAddress: string): LiveCloseDeps {
     readWalletLamports,
     readPositionState: (p) => dlmmExecutor.readPositionState(auth, p),
     findCloseSignature: (positionAddress) => findLastSuccessfulSignature(positionAddress),
+    /*
+     * The atomic close, when the route allows it. Evaluated per close, like `auth`, so a
+     * restart with EXIT_ROUTE=legacy genuinely disarms it rather than needing the engine to
+     * forget a cached decision.
+     */
+    ...(onchainConfig.exitRoute === "zap"
+      ? {
+          async closeWithZap(p: { poolAddress: string; positionAddress: string }) {
+            const closed = await dlmmExecutor.closePositionWithZap(auth, p);
+            return closed.sent.map((s) => s.signature);
+          },
+        }
+      : {}),
   };
 }
 
@@ -2930,6 +2970,14 @@ export async function closeLivePosition(
     }
   }
 
+  /*
+   * WHICH ROUTE (20 Sep 2026). The zap is tried first when the deps offer it: it closes the
+   * position AND sells the token in one transaction, so the stranded-token window that cost
+   * a manual recovery on 19 Sep 2026 does not exist in that route. When the zap cannot be
+   * built or cannot land, the chain — not the error — decides what happens next.
+   */
+  let route: LiveCloseRoute = "legacy";
+  let routeFallbackReason: string | null = null;
   let signatures: string[];
   if (state === "absent") {
     let found: string | null = null;
@@ -2952,7 +3000,10 @@ export async function closeLivePosition(
     );
     signatures = [found];
   } else {
-    signatures = await deps.closeOnChain(target);
+    const closed = await closeRouted(target, deps);
+    signatures = closed.signatures;
+    route = closed.route;
+    routeFallbackReason = closed.routeFallbackReason;
   }
 
   const closeSignature = signatures.at(-1);
@@ -3013,7 +3064,97 @@ export async function closeLivePosition(
     }
   }
 
-  return { closeSignature, signatures, walletLamportsAfter, residual, tokenAccount, nonPaired };
+  return { closeSignature, signatures, walletLamportsAfter, residual, tokenAccount, nonPaired, route, routeFallbackReason };
+}
+
+/**
+ * Which route a close took. `zap` is ONE atomic transaction (withdraw + claim + close + swap
+ * + unwrap); `legacy` is the sequential close, then the residual sale in a later transaction.
+ */
+export type LiveCloseRoute = "zap" | "legacy";
+
+/**
+ * Closes `target` by the best route available, and says which one it used.
+ *
+ * The zap is preferred because it has no window in it — the position and the token are dealt
+ * with in the same transaction, or neither is. It is NOT the only route, and that is
+ * deliberate rather than a gap: composing withdraw + swap + close into a 1 232-byte message
+ * is impossible for a wide position (the DLMM SDK chunks the withdrawal) and impossible for a
+ * pool with no wSOL side, and an exit that refuses to happen is worse than an exit with a
+ * known window. So a failed zap falls back — but it falls back on EVIDENCE, never on the
+ * error alone, because an error does not say whether the position is still there:
+ *
+ *   absent      the close HAPPENED and its confirmation was lost (RPC error after broadcast,
+ *               a poll that gave up). Its signature is recorded; a second close is NEVER
+ *               sent. The same rule as the precheck above, for the same reason.
+ *   otherwise   the position is still there, so the sequential close runs. That path has its
+ *               own state-aware precheck, so it cannot double-close either.
+ *
+ * A re-read that fails counts as "still there": an RPC that did not answer is not evidence
+ * that a position is gone, and the sequential path reads again before it acts.
+ */
+async function closeRouted(
+  target: { poolAddress: string; positionAddress: string },
+  deps: LiveCloseDeps,
+): Promise<{ signatures: string[]; route: LiveCloseRoute; routeFallbackReason: string | null }> {
+  const zap = deps.closeWithZap;
+  if (typeof zap !== "function") {
+    return {
+      signatures: await deps.closeOnChain(target),
+      route: "legacy",
+      routeFallbackReason: null,
+    };
+  }
+
+  try {
+    return { signatures: await zap(target), route: "zap", routeFallbackReason: null };
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[live] the atomic (zap) close of ${target.positionAddress} did not go through ` +
+        `(${reason}); reading the chain before deciding how to finish the exit`,
+    );
+
+    let state: PositionChainState | "unreadable" = "unreadable";
+    try {
+      state = deps.readPositionState ? await deps.readPositionState(target) : "unreadable";
+    } catch {
+      state = "unreadable";
+    }
+
+    if (state === "absent") {
+      let found: string | null = null;
+      try {
+        found = deps.findCloseSignature
+          ? await deps.findCloseSignature(target.positionAddress)
+          : null;
+      } catch {
+        found = null;
+      }
+      if (!found) {
+        throw new Error(
+          `position ${target.positionAddress} is GONE on-chain but its closing signature could ` +
+            `not be read; NOT falling back to a second close. The row stays active and the next ` +
+            `check reads the chain again.`,
+        );
+      }
+      console.warn(
+        `[live] position ${target.positionAddress} was closed on-chain by the zap (${found}) ` +
+          `even though the call errored; recording that close instead of closing again`,
+      );
+      return { signatures: [found], route: "zap", routeFallbackReason: null };
+    }
+
+    console.warn(
+      `[live] position ${target.positionAddress} is still on-chain (${state}); finishing the ` +
+        `exit through the sequential route — close, then sell the residual`,
+    );
+    return {
+      signatures: await deps.closeOnChain(target),
+      route: "legacy",
+      routeFallbackReason: reason,
+    };
+  }
 }
 
 /**
