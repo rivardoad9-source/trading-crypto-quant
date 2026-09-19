@@ -1,5 +1,5 @@
 {
-  "exportedAt": "2026-09-18T15:00:31.310Z",
+  "exportedAt": "2026-09-19T15:00:12.200Z",
   "sourceDb": "flowmetrix.db",
   "cutoffs": [
     {
@@ -21,6 +21,6 @@
       "netUsd": 43.12
     }
   ],
-  "researchLogs": 15,
-  "dailyPnlSnapshots": 12
+  "researchLogs": 16,
+  "dailyPnlSnapshots": 13
 }
