@@ -62,7 +62,7 @@ import {
   executeJupiterSwap,
   getConnection,
   getJupiterQuote,
-  resolveSlippageBps,
+  resolveExitSlippageBps,
   type ExecutionAuthorization,
 } from "../src/services/onchainExecutor.js";
 
@@ -332,7 +332,19 @@ async function simulateClose(conn: Connection, owner: PublicKey, pool: any, posi
     console.log("\n=== 2. selling the recovered token back to SOL ===");
     if (held.length === 0) console.log("  no non-wSOL token in the wallet — nothing to sell.");
     for (const t of held) {
-      const slippage = resolveSlippageBps(auth, SLIPPAGE_BPS);
+      /*
+       * EXIT bound, not the entry bound. This leg puts capital BACK into SOL, and the
+       * 50 bps entry cap refuses the sale whenever the pool ticks ~2 bins in the seconds
+       * between the quote and the landing (bin_step 20 = 0.2%/bin).
+       *
+       * Observed 19 Sep 2026, controlled CATE-SOL open whose auto-unwind was interrupted:
+       * the residual sale died twice on `custom program error: 0x1771`
+       * (SlippageToleranceExceeded) at 50 bps, leaving 51.067138 CATE stranded in a wallet
+       * the DB had no row for. The engine's OWN residual sale passes `leg: "exit"` for
+       * exactly this reason (`executeJupiterSwap`, see the `leg` docstring) — this ops
+       * script was the one call site that still resolved the sell through the entry cap.
+       */
+      const slippage = resolveExitSlippageBps(SLIPPAGE_BPS);
       const quote = await getJupiterQuote({
         inputMint: t.mint,
         outputMint: WSOL_MINT,
@@ -346,6 +358,8 @@ async function simulateClose(conn: Connection, owner: PublicKey, pool: any, posi
         inputMint: t.mint,
         outputMint: WSOL_MINT,
         amountLamports: Number(t.amount),
+        // The exit leg, or the sale is bounded by the 50 bps ENTRY cap and refuses.
+        leg: "exit",
         ...(SLIPPAGE_BPS === undefined ? {} : { slippageBps: SLIPPAGE_BPS }),
       });
       console.log(`  sold: ${result.signature}`);
