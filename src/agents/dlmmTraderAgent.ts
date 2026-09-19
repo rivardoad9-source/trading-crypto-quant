@@ -1037,7 +1037,7 @@ export interface FastMonitorResult extends MonitorSummary {
  *
  * It carries no screening, no LLM call and no macro data — only the positions already
  * open, so it stays cheap enough to run every minute while the heavy 600-pool scan and
- * its rate-limited upstreams stay on the 30-minute screener clock.
+ * its rate-limited upstreams stay on the base-cadence screener clock.
  *
  * A tick that cannot take the lock returns `ran: false` and does nothing. That is not
  * a missed check: the holder is the screener's own monitor pass or /close_all, both of
@@ -2572,7 +2572,7 @@ export interface CycleOptions {
    * Skip the monitor stage and only look for a new entry.
    *
    * Set by the screener's scheduler, because the 1-minute fast monitor owns position
-   * marking there and a second pass 30 minutes apart adds nothing. Left false for
+   * marking there and a second pass on the cadence adds nothing. Left false for
    * `npm run dlmm:once`, the smoke test and any manual trigger, where "one cycle" is
    * expected to mean screen AND monitor.
    */
@@ -2688,7 +2688,7 @@ function recordFunnel(entry: EntrySummary, monitor: MonitorSummary, durationMs: 
 
 /**
  * One full paper-trading cycle: mark open positions, then look for a new entry.
- * Runs every 30 minutes via cron; also exported for manual triggering.
+ * Runs on the screener's base cadence via cron; also exported for manual triggering.
  */
 export async function runDlmmTradingCycle(
   options: CycleOptions = {},

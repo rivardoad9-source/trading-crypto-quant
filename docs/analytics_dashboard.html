@@ -1706,8 +1706,8 @@ function buildFacts(v) {
 
   const facts = [
     {
-      t: 'Screener turun dari tiap 10 menit ke tiap 30 menit — <strong class="text-zinc-100">144 → 48 siklus per hari</strong>, sekitar <strong class="text-emerald-400">66% lebih sedikit</strong> panggilan DeepSeek Reasoner untuk cakupan pasar yang sama.',
-      s: "CRON.DLMM_LOOP = */30 * * * * — src/config/constants.ts"
+      t: 'Screener 10 → 30 menit (V1.1, 2026) lalu 30 → 20 menit (keputusan operator, 19 Sep 2026) — <strong class="text-zinc-100">144 → 72 siklus per hari</strong>, sekitar <strong class="text-emerald-400">50% lebih sedikit</strong> panggilan DeepSeek Reasoner dibanding versi 10 menit; tick tetap 5 menit dan tidak menambah biaya.',
+      s: "DLMM_BASE_CADENCE_MIN = 20 + CRON.DLMM_TICK = */5 * * * * — src/config/constants.ts"
     },
     {
       t: 'Budget reasoner tidak lagi berlipat saat jawabannya terpotong. Worst-case per tick turun dari <strong class="text-zinc-100">48.000 → 32.000</strong> token reasoning, sehingga biaya terburuk satu tick bisa dihitung di muka.',

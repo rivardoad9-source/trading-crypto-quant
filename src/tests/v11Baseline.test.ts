@@ -81,23 +81,24 @@ describe("V1.1 baseline — breakeven friction gate", () => {
 });
 
 describe("V1.1 baseline — clocks", () => {
-  it("screens every 30 minutes", () => {
+  it("screens every 20 minutes", () => {
     /*
-     * The baseline claim is about the RUN cadence: twice an hour, two DeepSeek calls an
-     * hour, and that is what the constants still say. The cron entry became a 5-minute
-     * tick to make room for the one bounded exception below — off-cadence ticks return
-     * before the screener, so the tick itself costs nothing.
+     * The baseline claim is about the RUN cadence, and it moved on 19 Sep 2026 by the
+     * operator's call: 30 -> 20 minutes, i.e. three runs and three DeepSeek calls an hour
+     * instead of two. The cron entry is still a 5-minute TICK — off-cadence ticks return
+     * before the screener, so the tick itself costs nothing — and 20 is a multiple of 5,
+     * so every mark is still hit by a tick exactly.
      */
     assert.equal(CRON.DLMM_TICK, "*/5 * * * *");
-    assert.equal(DLMM_BASE_CADENCE_MIN, 30);
+    assert.equal(DLMM_BASE_CADENCE_MIN, 20);
   });
 
   it("widens the cadence only in a bounded post-news window", () => {
     /*
-     * The only sanctioned deviation from the 30-minute clock: for this many minutes after
+     * The only sanctioned deviation from the 20-minute clock: for this many minutes after
      * a macro-news blackout window closes, the screener runs on the tick. Asserted so the
      * window cannot quietly grow into a cadence change — a fast clock that never ends is a
-     * six-fold token bill, which is the thing the 30-minute clock was chosen to prevent.
+     * twelve-fold token bill, which is the thing the base clock exists to prevent.
      * 90 minutes is the operator's value (10 Sep 2026), not a default.
      */
     assert.equal(DLMM_POST_NEWS_FAST_MIN, 90);

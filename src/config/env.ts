@@ -349,7 +349,7 @@ const EnvSchema = z
 
     /* ---- Fast position monitor ---- */
     /**
-     * Runs the position monitor every 60s, decoupled from the 30-minute screener.
+     * Runs the position monitor every 60s, decoupled from the base-cadence screener.
      *
      * On for good reason: a 10-minute cadence let a -8% stop-loss close at -13.84%
      * because price crossed the threshold between ticks. Turn it off only to fall back

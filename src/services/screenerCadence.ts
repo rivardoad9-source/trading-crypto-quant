@@ -9,9 +9,10 @@
  * THE RULE, in full:
  *
  *   - Base cadence: a tick runs the screener only when its minute-of-hour is a multiple of
- *     `DLMM_BASE_CADENCE_MIN` (30), i.e. twice an hour. Off-cadence ticks return here,
- *     before touching the network, the database or DeepSeek. Cost and behaviour outside a
- *     fast window are exactly what the 30-minute clock cost.
+ *     `DLMM_BASE_CADENCE_MIN` (20), i.e. three times an hour — minutes 0, 20 and 40.
+ *     Off-cadence ticks return here, before touching the network, the database or
+ *     DeepSeek. Cost and behaviour outside a fast window are exactly what the 20-minute
+ *     clock cost.
  *   - Fast window: after a macro-news blackout window CLOSES, for
  *     `DLMM_POST_NEWS_FAST_MIN` minutes, every tick runs the screener. Never DURING the
  *     window: entries are held there by `newsBlackout`, so running the screener more often
@@ -26,7 +27,7 @@
  * always-fast one would cost a permanent multiple of the engine's token bill.
  *
  * FAILS SAFE. Anything that goes wrong while reading the calendar (missing file, bad JSON,
- * stale calendar) means "no fast window" — the engine simply keeps its 30-minute cadence.
+ * stale calendar) means "no fast window" — the engine simply keeps its 20-minute cadence.
  * The opposite failure, inventing a fast window out of a broken file, would spend money on
  * tokens to react to an event that may not exist.
  */
@@ -66,7 +67,7 @@ export interface ScreenerCadenceDecision {
 /**
  * Minute-of-hour in a named zone.
  *
- * The cron expression is evaluated in `env.TZ`, so "is this tick on a 30-minute mark" has to
+ * The cron expression is evaluated in `env.TZ`, so "is this tick on a 20-minute mark" has to
  * be asked in that zone too. The box happens to run WIB today, but a cadence that silently
  * halves when the server's zone differs from `env.TZ` is exactly the class of bug
  * `timezone.ts` was written about, and it costs one `Intl` call to not have it.

@@ -213,11 +213,17 @@ def cmd_create(con, limit=6):
     ev = con.execute("""select pair, collected_at, fee24h_usd, ratio_measured, cost_live_usd from observations
                         where pass_measured=1 and collected_at >= datetime('now','-3 days')
                         order by collected_at desc, rowid desc""").fetchall()
-    # cooldown 24 jam per pool: pool yang sama boleh di-paper-trade lagi setelah trade sebelumnya tutup
+    # cooldown 24 jam per pool: pool yang sama boleh di-paper-trade lagi setelah trade sebelumnya tutup.
+    # ⚠️ Key lama = event_time, padahal seed backfill punya event_time BEKU (17 Sep 13:13) → pool yang
+    # sama lolos cooldown tiap run dan ledger diisi 6 duplikat / 30 menit (85 pending pada 19 Sep).
+    # Sekarang: (a) window pakai created_at (kapan baris dibuat), (b) pool yang masih punya baris
+    # pending sama sekali tidak diambil lagi, (c) tolak kalau (pool, event_time) sudah ada.
     recent = {r[0] for r in con.execute(
-        "select pair from paper_trades where event_time >= datetime('now','-24 hours')")}
+        "select pair from paper_trades where created_at >= datetime('now','-24 hours')")}
+    pending_pairs = {r[0] for r in con.execute(
+        "select pair from paper_trades where status='pending'")}
     todo, taken = [], set()
-    for e in [x for x in ev if x[0] not in recent]:      # ambil 1 event per pool (yang paling baru)
+    for e in [x for x in ev if x[0] not in recent and x[0] not in pending_pairs]:  # 1 event per pool (paling baru)
         if e[0] in taken:
             continue
         taken.add(e[0])
@@ -244,6 +250,13 @@ def cmd_create(con, limit=6):
                     ratio_measured=ratio)
             seen.add(pair)
             continue
+        # guard terakhir: (pool, event_time) yang sama jangan ditulis dua kali — ledger ini bukti,
+        # baris kembar bikin "n" terlihat besar padahal cuma satu momen entry.
+        if con.execute("""select 1 from paper_trades
+                          where pool_address=? and event_time=? and source='counterfactual'""",
+                       (addr[pair], when)).fetchone():
+            seen.add(pair)
+            continue
         new_row(con, created_at=now, source="counterfactual", pair=pair, pool_address=addr[pair],
                 event_time=when, status="pending", fee_usd_at_event=fee, ratio_measured=ratio,
                 notional_usd=notional, entry_ref_time=None,
@@ -261,7 +274,7 @@ def cmd_score(con, limit=3):     # 3 pool per run: jaga kuota GeckoTerminal (eng
                           from paper_trades
                           where status='pending' and pool_address is not null
                             and event_time <= datetime('now','-25 hours')
-                          order by event_time limit ?""", (limit,)).fetchall()
+                          order by event_time, id limit ?""", (limit,)).fetchall()
     def bump(con, tid, why):
         """catat percobaan gagal; habis 5x jangan dihajar terus (jaga kuota GeckoTerminal)."""
         n = con.execute("select attempts from paper_trades where id=?", (tid,)).fetchone()[0] + 1
@@ -358,15 +371,21 @@ def cmd_summary(con):
     st = dict(con.execute("select status, count(*) from paper_trades where source='counterfactual' group by 1").fetchall())
     print(f"paper trade counterfactual: {tot} · {st}")
     rows = con.execute("""select pair, count(*) n, sum(exit_reason like 'take-profit%') tp, sum(exit_reason like 'stop-loss%') sl,
+                          round(avg(gross_pct),2) gross,
                           round(avg(net_pct_live),2) net_live, round(avg(net_pct_measured),2) net_measured
                           from paper_trades where source='counterfactual' and status='scored' group by pair
                           order by net_measured desc""").fetchall()
     if not rows:
         print("belum ada yang scored (butuh >= 25 jam setelah event)")
         return
-    print(f"\n{'pool':14} {'n':>3} {'TP':>3} {'SL':>3} {'net LAMA':>9} {'net TERUKUR':>12}")
-    for p, n, tp, sl, nl, nm in rows:
-        print(f"{p:14} {n:3} {tp or 0:3} {sl or 0:3} {nl or 0:8.2f}% {nm or 0:11.2f}%")
+    # biar TP/SL tidak salah baca: angka yang DIPAKAI persis aturan live (5% / 8%), yang muncul di
+    # kolom net itu SUDAH dikurangi biaya round-trip. Cetak dua-duanya.
+    print(f"\naturan exit: TP +{TP_PCT:.0f}% · SL {SL_PCT:.0f}% · umur maks {MAX_AGE_H} jam  |  "
+          f"gross = harga trigger · net = gross − biaya round-trip [{COST_LIVE_FRAC*100:.4f}% live / "
+          f"{COST_MEASURED_FRAC*100:.4f}% terukur]")
+    print(f"{'pool':14} {'n':>3} {'TP':>3} {'SL':>3} {'GROSS':>7} {'net LAMA':>9} {'net TERUKUR':>12}")
+    for p, n, tp, sl, gr, nl, nm in rows:
+        print(f"{p:14} {n:3} {tp or 0:3} {sl or 0:3} {gr or 0:6.2f}% {nl or 0:8.2f}% {nm or 0:11.2f}%")
     agg = con.execute("""select count(*), round(avg(gross_pct),2), round(avg(net_pct_live),2), round(avg(net_pct_measured),2)
                          from paper_trades where source='counterfactual' and status='scored'""").fetchone()
     print(f"\nagregat: n={agg[0]} · gross rata2 {agg[1]}% · net LAMA {agg[2]}% · net TERUKUR {agg[3]}%")
@@ -377,7 +396,7 @@ LOCK = "/tmp/paper_trade_scorer.lock"
 
 
 def acquire_lock():
-    """Cuma 1 proses boleh jalan: cron 30 menit bisa tumpang-tindih kalau GT balas 429 terus."""
+    """Cuma 1 proses boleh jalan: cron screener (20 menit) bisa tumpang-tindih kalau GT balas 429 terus."""
     fh = open(LOCK, "w")
     try:
         fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)

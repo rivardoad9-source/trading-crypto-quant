@@ -185,7 +185,7 @@ twice. The 16000 is measured, not chosen: live observation on 2026-08-30 found t
 entry decision's CoT consistently above 8000 tokens. Cutting this to 8000 would
 truncate *every* entry decision, and because truncation now skips the cycle instead of
 retrying at double the budget, the engine would quietly stop opening positions. Spend
-is cut by the 30-minute cadence and by removing the escalation — not by starving the
+is cut by the base cadence and by removing the escalation — not by starving the
 one call that has to succeed.
 `structuredCompletion` now allows at most `MAX_STRUCTURED_ATTEMPTS` (2, i.e. one retry);
 the retry repairs malformed JSON by feeding the error back, and is a plain re-roll when

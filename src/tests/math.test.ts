@@ -418,7 +418,7 @@ describe("screenPools", () => {
  *
  * It exists so that a narrow-only engine can drop pools it could never open BEFORE the
  * LLM picks one, rather than refusing them at execution time and burning the whole
- * 30-minute cycle — the failure mode `executionGuard.ts` was written for.
+ * cycle — the failure mode `executionGuard.ts` was written for.
  *
  * The load-bearing property is the DIRECTION of its error: it is measured at the
  * `computeBinRange` floors, which is the NARROWEST range the engine can ever open, so a

@@ -2,7 +2,7 @@
  * A FIFO async mutex.
  *
  * The engine now mutates positions from three places on different clocks: the 1-minute
- * fast monitor, the 30-minute screener, and Telegram's /close_all. Two of them running
+ * fast monitor, the base-cadence screener, and Telegram's /close_all. Two of them running
  * a valuation at once is not merely untidy — fee accrual is computed as
  * `rate x (now - last_checked_at)`, so two overlapping passes both measure from the same
  * stored timestamp and book the same interval twice. Worse, both could read a position as

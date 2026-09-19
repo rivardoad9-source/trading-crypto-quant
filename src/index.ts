@@ -311,16 +311,16 @@ async function main(): Promise<void> {
      * marking, and a second pass on the screener's clock would only re-measure what was
      * already measured 60 seconds ago. If the fast monitor is switched off, this stage
      * comes back so positions are never left unmonitored — note that would then be the
-     * only exit check, on the 30-minute screener clock.
+     * only exit check, on the 20-minute screener clock.
      */
     /*
      * The screener's clock is a TICK, not a cadence. It fires every 5 minutes, and each
-     * tick decides whether this is a real screener run: the 30-minute base cadence
+     * tick decides whether this is a real screener run: the 20-minute base cadence
      * normally, or every 5 minutes for DLMM_POST_NEWS_FAST_MIN after a macro-news window
      * closes (where a re-priced SOL and rewritten ranges are worth arriving at quickly).
      * The rule lives in services/screenerCadence.ts so it is unit-tested rather than read
      * off a cron string, and off-cadence ticks return before touching the network, the
-     * upstreams or DeepSeek — so the token bill is the 30-minute clock's, not the 5's.
+     * upstreams or DeepSeek — so the token bill is the base clock's, not the 5's.
      */
     cron.schedule(
       CRON.DLMM_TICK,
@@ -392,7 +392,7 @@ async function main(): Promise<void> {
   );
   console.log(`[cron] snapshot ${CRON.DAILY_SNAPSHOT}   (${env.TZ})`);
 
-  // Run one cycle immediately so a fresh start has data rather than waiting 30 minutes.
+  // Run one cycle immediately so a fresh start has data rather than waiting 20 minutes.
   void withLock("dlmm:boot", runDlmmTradingCycle)();
 
   const shutdown = async (signal: string): Promise<void> => {

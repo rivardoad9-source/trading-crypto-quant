@@ -1,5 +1,5 @@
 /**
- * The lock that keeps the 1-minute fast monitor from overlapping the 30-minute
+ * The lock that keeps the 1-minute fast monitor from overlapping the base-cadence
  * screener. Fee accrual is measured from `last_checked_at`, so two overlapping passes
  * would book the same interval twice — these tests pin the exclusion, the FIFO order,
  * and the skip-don't-queue behaviour the fast monitor depends on.

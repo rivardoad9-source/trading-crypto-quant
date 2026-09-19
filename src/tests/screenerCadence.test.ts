@@ -1,11 +1,11 @@
 /**
  * The screener's cadence rule: a 5-minute TICK that only becomes a screener run on the
- * 30-minute base cadence — or every tick for a bounded stretch after a macro-news window
+ * 20-minute base cadence — or every tick for a bounded stretch after a macro-news window
  * closes.
  *
  * WHY THIS IS PINNED. The 5-minute tick looks, in the cron expression, exactly like a
- * six-fold increase in DeepSeek spend, and the 30-minute clock was chosen precisely to
- * bound that bill. The tests below are what make the distinction checkable rather than
+ * twelve-fold increase in DeepSeek spend, and the base clock exists precisely to bound
+ * that bill. The tests below are what make the distinction checkable rather than
  * asserted in a comment: off-cadence ticks must not run, the fast stretch must be bounded
  * by the window that produced it, and paper mode must stay on the baseline cadence.
  */
@@ -32,9 +32,9 @@ function window(event: string, startIso: string, endIso: string): NewsBlackoutWi
 const PPI = window("PPI", "2026-09-10T11:30:00Z", "2026-09-10T13:15:00Z");
 
 describe("screener cadence — the tick is not the cadence", () => {
-  it("asserts a 5-minute tick on a 30-minute base cadence", () => {
+  it("asserts a 5-minute tick on a 20-minute base cadence", () => {
     assert.equal(CRON.DLMM_TICK, "*/5 * * * *");
-    assert.equal(DLMM_BASE_CADENCE_MIN, 30);
+    assert.equal(DLMM_BASE_CADENCE_MIN, 20);
   });
 
   it("keeps the fast stretch bounded, never open-ended", () => {
@@ -45,14 +45,14 @@ describe("screener cadence — the tick is not the cadence", () => {
     );
   });
 
-  it("runs the screener on the 30-minute marks and nowhere else", () => {
-    for (const minute of [0, 30]) {
+  it("runs the screener on the 20-minute marks and nowhere else", () => {
+    for (const minute of [0, 20, 40]) {
       const d = decideScreenerRun({ now: new Date(), minutesOfHour: minute, live: true, fastWindow: null });
       assert.equal(d.run, true, `minute ${minute} should run`);
       assert.equal(d.fast, false);
     }
 
-    for (const minute of [5, 10, 20, 25, 55]) {
+    for (const minute of [5, 10, 15, 25, 30, 35, 45, 55]) {
       const d = decideScreenerRun({ now: new Date(), minutesOfHour: minute, live: true, fastWindow: null });
       assert.equal(d.run, false, `minute ${minute} should be a no-op tick`);
       assert.equal(d.fast, false);
@@ -84,13 +84,13 @@ describe("screener cadence — the post-news fast window", () => {
      * LENGTH into both slots and read as "running every 90m for 90m" — the log an operator
      * reads to understand why the engine is ticking fast said the opposite.
      */
-    assert.match(d.reason, /ticking every 5m instead of 30m/);
+    assert.match(d.reason, /ticking every 5m instead of 20m/);
   });
 
   it("stays on the base cadence in paper mode even when the calendar says go fast", () => {
     const d = decideScreenerRun({
       now: new Date("2026-09-10T13:20:00Z"),
-      minutesOfHour: 20,
+      minutesOfHour: 5,
       live: false,
       fastWindow: PPI,
     });
@@ -102,7 +102,7 @@ describe("screener cadence — the post-news fast window", () => {
     // …and the base cadence still applies in paper mode.
     const base = decideScreenerRun({
       now: new Date("2026-09-10T13:20:00Z"),
-      minutesOfHour: 30,
+      minutesOfHour: 20,
       live: false,
       fastWindow: PPI,
     });

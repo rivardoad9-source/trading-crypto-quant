@@ -13,11 +13,11 @@ export const CRON = {
    * a NEW entry may be considered — open positions are marked by FAST_MONITOR below and
    * are unaffected.
    *
-   * A 5-minute tick on a 30-minute base cadence costs what the 30-minute clock cost: the
+   * A 5-minute tick on a 20-minute base cadence costs what the 20-minute clock cost: the
    * off-cadence ticks return before touching the screener, the upstreams or DeepSeek. It
-   * buys the one thing a fixed 30-minute clock cannot have — a bounded window right after
-   * a macro release where the engine may run every 5 minutes instead of arriving up to 30
-   * minutes late. See `DLMM_POST_NEWS_FAST_MIN`.
+   * buys the one thing a fixed clock cannot have — a bounded window right after a macro
+   * release where the engine may run every 5 minutes instead of arriving up to 20 minutes
+   * late. See `DLMM_POST_NEWS_FAST_MIN`.
    */
   DLMM_TICK: "*/5 * * * *",
   /**
@@ -55,23 +55,31 @@ export const MAX_CANDIDATE_POOLS = 3;
  * The screener's NORMAL cadence, in minutes, measured against the tick above.
  *
  * A tick whose minute-of-hour is not a multiple of this returns immediately, so the heavy
- * cycle still runs twice an hour exactly as the V1.1 baseline asserts and still spends
- * exactly two deepseek-reasoner calls an hour. Only `DLMM_POST_NEWS_FAST_MIN` widens it,
+ * cycle runs three times an hour (minutes 0, 20 and 40 of every hour) and spends exactly
+ * three deepseek-reasoner calls an hour. Only `DLMM_POST_NEWS_FAST_MIN` widens it,
  * deliberately, in a bounded window. Not an env var: `liveConfig.ts` must not grow a
  * clock of its own, or "V1.1" would name two configurations depending on a flag.
+ *
+ * CHANGED 19 Sep 2026 (operator's call): 30 -> 20 minutes. The V1.1 baseline asserted
+ * "twice an hour"; the operator chose to pay a 50% higher screener bill to arrive at most
+ * 20 minutes late instead of 30. The TICK is untouched at 5 minutes and 20 is a multiple
+ * of 5, so every mark is still hit by a tick exactly: the tick/cadence split, the
+ * off-cadence early return and the post-news fast window are all unchanged, only the base
+ * moved. The new value is pinned in `v11Baseline.test.ts`, `screenerCadence.test.ts` and
+ * `deepseekBudget.test.ts`.
  */
-export const DLMM_BASE_CADENCE_MIN = 30;
+export const DLMM_BASE_CADENCE_MIN = 20;
 
 /**
  * How long after a macro-news window closes the screener runs on the 5-minute tick
- * instead of the 30-minute base cadence.
+ * instead of the 20-minute base cadence.
  *
  * WHY FAST AFTER, AND NEVER DURING. The release itself is the worst moment to open a
  * range — that is what the entry blackout exists for (SOL crosses several bins in
  * seconds, the same drift `ActiveBinRaceError` refuses an entry over). The window AFTER
  * it is the opposite: SOL has just been re-priced a few per cent, ranges have been
  * rewritten, and fee flow is at its highest — the conditions this strategy is built for.
- * A 30-minute clock can spend the whole move waiting for its next tick.
+ * A 20-minute clock can still spend the whole move waiting for its next tick.
  *
  * WHY BOUNDED, AND WHY 90. Every tick that reaches the screener is a DeepSeek call, so an
  * unbounded fast cadence would be a permanent 6x token bill for a condition that is

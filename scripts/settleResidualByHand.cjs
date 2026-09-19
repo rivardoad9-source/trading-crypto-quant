@@ -40,7 +40,7 @@ const path = require('path');
  * is accepted by the FALLBACK match. The attempt row is written by `openLivePosition` the
  * moment the open confirms and the position row immediately after, so they are seconds
  * apart; 15 minutes tolerates a slow bookkeeping path without reaching the next cycle's
- * attempt (the screener runs every 30 minutes).
+ * attempt (the screener runs on its base cadence — 20 minutes since 19 Sep 2026).
  */
 const FALLBACK_WINDOW_MINUTES = 15;
 

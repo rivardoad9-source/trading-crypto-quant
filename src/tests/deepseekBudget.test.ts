@@ -115,15 +115,17 @@ describe("deepseek response envelope", () => {
 });
 
 describe("screener cadence", () => {
-  it("runs the heavy screener every 30 minutes", () => {
+  it("runs the heavy screener every 20 minutes", () => {
     /*
-     * The cron entry is now a 5-minute TICK, and the RUN cadence it produces is still 30
-     * minutes — off-cadence ticks return before the screener, the upstreams or DeepSeek,
-     * so the bill is unchanged. The rule lives in services/screenerCadence.ts with its own
-     * tests; what is pinned here is the cost-relevant fact: the interval did not shrink.
+     * The cron entry is still a 5-minute TICK; the RUN cadence it produces moved to 20
+     * minutes on 19 Sep 2026 (operator's call), so the screener bill is three calls an
+     * hour instead of two. Off-cadence ticks still return before the screener, the
+     * upstreams or DeepSeek, so the tick itself costs nothing. The rule lives in
+     * services/screenerCadence.ts with its own tests; what is pinned here is the
+     * cost-relevant fact: three executions an hour, no more.
      */
     assert.equal(CRON.DLMM_TICK, "*/5 * * * *");
-    assert.equal(DLMM_BASE_CADENCE_MIN, 30);
+    assert.equal(DLMM_BASE_CADENCE_MIN, 20);
   });
 
   it("keeps the position monitor on its own 60-second clock", () => {

@@ -418,7 +418,7 @@ export function activeWindowAt(
  * otherwise generate load against. This reads a few kilobytes off local disk, where a
  * cache would buy nothing and would let the trading cycle and `/api/overview` disagree
  * about whether a window is in force. A blackout can begin and end between two
- * 30-minute cycles, so the answer has to be current at the moment it is asked.
+ * screener cycles, so the answer has to be current at the moment it is asked.
  *
  * `now` and `file` are parameters rather than reads of global state for the same reason
  * `parseLiveConfig` takes its environment: it is what lets the failure paths below be

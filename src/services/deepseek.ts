@@ -64,7 +64,7 @@ export class DeepSeekTruncatedError extends Error {
  * decision, and since truncation now means a skipped cycle rather than a retry at
  * double the budget, the engine would simply stop opening positions. The token bill is
  * cut by the screener's cadence (CRON.DLMM_TICK against DLMM_BASE_CADENCE_MIN — a run
- * every 30m outside the bounded post-news window) and by removing the escalation,
+ * every 20m outside the bounded post-news window) and by removing the escalation,
  * not by starving the call that has to succeed.
  */
 export const REASONER_MAX_TOKENS = 16000;

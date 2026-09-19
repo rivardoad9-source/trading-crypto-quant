@@ -837,7 +837,7 @@ export class ActiveBinRaceError extends LiveEntryRefusedError {
  * This is the gate that did not exist on 7 Sep 2026. It is a REFUSAL rather than a
  * fault — the engine skips the pool and moves on, exactly like any other gate — but
  * unlike the others it counts towards the execution breaker, because the chain has
- * said this specific open does not work and repeating it every 30 minutes would burn
+ * said this specific open does not work and repeating it every cycle would burn
  * the entry slot indefinitely.
  */
 export class OpenRehearsalFailedError extends LiveEntryRefusedError {
@@ -1606,7 +1606,7 @@ export async function openLivePosition(params: {
      * Counted against the pool even though NOTHING WAS SPENT. The cost of a refused
      * rehearsal is not gas, it is the entry slot: `seekNewEntry` opens at most one
      * position per cycle and returns as soon as its chosen pool is refused, so a pool
-     * the chain will always reject would otherwise consume every 30-minute cycle
+     * the chain will always reject would otherwise consume every cycle
      * forever while the engine reports itself healthy.
      *
      * UNLESS the refusal was the WALLET's fault. A simulation that failed for want of
