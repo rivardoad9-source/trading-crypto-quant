@@ -18,6 +18,7 @@ import { DEFAULT_COHORT_ID, isCohortId, resolveCohort } from "../services/cohort
 import { localDateString } from "../agents/researcherAgent.js";
 import { readRpcHealth } from "../services/solana.js";
 import { readWalletBalance, resetWalletBalanceCache } from "../services/walletBalance.js";
+import { describeInFlight } from "../services/inFlight.js";
 import { reconcilePositions } from "../services/reconciliation.js";
 import type { SimulatedPositionRow } from "../database/types.js";
 
@@ -155,6 +156,14 @@ export function buildServer(): FastifyInstance {
     status: "ok",
     uptimeSeconds: Math.floor((Date.now() - serverStartedAt) / 1000),
     isDryRun: env.DRY_RUN,
+    /*
+     * Work that must not be killed mid-flight (a screener cycle that is mid-swap). A
+     * deploy reads this and waits for zero BEFORE it sends a signal: the open path runs
+     * 26 s to 8.4 minutes and its swap is submitted before the database learns the
+     * outcome, so stopping inside that window is how 1.802543 SOL got stranded on
+     * 12 Sep 2026. `count: 0` is the only value that means "safe to stop".
+     */
+    inFlight: describeInFlight(),
     solanaRpc: await readRpcHealth(),
   }));
 

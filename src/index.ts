@@ -38,6 +38,7 @@ import {
 import { fetchSolPriceUsd } from "./services/marketData.js";
 import { getClosedPositions, getLifetimeStats } from "./database/repositories.js";
 import { describeStartingBalance } from "./config/startingBalance.js";
+import { drain, track } from "./services/inFlight.js";
 
 /**
  * Serialises cron jobs. A DLMM cycle that overruns its window must not overlap the
@@ -53,7 +54,13 @@ function withLock(name: string, task: () => Promise<unknown>): () => Promise<voi
     }
     running = true;
     try {
-      await task();
+      /*
+       * Tracked: `shutdown()` drains this before exiting. A cycle that is mid-swap must be
+       * allowed to finish — the open path runs 26 s to 8.4 minutes and its swap is
+       * submitted before the outcome reaches the database, so cutting it leaves capital
+       * on-chain with no row to recover from (services/inFlight.ts).
+       */
+      await track(name, task());
     } catch (err) {
       console.error(`[cron] ${name} threw:`, err);
     } finally {
@@ -399,6 +406,28 @@ async function main(): Promise<void> {
     console.log(`\n[main] ${signal} received, shutting down…`);
     for (const t of tasks) t.stop();
     stopTelegramCommands();
+
+    /*
+     * DRAIN BEFORE EXIT. Cron tasks are stopped so no new work starts, but a cycle can
+     * still be mid-swap: it measures 26 s to 8.4 minutes, the swap is submitted BEFORE
+     * its outcome is recorded, and `live_execution_attempts` — the very row the orphan
+     * self-heal works from — is not written until that outcome is known. Exiting here
+     * used to kill the engine with a swap already on the wire (12 Sep 2026: 1.802543 SOL
+     * stranded on-chain, recovered by hand; 17 Sep: paired tokens left unswept while the
+     * attempt row said `clean`). Bounded on purpose: a wedged RPC must not hold the
+     * process past pm2's kill timeout, where it would be SIGKILLed mid-swap anyway. The
+     * API stays up during the drain so a deploy can watch `inFlight` fall to zero.
+     */
+    const drained = await drain(env.SHUTDOWN_DRAIN_MS);
+    if (drained.drained) {
+      console.log(`[main] in-flight drained in ${drained.waitedMs}ms — aman keluar`);
+    } else {
+      console.error(
+        `[main] DRAIN TIMEOUT setelah ${drained.waitedMs}ms — ${drained.pending} kerjaan masih jalan ` +
+          `(${drained.labels.join(", ")}). Keluar sekarang; sweep wallet + self-heal cron jaga sisanya.`,
+      );
+    }
+
     await stopApiServer();
     closeDatabase();
     process.exit(0);

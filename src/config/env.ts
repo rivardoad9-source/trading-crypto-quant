@@ -174,6 +174,15 @@ const EnvSchema = z
     TAKE_PROFIT_PCT: numeric(5.0),
     STOP_LOSS_PCT: numeric(-8.0),
     MAX_POSITION_AGE_HOURS: numeric(24),
+    /**
+     * How long `shutdown()` waits for in-flight work — in practice a screener cycle that
+     * is mid-swap — before exiting anyway. The open path measures 26 s to 8.4 minutes
+     * (every entry cycle 11-17 Sep), so this has to cover a normal open. Keep it UNDER the
+     * supervisor's kill timeout (pm2 `--kill-timeout`, set by ~/.hermes/scripts/diag/
+     * fm_deploy_clean.py): past that the process is SIGKILLed mid-swap, which is exactly
+     * the half-landed state the drain exists to prevent.
+     */
+    SHUTDOWN_DRAIN_MS: numeric(120_000),
 
     // Screener thresholds
     MIN_24H_VOLUME_USD: numeric(10_000),
