@@ -2207,6 +2207,41 @@ export function sweepSlippageLadder(exitCapBps: number): number[] {
 }
 
 /**
+ * A SECOND OPINION on a balance Jupiter cannot price, asked of the pool the position just left.
+ *
+ * WHY (21 Sep 2026). A Token-2022 transfer fee leaves crumbs no aggregator will route: the
+ * TIGRINO-SOL zap close on 20 Sep 2026 sold the entire withdrawal inside the close transaction
+ * and left 15 base units behind, and Jupiter answered `NO_ROUTES_FOUND` for exactly those 15.
+ * Judged against Jupiter ALONE that crumb became an "unswept residual": the operator was paged
+ * for ~$0.0000003, `residual_sweep` was written as `failed` on a trade whose value HAD been
+ * realised, and `wallet_lamports_after` was left NULL — the very NULL that makes reconciliation
+ * blind to that trade. The pool the position just left still holds the other side of the mint,
+ * so its own quote is a valuation that does not require an aggregator to have a route. It is
+ * READ-ONLY (`quotePoolSaleToSol`): it decides a verdict, never sends anything.
+ *
+ * Returns null whenever the pool cannot answer — no dep wired, an SDK that refuses a
+ * sub-lamport amount, an RPC that errors. The caller then keeps the verdict it already had, so
+ * this can only ever turn a page into no-page when the pool itself says the crumb is worth
+ * under the dust line. Never throws: a valuation is not worth failing a sweep for.
+ *
+ * EXPORTED for `scripts/retryResidualSweep.ts`, whose dry-run plan prices a balance the same
+ * way: the ops tool must not report as an error a crumb this very function settles as dust.
+ */
+export async function quoteResidualFromPool(
+  deps: ResidualSweepDeps,
+  mint: string,
+  amount: bigint,
+): Promise<number | null> {
+  if (!deps.quotePoolSale) return null;
+  try {
+    const quote = await deps.quotePoolSale(mint, amount);
+    return Number.isFinite(quote.outLamports) && quote.outLamports >= 0 ? quote.outLamports : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Sells the paired token a confirmed close returned to the wallet back to SOL.
  *
  * WHY. `closePosition` is withdraw + claim + close: it returns SOL AND the paired token,
@@ -2300,8 +2335,27 @@ export async function sweepResidualPairedToken(
   try {
     result.estimatedLamports = await deps.quoteToSol(mint, balance);
   } catch (err) {
-    result.state = "failed";
     result.error = err instanceof Error ? err.message : String(err);
+    /*
+     * BEFORE PAGE A HUMAN, ask the one venue that cannot run out of routes. Quote failure is
+     * not the same fact as "this balance has value": a crumb left by a Token-2022 transfer fee
+     * is unquotable by construction, and `quoteResidualFromPool` (see above) settles that case
+     * from the pool's own reading. BELOW the dust line that is the whole answer — `dust` is
+     * settled, so nobody is paged, the balance is recorded, and the residual is not chased
+     * forever. ABOVE it nothing changes: `failed`, paged, `wallet_lamports_after` NULL.
+     */
+    const poolQuote = await quoteResidualFromPool(deps, mint, balance);
+    if (poolQuote !== null && poolQuote < dustLamports) {
+      result.estimatedLamports = poolQuote;
+      result.state = "dust";
+      console.log(
+        `[live] ${context.pairName}: ${result.amount} base units of ${mint} — Jupiter has no ` +
+          `route (${result.error}) and the pool quotes ` +
+          `${(poolQuote / LAMPORTS_PER_SOL).toFixed(6)} SOL — dust, not sold`,
+      );
+      return result;
+    }
+    result.state = "failed";
     await page(
       `RESIDUAL TOKEN NOT SWEPT — ${result.amount} base units of ${mint} left in the ` +
         `wallet, estimated value UNKNOWN (the quote failed: ${result.error}).`,

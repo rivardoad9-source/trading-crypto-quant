@@ -62,6 +62,11 @@ function harness(over: {
   quoteFails?: Error;
   closeFails?: Error;
   mintFails?: Error;
+  /**
+   * What the POOL quotes for the paired mint, in lamports. Absent = the pool route is not wired
+   * at all (the pre-21-Sep-2026 shape); an Error = the pool quote throws.
+   */
+  poolQuoteLamports?: number | Error;
   /** How the empty-account close answers: default "closed". */
   accountClose?: "closed" | "absent" | "not-empty" | Error;
   /** Token balances the wallet lists after the sweep (besides what the harness sold). */
@@ -117,6 +122,17 @@ function harness(over: {
         calls.push("alert");
         alerts.push(message);
       },
+      ...(over.poolQuoteLamports === undefined
+        ? {}
+        : {
+            async quotePoolSale(mint: string) {
+              calls.push("poolquote");
+              assert.equal(mint, MINT);
+              const q = over.poolQuoteLamports;
+              if (q === undefined || q instanceof Error) throw q ?? new Error("no pool quote");
+              return { outLamports: q, minOutLamports: q };
+            },
+          }),
     },
     async closeTokenAccount(mint: string) {
       calls.push("account");
@@ -255,6 +271,60 @@ describe("residual sweep — a failed sale never un-closes a closed position", (
     const m = await live.closeLivePosition(params, mint.deps);
     assert.equal(m.residual.state, "unmeasured");
     assert.equal(mint.swaps.length, 0);
+  });
+
+  /**
+   * 21 Sep 2026, TIGRINO-SOL. The zap close sold the whole withdrawal inside the close
+   * transaction and left 15 base units of a Token-2022 with a transfer fee. Jupiter answered
+   * `NO_ROUTES_FOUND` for exactly those 15 base units, so a trade whose value HAD been realised
+   * was recorded as an unswept residual: the operator was paged, `residual_sweep` said
+   * `failed`, and `wallet_lamports_after` was left NULL — which is what makes the
+   * reconciliation blind to that trade. The pool's own reading settles it.
+   */
+  it("Jupiter has no route but the POOL prices the crumb under the dust line: dust, and no page", async () => {
+    const h = harness({
+      tokenBalance: 15n,
+      quoteFails: new Error("NO_ROUTES_FOUND"),
+      poolQuoteLamports: 0,
+    });
+    const out = await live.closeLivePosition(params, h.deps);
+
+    assert.equal(out.residual.state, "dust", "an unquotable crumb was left as an unswept residual");
+    assert.equal(h.alerts.length, 0, "a crumb the pool prices at nothing paged the operator");
+    assert.equal(
+      typeof out.walletLamportsAfter,
+      "number",
+      "a realised trade was left with no after-balance, so reconciliation cannot see it",
+    );
+    assert.deepEqual(h.swaps, [], "a balance the pool prices at nothing was sold anyway");
+    assert.equal(h.calls.includes("poolquote"), true, "the pool was never asked");
+  });
+
+  it("…but a pool quote ABOVE the dust line changes nothing: still failed, still paged, balance still NULL", async () => {
+    const h = harness({
+      tokenBalance: 5_000_000_000n,
+      quoteFails: new Error("NO_ROUTES_FOUND"),
+      poolQuoteLamports: live.RESIDUAL_DUST_LAMPORTS,
+    });
+    const out = await live.closeLivePosition(params, h.deps);
+
+    assert.equal(out.residual.state, "failed");
+    assert.equal(out.walletLamportsAfter, null);
+    assert.equal(h.alerts.length, 1);
+    assert.deepEqual(h.swaps, []);
+  });
+
+  it("a pool quote that cannot be read leaves the verdict exactly where it was", async () => {
+    const h = harness({
+      tokenBalance: 5_000_000_000n,
+      quoteFails: new Error("HTTP 429"),
+      poolQuoteLamports: new Error("the SDK refused a sub-lamport amount"),
+    });
+    const out = await live.closeLivePosition(params, h.deps);
+
+    assert.equal(out.residual.state, "failed");
+    assert.equal(out.walletLamportsAfter, null);
+    assert.equal(h.alerts.length, 1);
   });
 
   it("a page that itself fails still does not throw", async () => {

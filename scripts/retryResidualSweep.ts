@@ -90,7 +90,9 @@ import {
 import {
   defaultResidualSweepDeps,
   isSettledSweep,
+  quoteResidualFromPool,
   sweepResidualPairedToken,
+  RESIDUAL_DUST_LAMPORTS,
   type ResidualSweep,
 } from "../src/services/liveExecution.js";
 import { healAttemptResidual, type AttemptRowForHeal } from "../src/services/attemptResidualHeal.js";
@@ -266,7 +268,31 @@ async function retryRow(row: Row, auth: ExecutionAuthorization): Promise<void> {
       console.log(`PLAN ${label} mint=${mint} balance=0 — nothing to sell (the sweep writes 'dust')`);
       return;
     }
-    const estimated = await deps.quoteToSol(mint, balance);
+    let estimated: number;
+    try {
+      estimated = await deps.quoteToSol(mint, balance);
+    } catch (err) {
+      /*
+       * THE SWEEP ANSWERS THIS CASE ITSELF (21 Sep 2026): Jupiter may have no route for a
+       * transfer-fee crumb while the pool the position just left still prices it — the sweep
+       * settles exactly that as `dust` (the TIGRINO-SOL 15 base units). The plan must not report
+       * as a broken row a crumb the sweep will settle, so it prices it the same way. Nothing is
+       * signed on this path either way.
+       */
+      const poolQuote = await quoteResidualFromPool(deps, mint, balance);
+      console.log(
+        `PLAN ${label} mint=${mint} ${balance} base units — Jupiter has no route ` +
+          `(${(err as Error).message})` +
+          (poolQuote === null
+            ? ", and the pool could not price it — re-run with -- --execute to try again"
+            : `; the pool quotes ${sol(poolQuote)} SOL — ${
+                poolQuote < RESIDUAL_DUST_LAMPORTS
+                  ? "the sweep settles this as dust, nothing to sell"
+                  : "re-run with -- --execute to sell it back"
+              }`),
+      );
+      return;
+    }
     console.log(
       `PLAN ${label} mint=${mint} ${balance} base units ~= ${sol(estimated)} SOL — ` +
         `re-run with -- --execute to sell it back`,
