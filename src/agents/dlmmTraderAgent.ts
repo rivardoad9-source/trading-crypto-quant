@@ -1524,6 +1524,13 @@ export interface EntrySummary {
     coverageRatio: number;
     expectedFee24hUsd: number;
     roundTripCostUsd: number;
+    /**
+     * Pool address and price at the moment of the scan. Kept so the scorecard can go
+     * back and ask what this pool actually DID afterwards — a gate that rejects
+     * everything looks identical to a gate that is right.
+     */
+    poolAddress: string;
+    priceUsd: number;
   }>;
   /**
    * Candidates dropped by the live micro-capital dollar floor. Always empty unless
@@ -1628,7 +1635,19 @@ function resolveEntrySizing(): EntrySizing {
   };
 }
 
-async function seekNewEntry(): Promise<EntrySummary> {
+/**
+ * The scan → screen → anti-rug → volatility → breakeven-gate → LLM-decision pipeline,
+ * stopping immediately before anything is opened.
+ *
+ * Exported for the SIGNAL-ONLY entry point (`src/scripts/runSignalScan.ts`): that script
+ * wants this exact funnel — the same thresholds, the same model prompt, the same funnel
+ * bookkeeping — and re-implementing it there is how the two versions would drift apart
+ * within a week. Read-only with respect to the chain: every network call it makes is a
+ * quote or a metadata read, and it never signs. It DOES insert the resulting position
+ * row (PAPER when live execution is inactive), so callers that only want a signal should
+ * point `DATABASE_PATH` at a scratch database.
+ */
+export async function seekNewEntry(): Promise<EntrySummary> {
   const summary: EntrySummary = {
     scanned: 0,
     screenRejections: {},
@@ -2218,6 +2237,8 @@ async function seekNewEntry(): Promise<EntrySummary> {
         coverageRatio: breakeven.coverageRatio,
         expectedFee24hUsd: breakeven.expectedFee24hUsd,
         roundTripCostUsd: breakeven.roundTripCostUsd,
+        poolAddress: entry.pool.address,
+        priceUsd: entry.pool.currentPrice,
       });
       console.warn(
         `[friction] rejected ${entry.pool.pairName}: 24h fee $${breakeven.expectedFee24hUsd.toFixed(4)} ` +

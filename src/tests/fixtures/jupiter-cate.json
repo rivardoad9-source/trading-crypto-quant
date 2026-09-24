@@ -1,0 +1,51 @@
+{
+ "id": "Ai66LHZG9MCzg1WKdawwqduVAXpNDUuV8M3uyq5ppump",
+ "symbol": "CATE",
+ "name": "Cate",
+ "holderCount": 135613,
+ "organicScore": 91.46809283715625,
+ "organicScoreLabel": "high",
+ "audit": {
+  "mintAuthorityDisabled": true,
+  "freezeAuthorityDisabled": true,
+  "topHoldersPercentage": 15.051402997535657,
+  "devMigrations": 405,
+  "devMints": 20559
+ },
+ "stats1h": {
+  "priceChange": 7.903677638388727,
+  "holderChange": 0.021388954448902524,
+  "liquidityChange": 6.282707217985482,
+  "volumeChange": 16.20125461866254,
+  "buyVolume": 395315.8694888195,
+  "sellVolume": 266316.66856784414,
+  "buyOrganicVolume": 23079.954350022188,
+  "sellOrganicVolume": 21847.22551060636,
+  "numBuys": 2721,
+  "numSells": 2603,
+  "numTraders": 856,
+  "numOrganicBuyers": 22,
+  "numNetBuyers": 150
+ },
+ "stats24h": {
+  "priceChange": -3.4600138404615706,
+  "holderChange": 0.484591616713224,
+  "liquidityChange": 8.39053223564205,
+  "volumeChange": 0.4796559677123251,
+  "buyVolume": 5716354.25005153,
+  "sellVolume": 5764185.928514384,
+  "buyOrganicVolume": 722365.1779517916,
+  "sellOrganicVolume": 587113.2900031623,
+  "numBuys": 45478,
+  "numSells": 45831,
+  "numTraders": 6425,
+  "numOrganicBuyers": 205,
+  "numNetBuyers": 1945
+ },
+ "liquidity": 3425569.10564049,
+ "mcap": 92349701.35167433,
+ "launchpad": "pump.fun",
+ "tokenProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+ "createdAt": "2026-07-26T16:24:38Z",
+ "dev": "D9gQ6RhKEpnobPBUdWY5bPQt2p3zGk3iVz6ChpUi2ArA"
+}

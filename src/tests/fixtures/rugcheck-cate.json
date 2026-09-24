@@ -1,0 +1,1485 @@
+{
+ "mint": "Ai66LHZG9MCzg1WKdawwqduVAXpNDUuV8M3uyq5ppump",
+ "score": 1,
+ "rugged": false,
+ "totalHolders": 328181,
+ "creator": "12cQ8tQsQNT4mNkRxjdYbmftbNR2q1ayygjF9wKrx6Jz",
+ "creatorBalance": 0,
+ "graphInsidersDetected": 2129,
+ "knownAccounts": {
+  "12cQ8tQsQNT4mNkRxjdYbmftbNR2q1ayygjF9wKrx6Jz": {
+   "name": "Creator",
+   "type": "CREATOR"
+  },
+  "23TddYyGcutrapNJETV54XuUKs3jjyRk8CbfSHo1gnnp": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "23xV82CTYJRbC61dsRaNkGkfAUJwFyAnr9CwBAkh9HAf": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "27tPthsUvJ7GjEFF1XZDS5fm1wVTKUT8LGjWBtVSZymq": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "28DVrZWYB1cGd8Cw2cVhN1ymQbZLC4LP3vftmFJfAkHd": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "2FVjgcXgmK73gnKiqynASwS8QsmBiCGKGXu3jCqpMa2z": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "2RALM2A3RbgbTtKWKo14DXimNVfHVmJnutcX3LC2oGDT": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "2X9emWQhZ1c1ht4zxkvF5LGqFGzapsXeF2kSdLa9caAg": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "2YeZjDx9FK5BS93287euxSzppNmKhn6a78YzKujGvsCq": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "2YrtCytAe6KBhXDinCkXPCTgPdSvXei4GKKHjPtcm5rX": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "2ceanuS5rQxxy77XkWEyHyytgqn1rFpWwLXBnThV6qHM": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "2qd3HD5zWyShxP8fjG7FRFUVM3y1USAK7yKGkyJJixme": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "2wDqfcYhR4DEjBWhjo88JzqCyk6hZ6gjfYA3Y756NRpE": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "2wy5jw1HQw3TJhba2SL2L56urMtv9kf6JBKeWhVv9DMd": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "2xa13JcNV4iGP2FajzHCJGgMfa4TbCvCGLttpt6wpxLY": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "2ywVqVrNiDFyVDF9TmApJ9s3sA1ZZWBPUNy5RRc5x9ZB": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "35NpBF3s6KnWhZ6w2bj9RPjDUGZp5wgD6vBdjS2pL4Pz": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "38iTL1nBgGnk2thYTQ3aHLk1RaCBqM87ZYqM3gx3SjhN": {
+   "name": "Pump Fun AMM",
+   "type": "AMM"
+  },
+  "398evED2CwgsZg5L9ueNGeBpP9G3JDdYuVrPYvdQD46o": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "3Cu6t3T1iZ9a3butvFm4cZhUv8mg7b6KyAjp9F6H8sbj": {
+   "name": "Pump Fun",
+   "type": "AMM"
+  },
+  "3DwuvoUGtGs3SCQiEZC44thM2u33JJFCjZDbCsKWwvaV": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "3GJ9QLQ9jhMS2U33K6EgqgF7CqaGLTzcaPwYobCYS9Ez": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "3KXrSHoxr5wYKxQhBgvSiTgfoR7bfKmRykgMwrRGUDcB": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "3Kp7XUsYNNCUGT7UmjzAUdRQhu6wE5mJ9oHkBF9EFR3f": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "3N3MNLEXBiH5RqM1SKuiSwntKQUatUfewXg3WTRC3RB3": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "3NASZQoPHMauiukoNzfJiPDG9AAseQD3DgfGksAHBJry": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "3Sg92V4Mre9Apm7dJsM39B6vrAEVVErE1vBsZMKyUbxT": {
+   "name": "Pump Fun",
+   "type": "AMM"
+  },
+  "3ZiypwB82dTyPeAusCYJBcTzMddzvaFoi4ASEbuDbWjN": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "3cdR1Ks3hgMtFY6x3aNWZyKiV18PRU5Qgi7yWkEB6nXU": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "3fiJaG6bjrZyCfxWF9vbUNamUkj5Yk6rS8bKfrwHZFFn": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "3gJLCZ1xd7xkaFGqLnHbCzLVUshGRgkGTxsS9KknyB5x": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "3jhE36fGwG8VpdVtnUPXGmifAAATpAy6fu47ZWQYVUdi": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "3kxVupBq7vPGbaobXyDDhmbEnxyugU1DPmnYjoyzr9Ms": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "3rVYwpsBdxfUTuPgtNXvCswoCegSsSyPi8nJEEpa8yo8": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "3v8CYipkcMRbZQd4TeqGZDsDDqpakrttPumTJRvLyhs9": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "3xzHj9DSWM5eJXqNHX62kyFHHG7MzGtWDyNNPxSzvv5t": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "42qJqtuN6yMcUkeBSrZui8sgsh9iifkPwg4hcY45wNP2": {
+   "name": "Orca AMM",
+   "type": "AMM"
+  },
+  "42vydBUFHhp7hyFQLWNfF63Y32QSmd45rx74mPGNqHW5": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "433SNWdP8ZJo6ULAyQYiK9Sj9Ug2MzKeFg3EkxS6dsav": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "45kqvu3EZzwsthTG3Rbrm53yo841TTacY4PMyeVwAuMW": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "47AhFv5iQkxRL6ANAjDueeszUgF7Vc4bKxYTyFBxaTse": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "4AMAkSM6Fc6AKSXJRmpFpVmfkoWKYwrz72YdEr9j9G2j": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "4ATXYSVvKN1ZGe25i2gbfWividgJHDYiqTJCUPqMv6Q7": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "4Ayr3uiWyJwS8r33gFLBnwSG9KKYWGfu8VMBBPydNAct": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "4ENfTD4wA2GbNtP3o8evgrdAwpP8AG3svMV1NXFpCSZA": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "4Fwj4xSVK9K3JTKEsLLtVhVbB6KQWjpr5whd5UhJ2Tt7": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "4Hyzta8AXebWKtTFUAyfbYB9eULEWL3kAAeQbLspMeXy": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "4KhHK1gRNGzpL3rX6BFFmMFRPakWmMLwzsQLPjL3NdoJ": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "4MVgXWwNax46fj4Wm3DcqcUxJkhbmjZ1Bkhp45fvVRgV": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "4NFKyWL7Cse6EMza4bVTgDiPna46qZ43bVcQ7VaTUMHf": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "4Q3ZnBoQdpJ7LjFDCKEeDqsXDYQvzWwkFavZJQEhfScp": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "4RCjdgtiCLUcLJLdGvDM114dLj1Z6qHsE1GTrWJM28pU": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "4RJ19YvWvn1xNAFHUDzhnnC4RSrdXVd2kfp8aYHBLcjq": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "4SqeiQ89r5vrwz9mVJnFG4Gzm1nUs4MyWs7fksTh5vjy": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "4Z2hfn7x6noUYAiTcUTj1ytVYC8SKwP6Pjq6U5U4AgFc": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "4axvQSv2o5iJQUy2R6YgkGdfSaPgruzQ1fidxAnTj6TU": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "4d1Ft8VTsDc7nm7TNBmQrBMJJKXTL5MZwnHNryVeJphi": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "4ewVAXQxD4HUhdcNzwzLreR5Di7K6iG1sGHAMBHnVwTq": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "4ezG1FgUrxDcpoQ2ZX6gfQoBWCGLAAd9inFinwvK4f2R": {
+   "name": "Pump Fun AMM",
+   "type": "AMM"
+  },
+  "4gBaHMTWdp9X5q6H95bE84Rw5XD9gmZgaQU69wafgK3g": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "4gPj4opF9nPzFfZi3fuPokQAov1N4BMJvsfKVc1mErMF": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "4sDjot4aAGGiwsjzNpMsn4GrWsmek3NUd2VpDFh87EUX": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "4sp1FE8erErpVifWFvhmWM8H7qF7BLX2MhC6GUaMsvR8": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "4uSkmhUC4jQVgooSFcFnBJV5W2ZcHVmn4Eoc7uaEYrae": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "4v3hSBLebBisgr1GKdYQiRBBQyUCSxu62FgNf4SgzoYr": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "4v71cCFMjrehE3GF7jKpPaFS4r7Sm5mrZAsDfP5Rfzia": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "4woLcT9hBmbtcapeZnLV3rTkMvHjSwDyoM9Kzfd5hipm": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "4z7Ukemaw76MF9tGjzEWJ4tEiqRTiBtTYfDgDo8fBzg7": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "522t3eEV4z36AAiJTRF14KgkEMLPw5N6EwLGxKtrsWJs": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "5C1LRFeXoqu5mBxvhepPLtLSX7y6yHUvFbHJifpgaSRa": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "5ESbXrg8AQeSJseZZrJBnwTysn2FQgNP7UBrjKKiDjh3": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "5Mac9rGwKrLMPWKsf49B4tzxXSoiszALFvdGA3Tbh89L": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "5MjsEybug6YpicGXXveJGFLbsKhR3MUm9LLWd4kec5XA": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "5UfjLutdDkZuSQba2HhEuiJEha2zDojPf3Q97ydhvfAD": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "5VNiSDfw56wGJJcph7vPz7k1vKPaoKwkgjGKkfLehf97": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "5cAZD2CpuVKTWhtkKAkR4seKirXNcARhDMipyKs4HhQH": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "5ddPYxQN1xfr2zkeLnrMLVuPsgCgpwwRKQZMP1NsdjyP": {
+   "name": "Pump Fun AMM",
+   "type": "AMM"
+  },
+  "5etESpSaVMmMERHmnLUvjtREEsy1EuBXFnqCF5VAqbd5": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "5gKAjsx7Nd6uQjws5FDpY7TbVBeSEZNQR892LcJvgzLY": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "5j6uQ7wgZPnrU3Hg1HaTBzjfQVNt5gVtxwNRhQx8LRAp": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "5nQbc9mMupBU7N7zuSaF1QR2RocriNrEGNi13VhfuxRc": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "5rA3qKSZj2FgSDyD9FeFpHUoxbNXd5MHMXiqZ7bxV1d7": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "5tjVggW5JhQYpuym4BtrrBzpLY8eGKmmoWD69aUwhDL3": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "5x3z5vRGfWpDhv8n8Go2u9QMjG7w8fj6z1AUf7puN3RB": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "5xAkphaCSuWHWV96Ct8TZxsfZXCFLbt8iDDZJM2r3EaJ": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "5yj4DHdWwMzDFHLc1macdAQ6dc4PsYo45jtqSdAXCxz1": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "6379LupnB1xgBuGVH7UjWf6fmc75xT7sYU87iAyTogAp": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "6FHz9qJx9YsxAiVnWWsP5Mp3vabmvNKsZsiHgfwd2kH2": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "6GTLp7eL7MefVNfHaAkqDMLhVaYttufrQBuMi8Sv8Nii": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "6GjuWkH4923ArE1CiVMCRm1Myf2ZJriYQSQHd8rLxW9": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "6GrWVSg2YD3oTXxKZ6AG4SNQTMMAzNdq4iY4zFb7Mh7W": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "6JennvPj6uqidgNyQpxmqDqawptJtajUJuAbK1bEZP82": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "6KqyC9WvRDUyjXK32iLWqJqG7ccoRNeyp72KEktV5e9": {
+   "name": "Pump Fun AMM",
+   "type": "AMM"
+  },
+  "6PZ8q2EeNcUrGEDQaLJENbBDihCVSwFCPpDq9T7MTWnx": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "6QcVrbTKBCQkBemdpFZEhZKBpHrPfNBoB4SxUBsDmYHF": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "6V9njnehkfaoxUaoFPfBNfzS3DpqTfYLcuYFMAk7cNAZ": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "6VrmkF1LDq8945S3zvvSveqVnogZzZNsspxMb4KXRXmj": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "6WDswfqxBB3i4Kbi8399oNfRvojuJMjwaJpkaVAbJWHL": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "6bhYYFGQNLgWmJvEu8oLKWNKGVJsxguE7eaHPKicSW9b": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "6cuHmxzPwrm2soLxi1AZMpKp9LK15G4CuJKXNEHsG9VM": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "6dkeA5ZtCZWPpVKRDcVhjGQ3d7QNs6muKTUzQcHwQDR5": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "6iajGtZmDpqktzXRdEKCq32QwwQ3kkZvDr3wFsX7n8eJ": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "6kA19ZiLpVH6DZSeeY44QUyA8FCncmcg9roTgLBmQS5D": {
+   "name": "Orca AMM",
+   "type": "AMM"
+  },
+  "6qeK9YE6w3uTqoW5vjmhKXyoQXR933M1T84RrMTbfpL1": {
+   "name": "Pump Fun AMM",
+   "type": "AMM"
+  },
+  "6qgziDxmQnxYEpMxneN4edrpZSkM4ShWdVXas7EibxWB": {
+   "name": "Pump Fun AMM",
+   "type": "AMM"
+  },
+  "6w94mKJbM8GwKnbTZLcnpxS8BK12giE8tWtkH49nG3Ps": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "6w9kaXQTUNyLKPkTixrBMESfFp4XqCT8hh1QTuyChSzq": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "6wAUA8wn4ryJ2bGwfwLPKTh5Scohztn11ttG4Gc3RZXd": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "6wVX5G3hpzVnuNbXBnt2tKkBT6FfsUtYk589QsSvKmEQ": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "7573qEUXWYNk4jmf9NxNmhzAFnhh8op2r1fHqF7YBsqR": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "763tsuX5M77pG13vujGsZqf9xF9bagTGoTAjyhWA216w": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "792sqCe1y92pjbw4p8pJjss3e3GruFus42aSMg9YAtcL": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "79eXkrm6sRiyqRprsBQPPrKGWqoGspH6pK1BacMUAov7": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "7EJqZHD4TTk8B9BCjUwLtfssGbxiDAsrbFHT8YWgrE7U": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "7GrbSZrnLM8UH9PUzVgWYsvD4Fips8yWAfRsFquqpdBF": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "7HjoM6UiFy47R674j96K2dpWvY5y4BTeB3fVXb63U4Uc": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "7RDnqTmzMN7QNMTFZCwfH43F8xgT3tiGSTVKKn2p8Vuv": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "7b9LL57f1J9pr8uCwBUm5zHCpHEd5g3dkTrBQfJyNem": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "7jv3KTpMKEa8VVJfajRoK8CNH2LCPXnCXsVqgHAZTDu7": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "7qMWi6nkr5ixsjfeneRBDPUSXcKpTVJNiVi9FEWGSLLr": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "7qvzPdCysd8qMKivuck5SXCnAn2AE3N34C4ZHwwxW3t6": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "7rYH35bZSR5H4NqBqbzjPUtbXVxuYxztQVhhxTcwGrp4": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "7w9RQi7y84pPgdyRjVDf88Ar3PGT3S9VBYjsAscvrmRr": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "7yY8R6Npq1XULXPUQGA49fq4h5XMnqktCiiSMfJ39QWf": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "7yxofUhL2k7h9SQMgQvXE5a4DcHF7rF5h3h2iFvftQYW": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "84QXoYpZKe9LYT4WbEJTbBh2Qq5GG9vLf7CH1gFMkXCu": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "84nAUEJjfZ691HkPLSvNAe3PhSHcNrBGGMbXkHQRqW4c": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "87e5hGfegJRyff1xn81ageSRixH4KAVTJzVEQ2WrmtBb": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "8CzZxn6425m7XK7RPjP5PKbyawF8hfaYd6kKaJpv83Gx": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "8EbJVpMWRTJH1fcvMbWtTJEGmSqJAAzXueXD3yhJQ6jn": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "8JKY17XD9xEf7dbGRAf6GAjB1PJvNtKo3VsfTj6n6WCK": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "8QEsLARNNgSM8gdr87JHzU3YvUdNLJbywcCvQYqNK179": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "8RpNdKP1pvzZUwfNmyxmcJbcwBsqwrwSyXzJDbhokZCv": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "8VrnP7gScK1SQ6aYqHsce4oNLsZsNv1nYhS7BhJrVzzt": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "8YGjpYsG371Wgiiu1NeHc6ACXTy5Jp32tNBsfrWzFCet": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "8Z676fkBBQfa2fYrxssfjAHatKMN5Gv8KHxo6pf1JGgn": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "8ehHnYcp7zmwVf5ZyiJuTYv2V6TaS1YBJAuo7M15QS7F": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "8fHH9Wa1GK1CRt4A4jCCpcmHtDYVcLsGxU8fK2kyFLaN": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "8ixECyZvoKaVUc88YZSFpt2RQbDeQTLjfrW5vL6NpJZT": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "8njzSktdNEkfF2j36rLEPMS2YV7MAduaW9Muovxjox6d": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "8pg2WyMoJgZ4NZuJhL9UVb174TZnoZ5NABqJioJpCKrx": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "8r1QdgYKssjU5yc552UmbD8iaDe6dbfgAEmpvVa6BaT7": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "8rHKxWyYThCcp3NaNaHU51QHRcs4JnQvQ1nbPpRPDvxw": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "8tMbrLZBjCd6EMS5b4DWbZjMvtx59D4PzmiKXGbqTdz3": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "8vTcGxZTsQcxCjF91bTrBF1zUzYheMqBBodP4kFNkqNg": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "8wHJM49j6wVQY7i231KEoE6UJsiQHn3V4hXVjeTAryeK": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "8yQetumuWPkcg9hWcY9SGWzkBGvk8JLxd7WG571vW68b": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "916Hz3i8pJ9na4ANGPjHKCgnxpos2AzPcmQ1f4tEX6wa": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "93ZZLUM52FjjufuhxheGee4oqbNUhXQRqeNWZo8FehU5": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "95AWyWEYDwdxtWELnPP3sd42FojCDFLBZHMBx9pLC4uy": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "9C9ve9DmjgreTEcexAUBbhg92fyFPFjthPZz9zm8PoZG": {
+   "name": "Tuna Fusion Pool",
+   "type": "AMM"
+  },
+  "9NaLAayzyCRCxHrgcLZp2zxfiyu5at3SAMbKBJ4ab7X5": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "9TzFmgfHhp29Z2vD1afczKtxJ76NLjCEs8XeD6d3eQ9N": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "9VyJRctQMhMELuQx4or3bW45dxzQJpMibADRwUX1KWzc": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "9aTCmcoiYxDsY35g43Azx3hrF8JPG4vNzvnKmKzridJu": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "9cdHDUNvWtKRHLckbzjcd9L3FSAipqxm324mbCUoLK6s": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "9dWY6cXjxatRgcKQdDhGMfD5LDbmP4hCDghZQ5joKvP9": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "9eA2fDeTxg3VTAayXk1LwTDggwWzpoi96KV9MNCadets": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "9oL769WhtijghowqRe9U2D8hSbniPrAmFEqaYvEJsqJh": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "9u3HcagAioBi9dFBBYrHJUvSdwQt4zdiavwXyb3hrUr9": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "A5NC4GcWweeNFacAP31YFXEPFCp81tqbWEuAJ5jAsR86": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "A8PJuk3iWXYXDGfJBDLsNqRCZuLGQ8HMoeDnmWg47QeM": {
+   "name": "Orca AMM",
+   "type": "AMM"
+  },
+  "AAp9kSsYKepFQQisVs4DsFQZ5EoXLCA45D3yfhfrjN6W": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "AC1FP3wAgV4iFks5poYFs8fb2xmiSfmz2gf2SFaDzETU": {
+   "name": "Pump Fun AMM",
+   "type": "AMM"
+  },
+  "ADGDiaNzGzAL2AkJ8onwSXXLo66Hiq1raobDY9qkVJD9": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "AHN3uRV8pRjQe4PpvMpbGrYnvpd6SUak7KuJk1NnMhLC": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "AJuFHQ1xp7jAWcntr7S1YcrXKXuqyjZGvMtDkoFagyEm": {
+   "name": "Pump Fun AMM",
+   "type": "AMM"
+  },
+  "AJwP4RLHKf21xLB91g5tLkAk9eVXeTk2NZpXahaZrXSA": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "APVLvfjisFXGtGWBXN439yYhM1n8fqR1HmKjQtRfAq6T": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "AQG3ym2wrqUMwqdWg93EAK1E2CBgxXkAbT5d2RSBds7t": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "ASuZxvEeJaUgKL1v1bj48Fuaov3NTohheyqEgWRPtiFE": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "AUKMBNX6nUhrqL9w7wZjsicerDttNkkVMvikEmupvf5c": {
+   "name": "Orca AMM",
+   "type": "AMM"
+  },
+  "AUURADJPgXtwxb9BLCpq42xv8fSwwL9dt8HGahY5CGYA": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "AUaPMKd13d633cXRRrPRfTeL5XRN64ngDWLEfH5zfBML": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "AV4B3ujJdq1Zp9VJMoujzu3gcLGamnyqV46HrmymY9vD": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "AWqqAciBPKmoWaZc2kXiRy1CKXF4gdGdMF2pMM5juinF": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "AZMKY5bYEgefL76iGFVLM8L7wjpc23ZqAXrw4VXvbuiq": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "AayCSJrY7g8RzBAgTDHiVzLumcLxKGyDoEhkbbmDtr43": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "AcSj8mo6TR5ii4SfYskoefqgSs33NKoNHkPiKbrZtjJy": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "AeAzzSssfTzD47LCMZBzuC7BmeA8MA9rrB24uX41m9NW": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "AeUrosZyBff3BFnWuJ4nkdXqXJyehhnWRkcgA9Fy83nY": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "AgsD7j3phdCb8EVKCTpY7rQdx3LUYZksbSNbEcyJ3A85": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "AtinMVq7m4uApyPdcrX2DoKae9CYHUPgd5y5yX819j6o": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "AxMAeDjLdPbkafMpasjnRthXG5JNnSje7aidZane5QCS": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "BA1f6A3ZCkNnhvgyuw1fHggYQXf7V5VRuejAcPqpaQuN": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "BAr2MGMQWJERQLG8KwEGLtwKAchiy9iUKHLr2bZ7LNqi": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "BBwdffWbuDb1uZGcpTKrmJ7fStPe4D1qQNsZgay4zuhx": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "BCEKtAL38iBUzXDJw1kHp3V2fdCW6fQmoVah3GZBgJLA": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "BCWGPmUutcCj9DYFDj3QtspNU9uwsyjLmnUFrgMpq9P6": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "BGnzjg1wfscFfvhXjBKjyQhkP5wb9Jrnji6TL4rK33v2": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "BMcDxA5m1THRXKe2a4oAgP8w8dJ2QGrqp9gLEykQ7BZP": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "BNF53B4cyAepKmSN9NpNKAfMu8uovaZerenxfeDzZ6rK": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "BQW3YM8vVcDRg55Zu1f2jXKD2SCATNuJCSLqRbi5hgdk": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "BQeEZJa1tdxZywARYHTtQUa1P1VLu73hfDgughc6ZiyP": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "BSDRxduUEmGS2PBCraFYGyqaPwvnoGrPHFzkVsRzXxzS": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "BUQbMVCmnLrzqARA3wH7PvDqAwNmsvWNNAEmUd1EU3Lb": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "BVp3aHxQSY3LHVyQfYS18fYrYK5Vc2xWUwNKfbXF3EA9": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "BXFvwFVvqMkZ3abMqLP7pYjHJAFAqoRw9LsMKeAdeDDE": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "BXayHarvmwg739x8oLvte7ZBFwTVbP4eyi3rtj21UdxA": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "BYwXWzQAQxSrZePFRWqzUtnetuiPshco7JHZ2Ni2YiQD": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "BZWJqSZ5nhL54N1r8cQVXLhiR9e7fXvXaXSiw3Jxm1HM": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "BbaNGbt4N1Ai5vy7V6py3ub4nFZUpigiq24D6n7wVCpi": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "BbzKC9PmeeMqP8bi7EHyi2RLjEaSqCGtTB2Z2jTQzkP1": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "BcxRBFJLy1ZMC9YCK3sH8YLBxBRZ17qx7dq9Jn4w5qoT": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "BfWLnmJpJCnDKE3i9QW7tyFYmyGaSVXgS51vLaAd7ptt": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "BfZMs7hcrGxZ1TJdG34rV7RW32TuY3DQRWyLLUjJCJ9v": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "Bi9oWMMArMRc9xNzFwJWhXdHnqvdnkzCWiGfY4T8Gnv3": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "Bjex4ds8ms7sc1isDucVrJk82iWqvvydDFPZAH9quHQW": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "BkAahPHGC6c6L7GHhV3R1xS2KHdEu8XpjPi5XkQQmbEA": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "BnpzuAAAXzWBRdPfYa82czU4dcCuGBFA4qEmQmaFMs5i": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "Bv3rV5CwyQMNv8Wj31JXDjPCARj68ThVpH8TLeCexhcn": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "Bv4aAt9k99QQT5pYiXZUmWcJUMVAePk7JKyfPJo4LAau": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "BzxciHLVJiZCq4BSedgYjFLMw9EojXHHG15E3QBk7dEr": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "C1pnFTiypTfu8vm9yPytLy62xAbLGJ7X85W6pjHr2o6G": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "C6kYheooSWyBi7VbSwxcK24E1vND6XMKNvkc5tTkq6nB": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "C7iEXHaYDkMC4swPXX9yRTXL9MKhLAzoptg368XKNhiG": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "CAoU57cLCcUJpV9KZUdfPnBK8N42SfDCyXiib2jkReXS": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "CBk8yDFZmHcjAFGQW9m6b8XoW6aVeAtZ6pNJSV3PgEsp": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "CDbxT9uXeu8HraDkmFnGqCjwQoDBqS9iWac5n48gg4tD": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "CHBAQbvcoSDyHuGxmNgsLXmLeAYi8pJzKFt5eqdx84ux": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "CJxKtb2W3EikKhbeLQi1pUxLRSPF6TZdoQMJxMUdWXuE": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "CMpfNEoyQSEsUbcMLuFMjbooD9UoxiedqoXGRcGHem6a": {
+   "name": "Orca AMM",
+   "type": "AMM"
+  },
+  "CRNEgKcMbaRKtuk9aXpTpeAhCNRUNFyxeP1B4YW4VStu": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "CSiBMepG3iCEL476aQv2Bshgjx8z5hPjimxP3iNEtgEV": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "CUjZ9hTc2De2qjsahzxB9NfMxk5Lia2TSSTWgdHbEqLm": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "CYiJyjXTh15cbHPN5aAPowupS4Bdj7eKd9yt6aS8tpao": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "CYrdADEqp8j9owonu2pK2cQpURvzzKzjhJ9k9R8tqw8a": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "CZmM7p4XNHu8PXMFZoDmZ3en8yHjxdwR48Lvrk9irKed": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "CcG3fyDZn6uXTV5p2TV9cceCA2YhE3bUMLeXGn6vZSNr": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "CePczgpoxU2FvGokRGpkFQGDj4no6TESeRPgqssF3iXt": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "Cgk5DWJc59TcWTQ1iaJ8Hn4bsVjKXJF2fCjPAZtMUSkV": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "CjbjJLZ11foU5jby4HVMBkjRc8EBmugT9Q8UWr9iur4D": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "CrtL53SDde37wtXF8EURKizXZBrJVLbZT6oJysVMGQKK": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "CxbrCcf59ifT1CP1TDwGVz8DijS62hPAvpUjcWPND8wK": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "D1sMQEKEiPdAm5EtGnP5ogt6krvfLS8ppmGgf4rG3wf9": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "D9BeqhvGGkUo5Jc4xesSceV8BdMNT2uhm9jiMfAK22NM": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "D9CKp8sPcCyBdqz8ZKvWAjQuPe3XnQHRsZ3VpJ7zNMbE": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "DDiiZ6uM9mMHiwXtdjWg8k1xuwRy9bd37ujGe62KSGyv": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "DEE54wASdZwhf1uK9EoLdc61CUxwc9MCdMRTe7FoWJBq": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "DEP5V2f64Mc4ZXo5JYYMCmxrmQEbSP2z6RSWyjAkrb3g": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "DFnxwESsk65hzYjoWZJRwMe5bSAu1Mv5XLcHo594Hz2Y": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "DHfroXEkcoV9jNxhdUoSk1Q6fvcZcEVQCq3TzRrJ2zgF": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "DPxURiK7PQKj4MinY84Zik5ZeG6suDA6vzcnPPS5BuxP": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "DTZkh34c5FAW1Zzbkzt45zQUb9744t4mq95KdbFk9cRx": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "DY1oy3gkJqX13dLfhQm6fVejq8Pj49H5eCPwJ3khdDi4": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "DcxRAd8eqcr35txVvpDwzzodnPAk5MQJVnSzFxXhycta": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "Deh6Km6rNWiURTNfZXBZTyCeCJTFrYPboQxH7Fu94EbK": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "DjPUSyQ2g7hAaXrz4whPZpMJWLH9SK4Q73dfj9GXGjX9": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "DkrGCaXQBa51CL9rQSpGtvJs3CdaYcnoi7Jj7SWaJgph": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "DmDDALHtASC3BVqM89duqcv9JAgiCF4ZxjWU4qAi8GSJ": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "Dtt16BGvRtYiDu3KERVmvdcQsXwK8ynRLZrWixpDxzmf": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "DvRjwPEK7dTAwFB2m5YopukSkuYBA9TeCwdS6FLxyEUg": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "DxLAGsp18UCeyrLpcCf76RbMc9Tyw2eyFZ5zNZmz9Kf9": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "EBRoKgQQhNf29wDZCkDrUTGNegBUJpvVEvD7CpPJpp2i": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "EDFpKy6XKrkSy9S7Ucb7SL9SeBomYAB5RvxpQ3hV6Xtz": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "EE5pFqh7ghmxRvzuhP2G1XUJsX93YDaFcUg6DzYT4jsj": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "EFz1KsDtXCrha14s2gLpmszpj4QFk1qoNiWQ3tD7MZtX": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "EG5WJJ71hs8yndrtpb7KEcjHu7ZQPTpZmcGvKmvpUXFJ": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "EKmUYAVgxoG1mjCTvVmJgsDYqF95jpcxgf3zGySduTSo": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "EKpc6VyR4pJUrHsWUu64sq6yv83NSqJgTenARM6jNHti": {
+   "name": "Printr Stake Pool",
+   "type": "LOCKER"
+  },
+  "ELk4eijDSBX4Tb8fsUmn1R5LCwcoKTMNPQvGJmvYf964": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "ERFWtwSjJhQ7XYLJKgBB8u1Xvzh1QHx1joG85xpkGKyE": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "ETDyXJmMhGi2BmGRpWaVV98SqXv88nXNvRCtJ244ZXe5": {
+   "name": "Pump Fun AMM",
+   "type": "AMM"
+  },
+  "EYFUo3E6WXbU18cepC6bxRpTk2YZBkCxfNVhg52vZyRx": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "EaRHVpmdkHNpdcJgoSR5M6gw6P8zC6fiBipuySTbiSga": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "EkCFiY2UuSLY2uMip6cZ6ftLAUhPLiL3fuMBwfjgr7qq": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "EkkgMLrSN4KKKvFVoFe3u72vHJS9U58X3roRBjysSsEu": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "EpCQbQBeXBW5rU5DgUP1rD1a6iAFWjEoU46v9e2HWeFY": {
+   "name": "Pump Fun AMM",
+   "type": "AMM"
+  },
+  "EvDd3P1f5ZgiJc9AyP1ey9K1iVB1ETAJp61RPP8pKVCj": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "Evg7Ma2h6TQHwFsG5uGSscWKRdUi9dR5gDSHo7feA49W": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "Ezjk3vBFmAT8RT2DedPH6CDYNbCwbFzLhXA7mVhNsEy": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "F1CabdSd6eAyDX8vUp29i1y7DiCteE3ndj8ouWKTzd2g": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "F4ESjyvKgh9gdHunHU9WZwp9hPsNKgTEJnFDsPS6VtfJ": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "F6CaaoVsJZSZxCNtfaSwLuraDtjmqQew1xQ6NaTZYxBM": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "FC4c7yYR7VKUF9CeGTj2H4A4d5wnbQgbCUrY4ZqrqHhP": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "FFbEJAaJLR22VK5ZQ2Hm3DCC8vPGXRqTBmCtLGwvVuL3": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "FKEM29nB1viUqa2wNEu5d566dw1zSAYBuiqZtVLunALj": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "FQKxnFTc8KtnGkME1EEsZBvW5pep1bsFPL3U4M1pEqnf": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "FZHyt9SnAbrmoCuRtawmxY7oWsYAVaDbHA9zwsppy32c": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "FaoYTUYdErsqfjchFeHdoksaveikJFrMhr9A74cUNTyV": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "Fb3oTZvg8iYhWMXU5PS1ANXCmR3UM8XYdeyZXTM2xhyj": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "FbaigBJ4NDTRLosw3Uu1qUVEWaZszdLV7VP2my35vAas": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "FkpGo1jQZ9hBAvch2uwtt9ERdbcP7E4h534pk1D7Aimv": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "Fm1YoatZAyvF7KneHB9Zh4wPcPDTYBeT249pq5QSY54Z": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "FmpuhhjxD3rVvhnnnoXBPeJZxN8c2oeUUzNR8q8CDfbC": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "FnhkAWS3zC1UXL9Y8rnmScbpaYYW4cSB3bpJE9FHUqbk": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "Fv59QsoGp1J34mUBkKnUzDXdiEoqNroc6hevmxrEyyNe": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "Fz5Pc1tRi37rD6YKyKkPqsaP8xjsJsJLQQfx2sduW7X9": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "G5H77ys5g8ZX5DrKcWNCvcqh9domzmaPnk1ugwsBeZm6": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "GBcyBbq299gCSJtjMjn4BT8Yrwp1xeV3Fr47gPB9errg": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "GFiHxZvAhQZ6FYbgAFWFCk5c75YVbAvSr27Zv7ugvHkT": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "GKzYsuZM9RMxA7XcgWuvDetMVVU8hYdBtAbAaJhZsmvz": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "GMa51kP7FhickYXm4Vh9uyPnhpdtocaXaD2nCvnjnMvP": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "GNEU83xKHiPFtsSAndKWn3DTqPSvHE5ycensSbpPkBY8": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "GNaEH1HWisdb4z5HCUtXYoV9KJtHPx7iEJX17Pe2Pejv": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "GRgrL9ioCL6S5Xdd3FfwThyEf3pXaW1UJddPnMGFA52e": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "GRmeVs8GQsbe5sbQkS193d72RcvqtJYtR42vPMtg5ebw": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "GWwLme8VUARei41LQWwrU73ZL4f69hCYaMbUyQ74uvD6": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "GcEFaKA7WWqoCseoWvvtG85CVoc5vhym5bg5mDJ6S2wS": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "GeUVCspT5LqQTHm2c1R1oHFwALjjvyjpn4s42NZXAnuy": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "GfeBZv2BHoVXzCZf7fbgqYQkU3TLpcktDoJWhEGP4CKm": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "Gh4BpyoYQgvqu2ENyguF67MJwbTvQSDXsUbRhQGuNqaC": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "GhVFgbipdBgPK3DepE2P5H88dQN6EY8NYppWkg43rHbi": {
+   "name": "Orca AMM",
+   "type": "AMM"
+  },
+  "GivPFM8vLnQ1qXwqdiu5EKFCkv1Fdau3p85rtYtdt5Q4": {
+   "name": "Orca AMM",
+   "type": "AMM"
+  },
+  "Gj4h2zspHePMmvse7LDqpNNxiFu4734cY56nY9LPrEun": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "Gk75TB9v9renUS9kwrGw33CXdzoVefKz4nwL6vRQqbS5": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "Gn9YxxjrD9DcvxsZhprtGakNRpRRU2bEcodry1yKUh9C": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "GpMZbSM2GgvTKHJirzeGfMFoaZ8UR2X7F4v8vHTvxFbL": {
+   "name": "Raydium CPMM Pool",
+   "type": "AMM"
+  },
+  "GujugTWopiCqDBDtKGjKx7v3FLKC4qR2hkPYGmGAJ8bF": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "GzK7KnkBm1N4vgK9qApHcygCm4yRebtkwmiXPxi6AoYr": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "H1reS3iEL5xCytoTo8w3gcqyvUhXef6nrxvphtuuhhav": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "H1x4xNTCbVoBAt2SRQKCPQ6WvFV1u37aW8gsVXXJmNRb": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "H2sGtCNtpo3cWYRheATKQKqrmWFUyiScrcfyEDUK2LVG": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "HCGF3oxkCHZqEq2xyjj9Ti76AibWxQJ8ZGzJKKDAtvHp": {
+   "name": "Orca AMM",
+   "type": "AMM"
+  },
+  "HG61w9izYpRik4m2RL8fPQ6yt5vdacCSkxbnFkjsns8": {
+   "name": "Orca AMM",
+   "type": "AMM"
+  },
+  "HGbCt84UAHuY9VXQkzJ44owQAPMifpkkpN1gDTxJFY5": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "HGuvDobhpEUkKYz1EJkq9Feg2usqr883RyYssJJJDeVJ": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "HJiPkbejCEjMATyPTNcDWhFnvNiQUQiSj5qhNM1Lg9AG": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "HMwv8nFLkGsZimUoqoRfyGH2iMdmP52VE5ocBciDeG6d": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "HMzvsEEmtzHhvZNw9uwbaG85HCTmFnkbhzUx16cy7ca3": {
+   "name": "Pump Fun AMM",
+   "type": "AMM"
+  },
+  "HbDGmtC4vqh1JWuFZqHQ2ikDuYBMVusRg9eahJoXc2go": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "HdePDZK7cFMPTjPSwJWJyGsqAT7WNeTzoaGFWUjMfGhx": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "He4RxmQqa6GkaaxXe9YFXtnKJC2zyA5979BWxtWgdhWY": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "HnW2THZAXW2YqrnWvpDPCKTQLLFU3nGpfhebPJ7EzhGi": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "Hp3wLfAxPLKqFAq3b5pFXUU1n6QqSdu5qHBa2n3UiFtB": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "HsNxzX3w3TTavuRFMpU8LEDnRTmPThFe5cpeeCVUPPr8": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "Hu2gtwHTfuHYvqrJa7Fyy8Pn1VUhUYfzYxBycgvVisAB": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "Hw6jrUZEa2D1fmSdLruGidWwAKs8hgKPSpV2HtUb1QGT": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "HwyLRkZkDjWPD5C2eRJZcmzShAV79TAFcg9mfTDG3ToQ": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "Hy3GHS2jXm9aWBTcjNtSw2UpjWZtkg9pocC3NN7nabz2": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "Hy53rcfk9k2PfuUcDFj5sJW1ZfXxNAWgxLMahhd122oG": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "HytwzSWrmMqiNYskp8GLaSex6Ss6NZpwQuRtmatEyAgc": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "J2zTZf7WTzmmt5uHkLUZ4iD581roZLY8pZyqLZhusNgt": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "J5tQYmKeKKTG2bjhfX84qNJnuEoBVJs3VDabCbtLTY8J": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "J6zsaBXoLAD95vDpNWum2eykBdfz1doTPkPftwemMJgX": {
+   "name": "Tuna Fusion Pool",
+   "type": "AMM"
+  },
+  "J8AXveQPtyEkgayC6SvZJqxi6CRgkrDvtKZBKwL7DbMe": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "J9j7J2RysBwHwBe9j4JafKmkXgThhhndeo1TWgtmRMx8": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "KygMGDf7zuiYrV6oa9UWDgWNpqwwikhcSrmPuSrh47u": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "Rxf2ymzLaaF256dLt7vMuNBJcbF6fm4b4fGaA7rq3gM": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "UddpBF1yMqzig22gQX8PuZWhaVyHjX47hCUkbto9h8c": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "VuRGEf4Bi41gjo2WAxrGdigvHvWzhgVbSrE29HcWU2X": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "W83qzY96cjh88jscd2RZMdi96TU4xGWdmkhgNhGEqrk": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "Wj3qGhcq9aTBojUP7yzw554V7Q9CjNByYvaxXyQqRaP": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "bx2uPpSj51fovAtvK6D3wpuZhEjwYigvSMeJMTZveC1": {
+   "name": "Meteora DAMM v2 Pool",
+   "type": "AMM"
+  },
+  "fMXyFakNGBLgh2ofktKGPrpCLZTTywf8buztCuVfh6p": {
+   "name": "Pump Fun AMM",
+   "type": "AMM"
+  },
+  "fmk2tCyeQM6T1c6u2hkBftaEW9aBTVoGtgS99HE3KNy": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "oXDiuN4TwMV5AF99LKvXycjAnADtV6ELtu14xRzkvKX": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  },
+  "qhJ7kLjrE68sbDF11CpwMt3P9rqiwZtretM5ZzeAX6o": {
+   "name": "Meteora DLMM Pool",
+   "type": "AMM"
+  },
+  "uM7j14orTDLJQ7STYAkg6VBsKg5rPLsquYodgv3BbyU": {
+   "name": "Meteora DAMM v2 Position",
+   "type": "AMM"
+  }
+ },
+ "risks": [],
+ "tokenProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+ "launchpad": {
+  "name": "Pump.Fun",
+  "logo": "https://api.rugcheck.xyz/public/logos/pump_fun.png",
+  "url": "https://x.com/pumpfun",
+  "platform": "pump_fun"
+ },
+ "markets": [
+  {
+   "marketType": "pump_fun_amm",
+   "lp": {
+    "lpLockedPct": 99.88278983754358,
+    "lpLockedUSD": 3590438.0470397687
+   }
+  },
+  {
+   "marketType": "meteoraDlmm",
+   "lp": {
+    "lpLockedPct": 0,
+    "lpLockedUSD": 0
+   }
+  }
+ ],
+ "topHolders": [
+  {
+   "owner": "HDixbrzwwLXczhDBk1JVrurPQsuLE8FUKnW2pucSXN3o",
+   "pct": 2.8487540340352733,
+   "insider": false
+  },
+  {
+   "owner": "HMzvsEEmtzHhvZNw9uwbaG85HCTmFnkbhzUx16cy7ca3",
+   "pct": 2.178821717028955,
+   "insider": false
+  },
+  {
+   "owner": "4ZZW5ePCAsHJdnHHUdgozdvLqYNVnkE9CgrW3iyZdskb",
+   "pct": 2.132274220356552,
+   "insider": false
+  },
+  {
+   "owner": "2M2vLX34LXMg24dMEnjWHvRXS1tshpEDRWzmXgV8ENNZ",
+   "pct": 1.9769162054271574,
+   "insider": false
+  },
+  {
+   "owner": "9BMzTpSo4URse1oN666pmexhdjpU1vA5p7LtroCFQdLU",
+   "pct": 1.4549121833746772,
+   "insider": false
+  },
+  {
+   "owner": "ESVPiw89EPDawTyqXWmot6nJ8D92MMNHH5fmDmficY32",
+   "pct": 1.4156884773628344,
+   "insider": false
+  },
+  {
+   "owner": "EVqxB3F6iUBeWsTpBFQqWwxpqUS8s4NrzgxBvQ2VRbTq",
+   "pct": 1.0762162369232933,
+   "insider": false
+  },
+  {
+   "owner": "8mNan2EaGGQtZdKba9Vfw3W3oYF9UQFJdd2gkbwpRMqi",
+   "pct": 1.0371797648248577,
+   "insider": false
+  },
+  {
+   "owner": "7dgPMq5CcnTtFVeMAES2jq9YwiWZt5xUbsZ4Uyouj4Bu",
+   "pct": 0.9671384744708176,
+   "insider": false
+  },
+  {
+   "owner": "3Yfh7KG8PHxZmjp2wx7c74sxTCfmgp5fnWdvbUKj2ggx",
+   "pct": 0.8970462025510866,
+   "insider": false
+  }
+ ],
+ "insiderNetworks": 9,
+ "insiderNetworksShape": "count (array asli dipangkas saat fixture dibuat)"
+}
