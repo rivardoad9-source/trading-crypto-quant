@@ -160,3 +160,38 @@ besar dari expectancy yang benar-benar bisa dipilih tanpa melihat masa depan, da
    jalankan seluruh WFO sebagai fungsi k — bukan tiga titik.
 3. Naikkan `--folds` begitu ingest point-in-time ada: sample 121 trade terlalu kecil untuk
    memutuskan apa pun, dan MC di atas mengukur ketidakpastian itu, bukan menghapusnya.
+
+---
+
+## Re-presentasi pakai modal asli ($280 / $700 / $1.400)
+
+Tiga ukuran akun lewat pipeline yang sama (`--capital=… --sizepct=70`, median k):
+
+| modal | trade OOS | WR | PF | net (Σ P&L) | % modal | expectancy/trade | maxDD path | MC p5 (cluster) | P(profit) |
+|---|---|---|---|---|---|---|---|---|---|
+| $280 (cap LP) | 106 | 67,0% | 1,51 | +$308,53 | +110,2% | $2,91 | 33,1% | $291 | 95,7% |
+| $700 | 123 | 66,7% | 1,52 | +$980,28 | +140,0% | $7,97 | 28,3% | $745 | 95,7% |
+| $1.400 | 123 | 66,7% | 1,55 | +$2.062,51 | +147,3% | $16,77 | 27,6% | $1.577 | 96,3% |
+
+Compounded penuh: $280 → $701,88 · $700 → $2.219,40 · $1.400 → $4.691,71 (realita ada di antara Σ dan compounded).
+
+**Temuan kunci: hasilnya BUKAN fungsi linear modal — dan bukan karena compounding.** Gate
+breakeven menuntut `fee/TVL ≥ coverage × (gasRoundTrip/notional + forcedExitSlippage)`, sementara
+gas itu biaya **absolut**:
+
+| modal | notional 70% | gas r/t (SOL ~$100) | % notional | lantai fee/TVL |
+|---|---|---|---|---|
+| $100 | $70 | $0,70 | 1,004% | 1,304% |
+| $280 | $196 | $0,70 | 0,359% | 0,659% |
+| $700 | $490 | $0,70 | 0,143% | 0,443% |
+| $1.400 | $980 | $0,70 | 0,072% | 0,372% |
+| $3.000 | $2.100 | $0,70 | 0,033% | 0,333% |
+
+Akun $280 hanya boleh masuk pool dengan fee/TVL ≥ 0,66% (106 trade); akun $1.400 cukup ≥ 0,37%
+(123 trade). Manfaatnya mentok di sekitar $1.400–3.000 (0,372% → 0,333%).
+
+Band k pada $1.400: p25 +$2.245,85 (+160%, maxDD 59,2%, P(profit) cluster 85,1%) ·
+median +$2.062,51 (+147%) · p75 +$1.298,82 (+92,8%).
+Leave-one-pool-out $1.400: tanpa pool #1 → $3.442,62 (+146%) · tanpa 3 pool teratas → $2.036,28 (+45%).
+
+Grafik: vault `attachments/wfo-4-modal-nyata.png` · generator `~/.hermes/scripts/diag/make_cap_chart.py`.
