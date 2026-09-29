@@ -264,9 +264,14 @@ async function main(): Promise<void> {
   const base: BacktestConfig =
     COVERAGE_OVERRIDE === "" ? base0 : { ...base0, minFeeCostCoverage: Number(COVERAGE_OVERRIDE) };
 
-  const times = dataset.pools.flatMap((p) => p.bars.map((b) => b.t));
-  const firstT = Math.min(...times);
-  const lastT = Math.max(...times);
+  /* Reduce rather than spread: a wide universe carries six figures of bars and
+   * `Math.min(...times)` blows the call stack on it. */
+  let firstT = Number.POSITIVE_INFINITY;
+  let lastT = Number.NEGATIVE_INFINITY;
+  for (const p of dataset.pools) for (const b of p.bars) {
+    if (b.t < firstT) firstT = b.t;
+    if (b.t > lastT) lastT = b.t;
+  }
   const fmtDay = (t: number): string => new Date(t * 1000).toISOString().slice(0, 10);
 
   console.log("=".repeat(100));
@@ -388,7 +393,13 @@ async function main(): Promise<void> {
   const oosPath = equityPath(oosReturns, CAPITAL, SIZE_PCT);
   const distinctPools = new Set(oosTrades.map((t) => t.poolAddress)).size;
   const entryTimes = oosTrades.map((t) => Date.parse(t.entryTime));
-  const entrySpanDays = entryTimes.length > 1 ? (Math.max(...entryTimes) - Math.min(...entryTimes)) / DAY / 1000 : 0;
+  let minEntryT = Number.POSITIVE_INFINITY;
+  let maxEntryT = Number.NEGATIVE_INFINITY;
+  for (const t of entryTimes) {
+    if (t < minEntryT) minEntryT = t;
+    if (t > maxEntryT) maxEntryT = t;
+  }
+  const entrySpanDays = entryTimes.length > 1 ? (maxEntryT - minEntryT) / DAY / 1000 : 0;
 
   console.log(`\n--- (C) GABUNGAN OUT-OF-SAMPLE (satu-satunya angka tanpa hindsight) ---`);
   console.log(`  trade ${oosSummary.totalTrades} · WR ${oosSummary.winRatePct.toFixed(1)}% (${oosSummary.wins}W/${oosSummary.losses}L) · net ${usd(oosSummary.netPnlUsd)}`);
