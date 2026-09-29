@@ -229,3 +229,36 @@ Temuan:
 Grafik: vault `attachments/wfo-5-lp300-model-live.png` · JSON `docs/backtests/runs/wfo_lp300_*.json`,
 `wfo_lpdefault.json` · generator `~/.hermes/scripts/diag/make_lp_chart.py`.
 
+---
+
+## Audit kesetiaan (29 Sep): "sesuai formula?" + "pool sudah all-universe?"
+
+Dijawab dengan alat, bukan klaim: `node --import tsx src/scripts/auditWfoFidelity.ts` (read-only,
+1 GET + file lokal).
+
+**Formula — 18 gate, 0 mismatch.** Setiap gate di `liveV11Config` dibaca dari `env`, jadi backtest
+tidak bisa diam-diam menyimpang: age 48h · surge 10% · TVL $50k–500k · fee/TVL 0,8%–25% ·
+coverage 2,5x · Δ24h 150% · vol24h $10k · downside 45% · upside 15% · TP +5% (net) · SL −8% ·
+durasi 24h · cooldown 4h · lockout 2×/24h · slippage exit paksa 2%. Profil: 2,62 SOL @ $101,74 =
+**$266,56**, 68,70%/posisi, 1 posisi. Satu perbedaan sengaja: `takeProfitFeePct = ∞` (tidak ada
+padanan live). **Yang TIDAK dimodelkan:** lapisan pemilih — live = `screenPools` (33 kandidat hari
+ini) → 3 teratas → LLM DeepSeek yang memilih; backtest = deterministik (pool pertama yang lolos
+gate). Juga absen: screen token/rug, gmgn screen, denylist/bench, blackout berita, file pause,
+priority fee, cap bin, orphan recovery.
+
+**Universe — belum all-universe, jauh.**
+- Meteora: **132.727 pool**. Scanner live (`fetchLivePools`, panggilan yang sama dengan agent):
+  **600 pool** (3 halaman × 200, urut volume24h desc) → `screenPools` → **33 kandidat** → maksimum
+  **3** ke LLM.
+- Dataset backtest: **57 pool** (46 survivor + 11 dead/dormant), stitch tiga ingest 91 hari —
+  ketiganya di-fetch **2026-09-14**, padahal window berakhir **2026-09-12**.
+- Overlap: dari 33 kandidat live hari ini, hanya **3** ada di dataset (CARDS-USDC, OPENAI-USDC,
+  PURR-SOL). Dari 46 survivor dataset, **41 masih muncul** di 600 teratas hari ini → konfirmasi
+  look-ahead: universe dipilih dari snapshot SESUDAH window, jadi "survivor" = juara volume 14 Sep.
+- Friction gate hari ini (notional $183,13 · gas r/t $0,81): coverage 2,5x → lantai 6,11% →
+  **2/33** kandidat lolos (GP-SOL 7,41% & 6,25%); 1,5x → 4/33; 1,0x → 7/33.
+
+Arah bias: universe yang dipilih = pool yang masih ramai setelah window selesai → hasil cenderung
+**optimistis**; perbaikan point-in-time kemungkinan menurunkan, bukan menaikkan, angka. Skrip audit
+ini bisa dijalankan ulang tiap kali laporan diperbarui.
+
