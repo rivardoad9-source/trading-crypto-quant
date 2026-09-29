@@ -30,7 +30,6 @@
  */
 import { writeFileSync } from "node:fs";
 
-import { env } from "../config/env.js";
 import { runSimulation, summarise, type BacktestConfig, type BacktestTrade } from "../backtest/engine.js";
 import { loadHistoricalData } from "../backtest/historicalData.js";
 import { calibrateTvlModel, type TvlModel } from "../backtest/tvlModel.js";
@@ -152,18 +151,33 @@ function score(pools: Parameters<typeof runSimulation>[0]["pools"], solBars: Par
   };
 }
 
-/** Fixed-fraction equity path over a trade list; returns ending equity and max drawdown %. */
-function equityPath(returns: number[], capital: number, sizePct: number): { end: number; maxDdPct: number } {
+/** Fixed-fraction equity curve; index 0 is the starting capital, so length = returns.length + 1. */
+function equityCurve(returns: number[], capital: number, sizePct: number): number[] {
+  const curve = [capital];
   let eq = capital;
-  let peak = capital;
-  let maxDd = 0;
   for (const r of returns) {
     eq += eq * (sizePct / 100) * r;
-    if (eq > peak) peak = eq;
-    const dd = peak > 0 ? ((peak - eq) / peak) * 100 : 0;
+    curve.push(eq);
+  }
+  return curve;
+}
+
+/** Max drawdown % of an equity curve. */
+function maxDdOf(curve: number[]): number {
+  let peak = curve[0] ?? 0;
+  let maxDd = 0;
+  for (const v of curve) {
+    if (v > peak) peak = v;
+    const dd = peak > 0 ? ((peak - v) / peak) * 100 : 0;
     if (dd > maxDd) maxDd = dd;
   }
-  return { end: eq, maxDdPct: maxDd };
+  return maxDd;
+}
+
+/** Fixed-fraction equity path over a trade list; returns ending equity and max drawdown %. */
+function equityPath(returns: number[], capital: number, sizePct: number): { end: number; maxDdPct: number } {
+  const curve = equityCurve(returns, capital, sizePct);
+  return { end: curve[curve.length - 1]!, maxDdPct: maxDdOf(curve) };
 }
 
 function percentiles(sorted: number[], qs: number[]): number[] {
@@ -344,6 +358,8 @@ async function main(): Promise<void> {
   /* ---- (D) MONTE CARLO ---- */
   console.log(`\n--- (D) MONTE CARLO (${MC_RUNS.toLocaleString("en-US")} run per metode, berbasis trade OOS) ---`);
   let mcReport: Record<string, unknown> = {};
+  /** Sampled i.i.d. bootstrap curves kept for the chart dump (`--dump=`). */
+  const mcCurvesDump: number[][] = [];
   if (oosReturns.length >= 5) {
     const rng = (() => {
       let s = 987654321;
@@ -357,12 +373,16 @@ async function main(): Promise<void> {
     // 1) i.i.d. bootstrap
     const bootEnd: number[] = [];
     const bootDd: number[] = [];
+    const bootCurves: number[][] = [];
     for (let r = 0; r < MC_RUNS; r++) {
       const sample: number[] = [];
       for (let k = 0; k < n; k++) sample.push(oosReturns[Math.floor(rng() * n)]!);
-      const p = equityPath(sample, CAPITAL, SIZE_PCT);
+      const curve = equityCurve(sample, CAPITAL, SIZE_PCT);
+      const p = { end: curve[curve.length - 1]!, maxDdPct: maxDdOf(curve) };
       bootEnd.push(p.end);
       bootDd.push(p.maxDdPct);
+      if (r < 400) bootCurves.push(curve);
+      if (mcCurvesDump.length < 1200) mcCurvesDump.push(curve);
     }
 
     // 2) reshuffle trade order (path dependence only)
@@ -496,6 +516,59 @@ async function main(): Promise<void> {
     cohortRows.set(t.cohort, e);
   }
   for (const [c, v] of cohortRows) console.log(`  cohort ${c.padEnd(16)} ${String(v.n).padStart(3)} trade · net ${usd(v.pnl)}`);
+
+  /* ---- (G) dump untuk grafik ---- */
+  const dumpPath = val("dump", "");
+  if (dumpPath) {
+    const bands: Record<string, number[]> = { p5: [], p25: [], p50: [], p75: [], p95: [] };
+    if (mcCurvesDump.length) {
+      const len = mcCurvesDump[0]!.length;
+      for (let i = 0; i < len; i++) {
+        const col = mcCurvesDump.map((c) => c[i] ?? 0).sort((a, b) => a - b);
+        const q = (p: number): number => col[Math.min(col.length - 1, Math.max(0, Math.round(p * (col.length - 1))))]!;
+        bands.p5!.push(q(0.05));
+        bands.p25!.push(q(0.25));
+        bands.p50!.push(q(0.5));
+        bands.p75!.push(q(0.75));
+        bands.p95!.push(q(0.95));
+      }
+    }
+    const inSampleReturns = (fullBest?.run?.tradeList ?? []).map((t) => t.netPnlPct / 100);
+    writeFileSync(
+      dumpPath,
+      JSON.stringify(
+        {
+          label: LABEL,
+          capital: CAPITAL,
+          sizePct: SIZE_PCT,
+          kMode: K_MODE,
+          folds: folds.map((f) => ({
+            fold: f.fold,
+            trainStart: f.trainStart,
+            trainEnd: f.trainEnd,
+            testStart: f.testStart,
+            testEnd: f.testEnd,
+            chosen: f.chosen,
+            testTrades: f.testTrades.length,
+            testNet: f.testMetrics?.netPnlUsd ?? 0,
+          })),
+          oosCurve: equityCurve(oosReturns, CAPITAL, SIZE_PCT),
+          oosTrades: oosTrades.map((t) => ({ time: t.entryTime, pool: t.pairName, ret: t.netPnlPct / 100, pnlUsd: t.netPnlUsd })),
+          inSampleCurve: equityCurve(inSampleReturns, CAPITAL, SIZE_PCT),
+          mcBands: bands,
+          mcSampleCurves: mcCurvesDump.slice(0, 200),
+          leaveOneOut: { full: oosPath.end, drop1: w1.end, drop3: w3.end },
+          expectancy: {
+            inSample: fullBest?.run?.expectancy ?? 0,
+            oos: oosSummary.totalTrades ? oosSummary.netPnlUsd / oosSummary.totalTrades : 0,
+          },
+        },
+        null,
+        0,
+      ),
+    );
+    console.log(`\nDUMP grafik: ${dumpPath}`);
+  }
 
   /* ---- JSON ---- */
   const payload = {
