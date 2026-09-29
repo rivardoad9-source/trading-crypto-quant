@@ -257,7 +257,12 @@ async function main(): Promise<void> {
     maxConcurrentPositions: CONCURRENT,
     gasSolPerTransaction: GAS,
   } as MicroCapitalOptions;
-  const base = liveV11Config(options);
+  /* `--coverage=` pins the gate multiplier so a single configuration can be replayed at a
+   * different setting without re-enabling the whole grid (only meaningful with --arms=live). */
+  const COVERAGE_OVERRIDE = val("coverage", "");
+  const base0 = liveV11Config(options);
+  const base: BacktestConfig =
+    COVERAGE_OVERRIDE === "" ? base0 : { ...base0, minFeeCostCoverage: Number(COVERAGE_OVERRIDE) };
 
   const times = dataset.pools.flatMap((p) => p.bars.map((b) => b.t));
   const firstT = Math.min(...times);

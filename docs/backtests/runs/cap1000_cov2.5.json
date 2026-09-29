@@ -1,0 +1,484 @@
+{
+  "label": "cap1000_cov2.5",
+  "generatedAt": "2026-09-29T12:57:35.628Z",
+  "cache": ".cache/historical_data_micro_273d_stitched.json",
+  "kMode": "median",
+  "tvlModel": {
+    "medianK": 0.7884475072909772,
+    "p25K": 0.4052026888676866,
+    "p75K": 1.7882487470701856,
+    "samples": 46
+  },
+  "account": {
+    "capital": 1000,
+    "sizePct": 68.70229007633588,
+    "concurrent": 1,
+    "gasSolPerTx": 0.004
+  },
+  "universe": {
+    "pools": 57,
+    "survivors": 46,
+    "firstDay": "2026-01-30",
+    "lastDay": "2026-09-12"
+  },
+  "inSampleBest": {
+    "arm": "LIVE V1.1 — profil + gate apa adanya",
+    "trades": 47,
+    "winRatePct": 59.57446808510638,
+    "netPnlUsd": -339.4413891991797,
+    "profitFactor": 0.7621063310705233,
+    "maxDrawdownPct": 34.835065496848344,
+    "avgWin": 38.836443324234615,
+    "avgLoss": -75.09798959356571,
+    "expectancy": -7.222157217003823,
+    "payoff": 0.517143581797855
+  },
+  "folds": [
+    {
+      "fold": "F1",
+      "trainStart": "2026-07-14",
+      "trainEnd": "2026-08-28",
+      "testStart": "2026-08-28",
+      "testEnd": "2026-09-12",
+      "chosen": "LIVE V1.1 — profil + gate apa adanya",
+      "armsTried": 1,
+      "train": {
+        "trades": 15,
+        "winRatePct": 46.666666666666664,
+        "netPnlUsd": -251.74226072675793,
+        "profitFactor": 0.5176403130556761,
+        "maxDrawdownPct": 34.835065496848344,
+        "avgWin": 38.59358962053791,
+        "avgLoss": -65.23717350881542,
+        "expectancy": -16.78281738178386,
+        "payoff": 0.591588929206487
+      },
+      "test": {
+        "trades": 32,
+        "winRatePct": 62.5,
+        "netPnlUsd": -195.24159455713087,
+        "profitFactor": 0.831202515496321,
+        "maxDrawdownPct": 30.841994066639106,
+        "avgWin": 48.07100799001025,
+        "avgLoss": -96.38847952977797,
+        "expectancy": -6.10129982991034,
+        "payoff": 0.4987215092977926
+      }
+    },
+    {
+      "fold": "F2",
+      "trainStart": "2026-06-29",
+      "trainEnd": "2026-08-13",
+      "testStart": "2026-08-13",
+      "testEnd": "2026-08-28",
+      "chosen": "LIVE V1.1 — profil + gate apa adanya",
+      "armsTried": 1,
+      "train": {
+        "trades": 7,
+        "winRatePct": 28.57142857142857,
+        "netPnlUsd": -185.4420081389992,
+        "profitFactor": 0.37665110308658056,
+        "maxDrawdownPct": 18.61279480145607,
+        "avgWin": 56.02555588852364,
+        "avgLoss": -59.49862398320929,
+        "expectancy": -26.491715448428458,
+        "payoff": 0.9416277577164514
+      },
+      "test": {
+        "trades": 9,
+        "winRatePct": 55.55555555555556,
+        "netPnlUsd": -88.39605688030609,
+        "profitFactor": 0.6882576392044213,
+        "maxDrawdownPct": 23.6246458812757,
+        "avgWin": 39.03175767845924,
+        "avgLoss": -70.88871131815058,
+        "expectancy": -9.821784097811788,
+        "payoff": 0.550606111363537
+      }
+    },
+    {
+      "fold": "F3",
+      "trainStart": "2026-06-14",
+      "trainEnd": "2026-07-29",
+      "testStart": "2026-07-29",
+      "testEnd": "2026-08-13",
+      "chosen": "LIVE V1.1 — profil + gate apa adanya",
+      "armsTried": 1,
+      "train": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWin": 0,
+        "avgLoss": 0,
+        "expectancy": 0,
+        "payoff": null
+      },
+      "test": {
+        "trades": 7,
+        "winRatePct": 28.57142857142857,
+        "netPnlUsd": -185.4420081389992,
+        "profitFactor": 0.37665110308658056,
+        "maxDrawdownPct": 18.61279480145607,
+        "avgWin": 56.02555588852364,
+        "avgLoss": -59.49862398320929,
+        "expectancy": -26.491715448428458,
+        "payoff": 0.9416277577164514
+      }
+    },
+    {
+      "fold": "F4",
+      "trainStart": "2026-05-30",
+      "trainEnd": "2026-07-14",
+      "testStart": "2026-07-14",
+      "testEnd": "2026-07-29",
+      "chosen": "LIVE V1.1 — profil + gate apa adanya",
+      "armsTried": 1,
+      "train": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWin": 0,
+        "avgLoss": 0,
+        "expectancy": 0,
+        "payoff": null
+      },
+      "test": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWin": 0,
+        "avgLoss": 0,
+        "expectancy": 0,
+        "payoff": null
+      }
+    },
+    {
+      "fold": "F5",
+      "trainStart": "2026-05-15",
+      "trainEnd": "2026-06-29",
+      "testStart": "2026-06-29",
+      "testEnd": "2026-07-14",
+      "chosen": "LIVE V1.1 — profil + gate apa adanya",
+      "armsTried": 1,
+      "train": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWin": 0,
+        "avgLoss": 0,
+        "expectancy": 0,
+        "payoff": null
+      },
+      "test": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWin": 0,
+        "avgLoss": 0,
+        "expectancy": 0,
+        "payoff": null
+      }
+    },
+    {
+      "fold": "F6",
+      "trainStart": "2026-04-30",
+      "trainEnd": "2026-06-14",
+      "testStart": "2026-06-14",
+      "testEnd": "2026-06-29",
+      "chosen": "LIVE V1.1 — profil + gate apa adanya",
+      "armsTried": 1,
+      "train": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWin": 0,
+        "avgLoss": 0,
+        "expectancy": 0,
+        "payoff": null
+      },
+      "test": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWin": 0,
+        "avgLoss": 0,
+        "expectancy": 0,
+        "payoff": null
+      }
+    },
+    {
+      "fold": "F7",
+      "trainStart": "2026-04-15",
+      "trainEnd": "2026-05-30",
+      "testStart": "2026-05-30",
+      "testEnd": "2026-06-14",
+      "chosen": "LIVE V1.1 — profil + gate apa adanya",
+      "armsTried": 1,
+      "train": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWin": 0,
+        "avgLoss": 0,
+        "expectancy": 0,
+        "payoff": null
+      },
+      "test": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWin": 0,
+        "avgLoss": 0,
+        "expectancy": 0,
+        "payoff": null
+      }
+    },
+    {
+      "fold": "F8",
+      "trainStart": "2026-03-31",
+      "trainEnd": "2026-05-15",
+      "testStart": "2026-05-15",
+      "testEnd": "2026-05-30",
+      "chosen": "LIVE V1.1 — profil + gate apa adanya",
+      "armsTried": 1,
+      "train": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWin": 0,
+        "avgLoss": 0,
+        "expectancy": 0,
+        "payoff": null
+      },
+      "test": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWin": 0,
+        "avgLoss": 0,
+        "expectancy": 0,
+        "payoff": null
+      }
+    },
+    {
+      "fold": "F9",
+      "trainStart": "2026-03-16",
+      "trainEnd": "2026-04-30",
+      "testStart": "2026-04-30",
+      "testEnd": "2026-05-15",
+      "chosen": "LIVE V1.1 — profil + gate apa adanya",
+      "armsTried": 1,
+      "train": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWin": 0,
+        "avgLoss": 0,
+        "expectancy": 0,
+        "payoff": null
+      },
+      "test": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWin": 0,
+        "avgLoss": 0,
+        "expectancy": 0,
+        "payoff": null
+      }
+    },
+    {
+      "fold": "F10",
+      "trainStart": "2026-03-01",
+      "trainEnd": "2026-04-15",
+      "testStart": "2026-04-15",
+      "testEnd": "2026-04-30",
+      "chosen": "LIVE V1.1 — profil + gate apa adanya",
+      "armsTried": 1,
+      "train": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWin": 0,
+        "avgLoss": 0,
+        "expectancy": 0,
+        "payoff": null
+      },
+      "test": {
+        "trades": 0,
+        "winRatePct": 0,
+        "netPnlUsd": 0,
+        "profitFactor": null,
+        "maxDrawdownPct": 0,
+        "avgWin": 0,
+        "avgLoss": 0,
+        "expectancy": 0,
+        "payoff": null
+      }
+    }
+  ],
+  "outOfSample": {
+    "totalTrades": 48,
+    "wins": 27,
+    "losses": 21,
+    "breakEven": 0,
+    "winRatePct": 56.25,
+    "netPnlUsd": -469.0796595764361,
+    "netPnlSol": -5.611716551615842,
+    "grossProfitUsd": 1268.6300599695485,
+    "grossLossUsd": 1737.7097195459844,
+    "profitFactor": 0.7300586776374862,
+    "maxDrawdownPct": 54.32278320618376,
+    "maxDrawdownUsd": 631.4104180814942,
+    "avgTradeDurationHours": 4.645833333333333,
+    "avgFeesUsd": 6.789001206629387,
+    "totalFeesUsd": 325.8720579182106,
+    "totalPositionValueChangeUsd": -530.873503354498,
+    "totalGasCostUsd": 37.07477720472858,
+    "totalSlippageCostUsd": 227.00343693541993,
+    "totalSwapCostUsd": 0,
+    "ruggedTrades": 0,
+    "catastrophicTrades": 0,
+    "ruggedLossUsd": 0,
+    "tradesOnDeadPools": 0,
+    "exitReasonCounts": {
+      "OUT_OF_RANGE": 15,
+      "FEE_TAKE_PROFIT": 0,
+      "TAKE_PROFIT": 9,
+      "TIMEOUT": 2,
+      "END_OF_DATA": 2,
+      "STOP_LOSS": 20,
+      "RATCHET_STOP": 0,
+      "RUGGED": 0
+    },
+    "startingEquityUsd": 1000,
+    "endingEquityUsd": 530.9203404235639,
+    "returnPct": -46.90796595764361,
+    "accountWipedOut": false,
+    "summary": {
+      "totalTrades": 48,
+      "wins": 27,
+      "losses": 21,
+      "breakEven": 0,
+      "winRatePct": 56.25,
+      "netPnlUsd": -469.0796595764361,
+      "netPnlSol": -5.611716551615842,
+      "grossProfitUsd": 1268.6300599695485,
+      "grossLossUsd": 1737.7097195459844,
+      "profitFactor": 0.7300586776374862,
+      "maxDrawdownPct": 54.32278320618376,
+      "maxDrawdownUsd": 631.4104180814942,
+      "avgTradeDurationHours": 4.645833333333333,
+      "avgFeesUsd": 6.789001206629387,
+      "totalFeesUsd": 325.8720579182106,
+      "totalPositionValueChangeUsd": -530.873503354498,
+      "totalGasCostUsd": 37.07477720472858,
+      "totalSlippageCostUsd": 227.00343693541993,
+      "totalSwapCostUsd": 0,
+      "ruggedTrades": 0,
+      "catastrophicTrades": 0,
+      "ruggedLossUsd": 0,
+      "tradesOnDeadPools": 0,
+      "exitReasonCounts": {
+        "OUT_OF_RANGE": 15,
+        "FEE_TAKE_PROFIT": 0,
+        "TAKE_PROFIT": 9,
+        "TIMEOUT": 2,
+        "END_OF_DATA": 2,
+        "STOP_LOSS": 20,
+        "RATCHET_STOP": 0,
+        "RUGGED": 0
+      },
+      "startingEquityUsd": 1000,
+      "endingEquityUsd": 530.9203404235639,
+      "returnPct": -46.90796595764361,
+      "accountWipedOut": false
+    },
+    "equityEnd": 597.5767961387542,
+    "maxDdPctPath": 48.58805965805012,
+    "distinctPools": 4,
+    "entrySpanDays": 34.083333333333336
+  },
+  "monteCarlo": {
+    "trades": 48,
+    "iid": {
+      "equity": [
+        248.4263068153682,
+        608.6933832952877,
+        1360.9946259856126
+      ],
+      "maxDd": [
+        28.595693948614077,
+        54.42306815690895,
+        77.9941352800796
+      ],
+      "pProfit": 0.179
+    },
+    "shuffle": {
+      "maxDd": [
+        43.26009557885224,
+        53.460149915234986,
+        64.20055955340234
+      ]
+    },
+    "foldBlock": {
+      "equity": [
+        527.5371538483336,
+        597.576796138754,
+        676.9154071489775
+      ],
+      "maxDd": [
+        35.75077019625287,
+        46.648864678235185,
+        55.21550368505144
+      ],
+      "pProfit": 0,
+      "blocks": 3
+    },
+    "poolCluster": {
+      "equity": [
+        346.1871668458901,
+        597.5767961387538,
+        1052.1195730114493
+      ],
+      "maxDd": [
+        9.481370715200839,
+        47.870223550875075,
+        69.61925614331741
+      ],
+      "pProfit": 0.0571,
+      "pools": 4
+    }
+  },
+  "chosenCounts": {
+    "LIVE V1.1 — profil + gate apa adanya": 10
+  }
+}
