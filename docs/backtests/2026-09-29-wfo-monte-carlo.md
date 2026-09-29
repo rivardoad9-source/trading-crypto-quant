@@ -262,3 +262,18 @@ Arah bias: universe yang dipilih = pool yang masih ramai setelah window selesai 
 **optimistis**; perbaikan point-in-time kemungkinan menurunkan, bukan menaikkan, angka. Skrip audit
 ini bisa dijalankan ulang tiap kali laporan diperbarui.
 
+---
+
+## Universe diperbesar: 57 pool → 105 pool (29 Sep 2026)
+
+`--cache=.cache/historical_data_micro_wide.json`, akun $1.000, span & formula sama, yang berubah cuma daftar pool. Dataset lebar = gabungan **semua** ingest yang pernah di-cache (bar asli, tanpa fetch baru, bar per-pool di-merge): **105 pool (71 survivor + 34 dead/dormant, 136.129 bar)** vs 57 (46 + 11, 83.061 bar). Penambahan terbanyak di Jun–Sep, jadi periode awal tetap setipis sebelumnya.
+
+| universe | gate | trade | pool | WR | PF | net | equity | expect/trade | maxDD | MC P i.i.d. | MC P cluster |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 57 | 2,5x | 48 | 4 | 56,3% | 0,73 | −$469,08 | $597,58 (−40,2%) | −$9,77 | 48,6% | 5,7% | 5,7% |
+| **105** | **2,5x** | 69 | 6 | 62,3% | 1,26 | +$496,94 | **$1.280,88 (+28,1%)** | +$7,20 | 38,3% | 65,4% | 71,5% |
+| 57 | 1,0x | 142 | 16 | 69,0% | 1,86 | +$2.147,34 | $6.008,99 (+500,9%) | +$15,12 | 27,3% | 100,0% | 100,0% |
+| **105** | **1,0x** | 173 | 23 | 65,9% | 1,22 | +$857,42 | **$1.943,69 (+94,4%)** | +$4,96 | 36,4% | 81,5% | 71,4% |
+
+Temuan: (a) gate 2,5x berbalik **−40,2% → +28,1%**, P(profit) 5,7% → 65–72% — yang salah bukan gate-nya, tapi universe yang cuma 57 pool; (b) gate 1,0x justru **runtuh +500,9% → +94,4%** (PF 1,86 → 1,22) — sebagian besar angka lama datang dari pemilihan pool, bukan strategi; (c) cohort dead/dormant menyumbang positif (+$378 dari 20 trade) di gate 2,5x. Grafik: `attachments/wfo-7-universe-105.png`. Lanjutan jalan di background: ingest universe **point-in-time per window** (`backtest:integrity --per-window-universe --ingest-only --days=91 --windows=2 --pools=30 --deadpools=30`).
+
