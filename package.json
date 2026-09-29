@@ -38,6 +38,7 @@
     "research": "node --import tsx src/scripts/research.ts",
     "report:final": "node --import tsx scripts/render-report.ts",
     "sweep:exits": "node --import tsx src/scripts/sweepExits.ts",
+    "wfo:mc": "node --import tsx src/scripts/wfoMonteCarlo.ts",
     "sweep:entry": "node --import tsx src/scripts/sweepEntry.ts",
     "sweep:rr": "node --import tsx src/scripts/sweepRiskReward.ts",
     "test:swap": "node --import tsx scripts/testMicroSwap.ts",
