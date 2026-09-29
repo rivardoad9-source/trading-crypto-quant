@@ -194,4 +194,38 @@ Band k pada $1.400: p25 +$2.245,85 (+160%, maxDD 59,2%, P(profit) cluster 85,1%)
 median +$2.062,51 (+147%) · p75 +$1.298,82 (+92,8%).
 Leave-one-pool-out $1.400: tanpa pool #1 → $3.442,62 (+146%) · tanpa 3 pool teratas → $2.036,28 (+45%).
 
-Grafik: vault `attachments/wfo-4-modal-nyata.png` · generator `~/.hermes/scripts/diag/make_cap_chart.py`.
+Grafik: vault `attachments/wfo-4-modal-nyata.png` · generator `~/.hermes/scripts/diag/make_wfo_charts.py`.
+
+---
+
+## Model LIVE (gate apa adanya) di akun LP $300 — 29 Sep 2026
+
+Runner sekarang punya `--arms=live`: satu arm = `liveV11Config` apa adanya (tanpa grid, tanpa
+pemilihan parameter), dan akun di-resolve dari `resolveBacktestProfile` (LIVE_CAPITAL_SOL /
+LIVE_MAX_POSITION_SOL) kecuali di-override flag — kontrak yang sama dengan runner micro-capital lain.
+
+Perintah: `npm run wfo:mc -- --arms=live --capital=300 --folds=10 --mc=10000`.
+
+| LP engine $300 | trade | pool | WR | PF | net | equity akhir | expectancy | maxDD | P(profit) cluster |
+|---|---|---|---|---|---|---|---|---|---|
+| **LIVE apa adanya** (gate 2,5x · slippage 2%) | 43 | **3** | 55,8% | **0,88** | **−$51,79** | **$243,76 (−18,7%)** | −$1,20 | 30,5% | **3,6%** |
+| gate 1,0x (pilihan WFO 7/7 fold, slippage tetap 2%) | 121 | 15 | 66,9% | 1,43 | +$333,79 | $751,66 (+150,6%) | $2,76 | 30,1% | 93,9% |
+
+Profil live tanpa override (2,62 SOL disizing di SOL window-start $85,08 → **$222,91**, 68,70%,
+1 concurrent): 41 trade, WR 58,5%, net **−$1,98**, PF 0,99, maxDD 31,4% — praktis impas-negatif.
+
+Temuan:
+- Gate live menuntut `fee/TVL ≥ 2,5 × (gas/notional + 2,0%)` = **5,85%** di akun $300 (notional $206).
+  Gate 1,0x cuma menuntut 2,34%. Itu satu-satunya angka yang beda, dan itu yang membalik tanda.
+- Konsekuensinya: 7 dari 10 fold **nol** trade di train (engine cuma aktif 34 hari terakhir), seluruh
+  sample 3 pool — BUTTHOLE-SOL 36 trade (−$31,39), BTC-SOL 4 (−$20,74), DFDVx-SOL 3 (+$0,35).
+  Leave-one-out: buang 3 pool itu → **0 trade**.
+- Hasil **identik di k=p25/median/p75**: dengan gate 2,5x, model TVL tidak lagi mengikat karena
+  hampir tidak ada pool yang lolos gate.
+- MC: i.i.d. P(profit) 30,4% · blok-fold 26,4% · **cluster pool 3,6%** (p5 $215 · p95 $276).
+- Naikkan modal hampir tidak menolong (floor cuma turun 5,85% → 5,18% di $1.400): yang berat adalah
+  pengali 2,5x dan slippage 2%-nya, bukan gas.
+
+Grafik: vault `attachments/wfo-5-lp300-model-live.png` · JSON `docs/backtests/runs/wfo_lp300_*.json`,
+`wfo_lpdefault.json` · generator `~/.hermes/scripts/diag/make_lp_chart.py`.
+

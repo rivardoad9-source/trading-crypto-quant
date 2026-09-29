@@ -34,6 +34,7 @@ import { runSimulation, summarise, type BacktestConfig, type BacktestTrade } fro
 import { loadHistoricalData } from "../backtest/historicalData.js";
 import { calibrateTvlModel, type TvlModel } from "../backtest/tvlModel.js";
 import { liveV11Config, type MicroCapitalOptions } from "../backtest/runMicroCapital.js";
+import { readProfileOverrides, resolveBacktestProfile, describeBacktestProfile } from "../backtest/liveProfile.js";
 import { sliceDataset } from "../backtest/sweepHarness.js";
 import type { DlmmPool } from "../services/meteora.js";
 
@@ -55,14 +56,27 @@ const num = (key: string, dflt: number): number => {
 const TRAIN_DAYS = num("train", 45);
 const TEST_DAYS = num("test", 15);
 const MAX_FOLDS = num("folds", 6);
-const CAPITAL = num("capital", 300);
-const SIZE_PCT = num("sizepct", 70);
-const CONCURRENT = num("concurrent", 1);
 const GAS = num("gas", 0.004);
+/*
+ * The account is resolved from the LIVE profile (LIVE_CAPITAL_SOL / LIVE_MAX_POSITION_SOL)
+ * unless a flag overrides it — the same contract every other micro-capital runner follows,
+ * so this report cannot silently describe an account live never runs. Assigned in main()
+ * once the dataset supplies the window-start SOL/USD.
+ */
+let CAPITAL = 0;
+let SIZE_PCT = 0;
+let CONCURRENT = 0;
+const FLAG_MAP = new Map<string, string>();
+for (const a of argv) {
+  const m = /^--([^=]+)=(.*)$/.exec(a);
+  if (m) FLAG_MAP.set(m[1]!, m[2]!);
+}
+const PROFILE_OVERRIDES = readProfileOverrides(FLAG_MAP);
 const K_MODE = val("k", "median"); // median | p25 | p75
 const CACHE = val("cache", ".cache/historical_data_micro_273d_stitched.json");
 const LABEL = val("label", `wfo_mc_k${K_MODE}_tr${TRAIN_DAYS}_te${TEST_DAYS}_f${MAX_FOLDS}`);
-const MIN_TRAIN_TRADES = num("mintrades", 4);
+const ARMS_MODE = val("arms", "grid"); // grid | live — `live` scores ONE arm: the live config as-is
+const MIN_TRAIN_TRADES = ARMS_MODE === "live" ? 0 : num("mintrades", 4);
 const MC_RUNS = num("mc", 10000);
 
 const DAY = 86_400;
@@ -102,6 +116,16 @@ for (const e of EXITS) {
       });
     }
   }
+}
+
+/*
+ * `--arms=live` collapses the grid to the single live configuration. There is then nothing to
+ * select, so the walk-forward reduces to a pure out-of-sample replay of the engine as shipped:
+ * no arm is ever "chosen", and no train window can flatter it.
+ */
+if (ARMS_MODE === "live") {
+  ARMS.length = 0;
+  ARMS.push({ key: "live", label: "LIVE V1.1 — profil + gate apa adanya", apply: (base) => base });
 }
 
 /* ------------------------------------------------------------------ */
@@ -201,6 +225,19 @@ async function main(): Promise<void> {
     annotateTokens: false,
   });
 
+  /* The account: the LIVE profile unless a flag overrode it. Sizing needs the SOL/USD the
+   * window opens at (using today's price would size the account with a price the simulation
+   * had not reached yet). */
+  const windowStartSolUsd = dataset.solUsdBars[0]?.c ?? null;
+  const profile = resolveBacktestProfile({
+    overrides: PROFILE_OVERRIDES,
+    windowStartSolUsd,
+    defaultGasSolPerTransaction: GAS,
+  });
+  CAPITAL = profile.options.capitalUsd;
+  SIZE_PCT = profile.options.positionSizePct;
+  CONCURRENT = profile.options.maxConcurrentPositions;
+
   const survivors = dataset.pools.filter((p) => p.cohort === "survivor");
   const calibrationSet: DlmmPool[] = survivors.map(
     (p) =>
@@ -234,8 +271,10 @@ async function main(): Promise<void> {
   console.log(`universe     : ${dataset.pools.length} pool (${survivors.length} survivor, ${dataset.pools.length - survivors.length} dead/dormant)`);
   console.log(`span         : ${fmtDay(firstT)} → ${fmtDay(lastT)} (${((lastT - firstT) / DAY).toFixed(0)} hari)`);
   console.log(`TVL model k  : ${K_MODE} → ${tvlModel.medianK.toFixed(3)} (IQR ${tvlModel.p25K.toFixed(3)}–${tvlModel.p75K.toFixed(3)}, n=${tvlModel.samples})`);
-  console.log(`account      : $${CAPITAL} · ${SIZE_PCT}% · ${CONCURRENT} concurrent · gas ${GAS} SOL/tx`);
-  console.log(`folds        : train ${TRAIN_DAYS}d → test ${TEST_DAYS}d, max ${MAX_FOLDS}, arm grid ${ARMS.length} config`);
+  console.log(`account      : $${CAPITAL.toFixed(2)} · ${SIZE_PCT.toFixed(2)}% · ${CONCURRENT} concurrent · gas ${GAS} SOL/tx`);
+  for (const l of describeBacktestProfile(profile)) console.log(l);
+  console.log(`mode         : ${ARMS_MODE === "live" ? "LIVE apa adanya — 1 arm, tanpa pemilihan parameter" : `${ARMS.length} config grid (dipilih per fold dari data train)`}`);
+  console.log(`folds        : train ${TRAIN_DAYS}d → test ${TEST_DAYS}d, max ${MAX_FOLDS}, gate ${base.minFeeCostCoverage}x · slippage ${base.forcedExitSlippagePct}%`);
 
   /* ---- reference: the in-sample optimum over the WHOLE span (the optimist's number) */
   const fullRuns = ARMS.map((a) => ({ arm: a, run: score(dataset.pools, dataset.solUsdBars, tvlModel, a.apply(base), `full-${a.key}`) }));
