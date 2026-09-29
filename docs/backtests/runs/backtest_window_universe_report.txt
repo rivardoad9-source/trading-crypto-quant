@@ -1,0 +1,141 @@
+
+════════════════════════════════════════════════════════════════════════════════════════════════
+BACKTEST INTEGRITY — UNIVERSE PER WINDOW (dipilih dari aktivitas di dalam window)
+════════════════════════════════════════════════════════════════════════════════════════════════
+
+Profile         : LIVE (derived from LIVE_CAPITAL_SOL / LIVE_MAX_POSITION_SOL)
+  capital       : $211.19 (2.6200 SOL)
+  size          : 68.70% per position = $145.09 / 1.8000 SOL notional
+  concurrent    : 1
+  gas           : 0.004 SOL/tx
+  SOL/USD       : $80.61 (window start)
+Universe        : top 60 per window by in-window fees, from up to 200 candidates (pages survivor 12 / dead cohort 40), modelled TVL band $50000-$500000
+TVL             : MODEL k x volume (tervalidasi buruk: docs/backtests/2026-09-14-tvl-model-validation.md)
+Swap (baru)     : 0.25%/kaki + 0.004 SOL gas/kaki · exit model fit & envelope
+Live-eligible   : W1 33/60 · W2 9/21
+
+FUNNEL PER WINDOW (cap kandidat 200, pages survivor 12 / dead cohort 40)
+┌────────┬──────────────────────────┬───────┬──────────┬─────────┬───────────────┬─────────┬───────────────────────┬───────────────┬─────────────┬──────────┬───────┐
+│ Window │ Periode                  │ Cache │ Kandidat │ Dipakai │ Lahir sesudah │ <24 bar │ Band TVL (bawah/atas) │ Di luar top N │ Fetch gagal │ Coverage │     k │
+├────────┼──────────────────────────┼───────┼──────────┼─────────┼───────────────┼─────────┼───────────────────────┼───────────────┼─────────────┼──────────┼───────┤
+│ W1     │ 2026-06-30 -> 2026-09-29 │ hit   │      200 │      60 │             0 │      12 │          122 (103/19) │             6 │           0 │    60/60 │ 0.367 │
+│ W2     │ 2026-03-31 -> 2026-06-30 │ hit   │      143 │      21 │             0 │      11 │           111 (105/6) │             0 │           0 │    21/60 │ 0.367 │
+└────────┴──────────────────────────┴───────┴──────────┴─────────┴───────────────┴─────────┴───────────────────────┴───────────────┴─────────────┴──────────┴───────┘
+W2: TEMUAN — universe 21/60, kurang 39. Rem pengikat: band TVL (modelled) (111). Walk listing cuma menghasilkan 143 dari cap 200 kandidat (pages juga mengikat). Window tipis = sampel kurang, BUKAN "tidak ada trade karena strategi".
+
+════════════════════════════════════════════════════════════════════════════════════════════════
+PER WINDOW · akuntansi LAMA (swap gratis, exit flat paksa saja) — TIDAK dirata-rata
+════════════════════════════════════════════════════════════════════════════════════════════════
+
+-- W1 2026-06-30 -> 2026-09-29 -- split live-eligible: IS 2026-06-30 -> 2026-08-15 · OOS 2026-08-15 -> 2026-09-29
+┌──────────────────────┬──────────┬──────────┬───────────┬──────────┬──────────┬─────────┬─────────────────────────┬──────────────────┬───────────┬────────────┬────────┬─────────┬─────────────────────────┐
+│ Varian               │ elig trd │ elig net │ Δ vs base │ full trd │ full net │ selisih │               IS (elig) │       OOS (elig) │ IS payoff │ OOS payoff │ IS exp │ OOS exp │ bar (elig)              │
+├──────────────────────┼──────────┼──────────┼───────────┼──────────┼──────────┼─────────┼─────────────────────────┼──────────────────┼───────────┼────────────┼────────┼─────────┼─────────────────────────┤
+│ V1.1 (TP 5, cov 2.5) │       10 │   $53.36 │         — │       10 │   $53.36 │  +$0.00 │ 12 pool / 0 trd (tipis) │ 33 pool / 10 trd │         — │       0.50 │ +$0.00 │  +$5.34 │ belum bisa diverifikasi │
+│ TP 6%                │        9 │    $7.07 │   -$46.29 │        9 │    $7.07 │  +$0.00 │ 12 pool / 0 trd (tipis) │  33 pool / 9 trd │         — │       0.54 │ +$0.00 │  +$0.79 │ belum bisa diverifikasi │
+│ TP 8%                │        9 │    $7.07 │   -$46.29 │        9 │    $7.07 │  +$0.00 │ 12 pool / 0 trd (tipis) │  33 pool / 9 trd │         — │       0.54 │ +$0.00 │  +$0.79 │ belum bisa diverifikasi │
+│ TP 10%               │        9 │    $7.07 │   -$46.29 │        9 │    $7.07 │  +$0.00 │ 12 pool / 0 trd (tipis) │  33 pool / 9 trd │         — │       0.54 │ +$0.00 │  +$0.79 │ belum bisa diverifikasi │
+│ coverage 2.0x        │       36 │  -$67.12 │  -$120.48 │       45 │  -$75.00 │  -$7.88 │ 12 pool / 0 trd (tipis) │ 33 pool / 45 trd │         — │       0.69 │ +$0.00 │  +$0.28 │ belum bisa diverifikasi │
+│ coverage 1.5x        │       49 │  -$61.37 │  -$114.73 │       69 │ -$146.93 │ -$85.56 │ 12 pool / 0 trd (tipis) │ 33 pool / 45 trd │         — │       0.69 │ +$0.00 │  +$0.28 │ belum bisa diverifikasi │
+└──────────────────────┴──────────┴──────────┴───────────┴──────────┴──────────┴─────────┴─────────────────────────┴──────────────────┴───────────┴────────────┴────────┴─────────┴─────────────────────────┘
+
+-- W2 2026-03-31 -> 2026-06-30 -- split live-eligible: IS 2026-03-31 -> 2026-05-16 · OOS 2026-05-16 -> 2026-06-30
+   TEMUAN (sampel, BUKAN hasil strategi): universe 21/60; rem pengikat band TVL (modelled) = 111.
+┌──────────────────────┬──────────┬──────────┬───────────┬──────────┬──────────┬─────────┬────────────────────────┬────────────────────────┬───────────┬────────────┬────────┬─────────┬─────────────────────────┐
+│ Varian               │ elig trd │ elig net │ Δ vs base │ full trd │ full net │ selisih │              IS (elig) │             OOS (elig) │ IS payoff │ OOS payoff │ IS exp │ OOS exp │ bar (elig)              │
+├──────────────────────┼──────────┼──────────┼───────────┼──────────┼──────────┼─────────┼────────────────────────┼────────────────────────┼───────────┼────────────┼────────┼─────────┼─────────────────────────┤
+│ V1.1 (TP 5, cov 2.5) │        0 │    $0.00 │         — │        5 │  -$16.05 │ -$16.05 │ 8 pool / 0 trd (tipis) │ 9 pool / 0 trd (tipis) │         — │          — │ +$0.00 │  +$0.00 │ belum bisa diverifikasi │
+│ TP 6%                │        0 │    $0.00 │    +$0.00 │        5 │  -$16.05 │ -$16.05 │ 8 pool / 0 trd (tipis) │ 9 pool / 0 trd (tipis) │         — │          — │ +$0.00 │  +$0.00 │ belum bisa diverifikasi │
+│ TP 8%                │        0 │    $0.00 │    +$0.00 │        5 │  -$16.05 │ -$16.05 │ 8 pool / 0 trd (tipis) │ 9 pool / 0 trd (tipis) │         — │          — │ +$0.00 │  +$0.00 │ belum bisa diverifikasi │
+│ TP 10%               │        0 │    $0.00 │    +$0.00 │        5 │  -$16.05 │ -$16.05 │ 8 pool / 0 trd (tipis) │ 9 pool / 0 trd (tipis) │         — │          — │ +$0.00 │  +$0.00 │ belum bisa diverifikasi │
+│ coverage 2.0x        │        2 │   $28.79 │   +$28.79 │       26 │  $100.19 │ +$71.40 │ 8 pool / 0 trd (tipis) │ 9 pool / 2 trd (tipis) │         — │          — │ +$0.00 │ +$14.40 │ belum bisa diverifikasi │
+│ coverage 1.5x        │        2 │   $28.79 │   +$28.79 │       26 │  $100.19 │ +$71.40 │ 8 pool / 0 trd (tipis) │ 9 pool / 2 trd (tipis) │         — │          — │ +$0.00 │ +$14.40 │ belum bisa diverifikasi │
+└──────────────────────┴──────────┴──────────┴───────────┴──────────┴──────────┴─────────┴────────────────────────┴────────────────────────┴───────────┴────────────┴────────┴─────────┴─────────────────────────┘
+
+
+════════════════════════════════════════════════════════════════════════════════════════════════
+PER WINDOW · akuntansi baru, exit fit — TIDAK dirata-rata
+════════════════════════════════════════════════════════════════════════════════════════════════
+
+-- W1 2026-06-30 -> 2026-09-29 -- split live-eligible: IS 2026-06-30 -> 2026-08-15 · OOS 2026-08-15 -> 2026-09-29
+┌────────────────────────────────┬──────────┬──────────┬───────────┬──────────┬──────────┬─────────┬─────────────────────────┬──────────────────┬───────────┬────────────┬────────┬─────────┬─────────────────────────┐
+│ Varian                         │ elig trd │ elig net │ Δ vs base │ full trd │ full net │ selisih │               IS (elig) │       OOS (elig) │ IS payoff │ OOS payoff │ IS exp │ OOS exp │ bar (elig)              │
+├────────────────────────────────┼──────────┼──────────┼───────────┼──────────┼──────────┼─────────┼─────────────────────────┼──────────────────┼───────────┼────────────┼────────┼─────────┼─────────────────────────┤
+│ V1.1 (TP 5, cov 2.5)           │       10 │   $56.71 │         — │       10 │   $56.71 │  +$0.00 │ 12 pool / 0 trd (tipis) │ 33 pool / 10 trd │         — │       0.52 │ +$0.00 │  +$5.67 │ belum bisa diverifikasi │
+│ TP 6%                          │        9 │   $13.03 │   -$43.68 │        9 │   $13.03 │  +$0.00 │ 12 pool / 0 trd (tipis) │  33 pool / 9 trd │         — │       0.58 │ +$0.00 │  +$1.45 │ belum bisa diverifikasi │
+│ TP 8%                          │        9 │   $13.03 │   -$43.68 │        9 │   $13.03 │  +$0.00 │ 12 pool / 0 trd (tipis) │  33 pool / 9 trd │         — │       0.58 │ +$0.00 │  +$1.45 │ belum bisa diverifikasi │
+│ TP 10%                         │        9 │   $13.03 │   -$43.68 │        9 │   $13.03 │  +$0.00 │ 12 pool / 0 trd (tipis) │  33 pool / 9 trd │         — │       0.58 │ +$0.00 │  +$1.45 │ belum bisa diverifikasi │
+│ coverage 2.0x                  │       10 │   $56.71 │    +$0.00 │       10 │   $56.71 │  +$0.00 │ 12 pool / 0 trd (tipis) │ 33 pool / 10 trd │         — │       0.52 │ +$0.00 │  +$5.67 │ belum bisa diverifikasi │
+│ coverage 1.5x                  │       38 │  -$61.82 │  -$118.53 │       45 │  -$81.68 │ -$19.87 │ 12 pool / 0 trd (tipis) │ 33 pool / 45 trd │         — │       0.70 │ +$0.00 │  +$0.36 │ belum bisa diverifikasi │
+│ gate pakai biaya exit bin_step │       38 │  -$61.64 │  -$118.35 │       51 │   $32.96 │ +$94.60 │ 12 pool / 0 trd (tipis) │ 33 pool / 41 trd │         — │       0.65 │ +$0.00 │  -$1.29 │ belum bisa diverifikasi │
+└────────────────────────────────┴──────────┴──────────┴───────────┴──────────┴──────────┴─────────┴─────────────────────────┴──────────────────┴───────────┴────────────┴────────┴─────────┴─────────────────────────┘
+
+-- W2 2026-03-31 -> 2026-06-30 -- split live-eligible: IS 2026-03-31 -> 2026-05-16 · OOS 2026-05-16 -> 2026-06-30
+   TEMUAN (sampel, BUKAN hasil strategi): universe 21/60; rem pengikat band TVL (modelled) = 111.
+┌────────────────────────────────┬──────────┬──────────┬───────────┬──────────┬──────────┬─────────┬────────────────────────┬────────────────────────┬───────────┬────────────┬────────┬─────────┬─────────────────────────┐
+│ Varian                         │ elig trd │ elig net │ Δ vs base │ full trd │ full net │ selisih │              IS (elig) │             OOS (elig) │ IS payoff │ OOS payoff │ IS exp │ OOS exp │ bar (elig)              │
+├────────────────────────────────┼──────────┼──────────┼───────────┼──────────┼──────────┼─────────┼────────────────────────┼────────────────────────┼───────────┼────────────┼────────┼─────────┼─────────────────────────┤
+│ V1.1 (TP 5, cov 2.5)           │        0 │    $0.00 │         — │        5 │  -$26.71 │ -$26.71 │ 8 pool / 0 trd (tipis) │ 9 pool / 0 trd (tipis) │         — │          — │ +$0.00 │  +$0.00 │ belum bisa diverifikasi │
+│ TP 6%                          │        0 │    $0.00 │    +$0.00 │        5 │  -$26.71 │ -$26.71 │ 8 pool / 0 trd (tipis) │ 9 pool / 0 trd (tipis) │         — │          — │ +$0.00 │  +$0.00 │ belum bisa diverifikasi │
+│ TP 8%                          │        0 │    $0.00 │    +$0.00 │        5 │  -$26.71 │ -$26.71 │ 8 pool / 0 trd (tipis) │ 9 pool / 0 trd (tipis) │         — │          — │ +$0.00 │  +$0.00 │ belum bisa diverifikasi │
+│ TP 10%                         │        0 │    $0.00 │    +$0.00 │        5 │  -$26.71 │ -$26.71 │ 8 pool / 0 trd (tipis) │ 9 pool / 0 trd (tipis) │         — │          — │ +$0.00 │  +$0.00 │ belum bisa diverifikasi │
+│ coverage 2.0x                  │        0 │    $0.00 │    +$0.00 │        5 │  -$26.71 │ -$26.71 │ 8 pool / 0 trd (tipis) │ 9 pool / 0 trd (tipis) │         — │          — │ +$0.00 │  +$0.00 │ belum bisa diverifikasi │
+│ coverage 1.5x                  │        2 │   $30.66 │   +$30.66 │       20 │   $25.12 │  -$5.54 │ 8 pool / 0 trd (tipis) │ 9 pool / 2 trd (tipis) │         — │          — │ +$0.00 │ +$15.33 │ belum bisa diverifikasi │
+│ gate pakai biaya exit bin_step │        2 │   $30.66 │   +$30.66 │       17 │   $30.35 │  -$0.30 │ 8 pool / 0 trd (tipis) │ 9 pool / 2 trd (tipis) │         — │          — │ +$0.00 │ +$15.33 │ belum bisa diverifikasi │
+└────────────────────────────────┴──────────┴──────────┴───────────┴──────────┴──────────┴─────────┴────────────────────────┴────────────────────────┴───────────┴────────────┴────────┴─────────┴─────────────────────────┘
+
+
+════════════════════════════════════════════════════════════════════════════════════════════════
+PER WINDOW · akuntansi baru, exit envelope — TIDAK dirata-rata
+════════════════════════════════════════════════════════════════════════════════════════════════
+
+-- W1 2026-06-30 -> 2026-09-29 -- split live-eligible: IS 2026-06-30 -> 2026-08-15 · OOS 2026-08-15 -> 2026-09-29
+┌────────────────────────────────┬──────────┬──────────┬───────────┬──────────┬──────────┬─────────┬─────────────────────────┬──────────────────┬───────────┬────────────┬────────┬─────────┬─────────────────────────┐
+│ Varian                         │ elig trd │ elig net │ Δ vs base │ full trd │ full net │ selisih │               IS (elig) │       OOS (elig) │ IS payoff │ OOS payoff │ IS exp │ OOS exp │ bar (elig)              │
+├────────────────────────────────┼──────────┼──────────┼───────────┼──────────┼──────────┼─────────┼─────────────────────────┼──────────────────┼───────────┼────────────┼────────┼─────────┼─────────────────────────┤
+│ V1.1 (TP 5, cov 2.5)           │       10 │   $54.54 │         — │       10 │   $54.54 │  +$0.00 │ 12 pool / 0 trd (tipis) │ 33 pool / 10 trd │         — │       0.51 │ +$0.00 │  +$5.45 │ belum bisa diverifikasi │
+│ TP 6%                          │        9 │   $13.03 │   -$41.51 │        9 │   $13.03 │  +$0.00 │ 12 pool / 0 trd (tipis) │  33 pool / 9 trd │         — │       0.58 │ +$0.00 │  +$1.45 │ belum bisa diverifikasi │
+│ TP 8%                          │        9 │   $13.03 │   -$41.51 │        9 │   $13.03 │  +$0.00 │ 12 pool / 0 trd (tipis) │  33 pool / 9 trd │         — │       0.58 │ +$0.00 │  +$1.45 │ belum bisa diverifikasi │
+│ TP 10%                         │        9 │   $13.03 │   -$41.51 │        9 │   $13.03 │  +$0.00 │ 12 pool / 0 trd (tipis) │  33 pool / 9 trd │         — │       0.58 │ +$0.00 │  +$1.45 │ belum bisa diverifikasi │
+│ coverage 2.0x                  │       10 │   $54.54 │    +$0.00 │       10 │   $54.54 │  +$0.00 │ 12 pool / 0 trd (tipis) │ 33 pool / 10 trd │         — │       0.51 │ +$0.00 │  +$5.45 │ belum bisa diverifikasi │
+│ coverage 1.5x                  │       36 │  -$81.78 │  -$136.32 │       47 │  -$77.00 │  +$4.77 │ 12 pool / 0 trd (tipis) │ 33 pool / 45 trd │         — │       0.67 │ +$0.00 │  +$0.09 │ belum bisa diverifikasi │
+│ gate pakai biaya exit bin_step │       10 │   $54.54 │    +$0.00 │       10 │   $54.54 │  +$0.00 │ 12 pool / 0 trd (tipis) │ 33 pool / 10 trd │         — │       0.51 │ +$0.00 │  +$5.45 │ belum bisa diverifikasi │
+└────────────────────────────────┴──────────┴──────────┴───────────┴──────────┴──────────┴─────────┴─────────────────────────┴──────────────────┴───────────┴────────────┴────────┴─────────┴─────────────────────────┘
+
+-- W2 2026-03-31 -> 2026-06-30 -- split live-eligible: IS 2026-03-31 -> 2026-05-16 · OOS 2026-05-16 -> 2026-06-30
+   TEMUAN (sampel, BUKAN hasil strategi): universe 21/60; rem pengikat band TVL (modelled) = 111.
+┌────────────────────────────────┬──────────┬──────────┬───────────┬──────────┬──────────┬─────────┬────────────────────────┬────────────────────────┬───────────┬────────────┬────────┬─────────┬─────────────────────────┐
+│ Varian                         │ elig trd │ elig net │ Δ vs base │ full trd │ full net │ selisih │              IS (elig) │             OOS (elig) │ IS payoff │ OOS payoff │ IS exp │ OOS exp │ bar (elig)              │
+├────────────────────────────────┼──────────┼──────────┼───────────┼──────────┼──────────┼─────────┼────────────────────────┼────────────────────────┼───────────┼────────────┼────────┼─────────┼─────────────────────────┤
+│ V1.1 (TP 5, cov 2.5)           │        0 │    $0.00 │         — │        5 │  -$30.40 │ -$30.40 │ 8 pool / 0 trd (tipis) │ 9 pool / 0 trd (tipis) │         — │          — │ +$0.00 │  +$0.00 │ belum bisa diverifikasi │
+│ TP 6%                          │        0 │    $0.00 │    +$0.00 │        5 │  -$30.40 │ -$30.40 │ 8 pool / 0 trd (tipis) │ 9 pool / 0 trd (tipis) │         — │          — │ +$0.00 │  +$0.00 │ belum bisa diverifikasi │
+│ TP 8%                          │        0 │    $0.00 │    +$0.00 │        5 │  -$30.40 │ -$30.40 │ 8 pool / 0 trd (tipis) │ 9 pool / 0 trd (tipis) │         — │          — │ +$0.00 │  +$0.00 │ belum bisa diverifikasi │
+│ TP 10%                         │        0 │    $0.00 │    +$0.00 │        5 │  -$30.40 │ -$30.40 │ 8 pool / 0 trd (tipis) │ 9 pool / 0 trd (tipis) │         — │          — │ +$0.00 │  +$0.00 │ belum bisa diverifikasi │
+│ coverage 2.0x                  │        0 │    $0.00 │    +$0.00 │        5 │  -$30.40 │ -$30.40 │ 8 pool / 0 trd (tipis) │ 9 pool / 0 trd (tipis) │         — │          — │ +$0.00 │  +$0.00 │ belum bisa diverifikasi │
+│ coverage 1.5x                  │        2 │   $30.66 │   +$30.66 │       20 │   $10.93 │ -$19.73 │ 8 pool / 0 trd (tipis) │ 9 pool / 2 trd (tipis) │         — │          — │ +$0.00 │ +$15.33 │ belum bisa diverifikasi │
+│ gate pakai biaya exit bin_step │        0 │    $0.00 │    +$0.00 │        5 │  -$30.40 │ -$30.40 │ 8 pool / 0 trd (tipis) │ 9 pool / 0 trd (tipis) │         — │          — │ +$0.00 │  +$0.00 │ belum bisa diverifikasi │
+└────────────────────────────────┴──────────┴──────────┴───────────┴──────────┴──────────┴─────────┴────────────────────────┴────────────────────────┴───────────┴────────────┴────────┴─────────┴─────────────────────────┘
+
+
+════════════════════════════════════════════════════════════════════════════════════════════════
+JAWABAN PER VARIAN, PER WINDOW — {YA / TIDAK / BELUM BISA DIVERIFIKASI}, tidak dirata-rata
+════════════════════════════════════════════════════════════════════════════════════════════════
+
+fit      TP 6%                            W1 -$43.68 → BELUM BISA DIVERIFIKASI · W2 +$0.00 → BELUM BISA DIVERIFIKASI  ||  semua window: BELUM BISA DIVERIFIKASI
+fit      TP 8%                            W1 -$43.68 → BELUM BISA DIVERIFIKASI · W2 +$0.00 → BELUM BISA DIVERIFIKASI  ||  semua window: BELUM BISA DIVERIFIKASI
+fit      TP 10%                           W1 -$43.68 → BELUM BISA DIVERIFIKASI · W2 +$0.00 → BELUM BISA DIVERIFIKASI  ||  semua window: BELUM BISA DIVERIFIKASI
+fit      coverage 2.0x                    W1 +$0.00 → BELUM BISA DIVERIFIKASI · W2 +$0.00 → BELUM BISA DIVERIFIKASI  ||  semua window: BELUM BISA DIVERIFIKASI
+fit      coverage 1.5x                    W1 -$118.53 → BELUM BISA DIVERIFIKASI · W2 +$30.66 → BELUM BISA DIVERIFIKASI  ||  semua window: BELUM BISA DIVERIFIKASI
+fit      gate pakai biaya exit bin_step   W1 -$118.35 → BELUM BISA DIVERIFIKASI · W2 +$30.66 → BELUM BISA DIVERIFIKASI  ||  semua window: BELUM BISA DIVERIFIKASI
+envelope TP 6%                            W1 -$41.51 → BELUM BISA DIVERIFIKASI · W2 +$0.00 → BELUM BISA DIVERIFIKASI  ||  semua window: BELUM BISA DIVERIFIKASI
+envelope TP 8%                            W1 -$41.51 → BELUM BISA DIVERIFIKASI · W2 +$0.00 → BELUM BISA DIVERIFIKASI  ||  semua window: BELUM BISA DIVERIFIKASI
+envelope TP 10%                           W1 -$41.51 → BELUM BISA DIVERIFIKASI · W2 +$0.00 → BELUM BISA DIVERIFIKASI  ||  semua window: BELUM BISA DIVERIFIKASI
+envelope coverage 2.0x                    W1 +$0.00 → BELUM BISA DIVERIFIKASI · W2 +$0.00 → BELUM BISA DIVERIFIKASI  ||  semua window: BELUM BISA DIVERIFIKASI
+envelope coverage 1.5x                    W1 -$136.32 → BELUM BISA DIVERIFIKASI · W2 +$30.66 → BELUM BISA DIVERIFIKASI  ||  semua window: BELUM BISA DIVERIFIKASI
+envelope gate pakai biaya exit bin_step   W1 +$0.00 → BELUM BISA DIVERIFIKASI · W2 +$0.00 → BELUM BISA DIVERIFIKASI  ||  semua window: BELUM BISA DIVERIFIKASI
+
+** SEMUA varian di SEMUA window: BELUM BISA DIVERIFIKASI. Pertanyaan TP/gate belum terjawab oleh run ini. **
+
+Bar = payoff > 1 DAN expectancy > 0 di kedua paruh window, minimal 8 trade per paruh.
+k = rasio TVL/volume HARI INI dipakai untuk window lama. Universe dipilih dengan fee di window (bukan hasil strategi).
+Kandidat dibatasi lifetime volume; pool mati yang lahir sebelum walk urut-pembuatan tidak terlihat.

@@ -277,3 +277,21 @@ ini bisa dijalankan ulang tiap kali laporan diperbarui.
 
 Temuan: (a) gate 2,5x berbalik **−40,2% → +28,1%**, P(profit) 5,7% → 65–72% — yang salah bukan gate-nya, tapi universe yang cuma 57 pool; (b) gate 1,0x justru **runtuh +500,9% → +94,4%** (PF 1,86 → 1,22) — sebagian besar angka lama datang dari pemilihan pool, bukan strategi; (c) cohort dead/dormant menyumbang positif (+$378 dari 20 trade) di gate 2,5x. Grafik: `attachments/wfo-7-universe-105.png`. Lanjutan jalan di background: ingest universe **point-in-time per window** (`backtest:integrity --per-window-universe --ingest-only --days=91 --windows=2 --pools=30 --deadpools=30`).
 
+---
+
+## Universe POINT-IN-TIME (2 window) — verdict: belum bisa diverifikasi (29 Sep 2026)
+
+`npm run backtest:integrity -- --per-window-universe --days=91 --windows=2 --pools=30 --deadpools=30` → `docs/backtests/runs/backtest_window_universe_report.txt` + `..._summary.json`. Universe dihitung **dari aktivitas di dalam window** (bukan snapshot sesudah window), akun = profil live **$211,19** (2,62 SOL @ $80,61 window-start), notional $145,09, 1 posisi, swap baru 0,25%/kaki + gas 0,004 SOL/kaki.
+
+| window | kandidat | pool dipakai | live-eligible | trade V1.1 | net (exit fit) | OOS payoff | OOS exp/trade |
+|---|---|---|---|---|---|---|---|
+| W1 30 Jun → 29 Sep | 200 | 60 (41 sv + 19 dead) | 33 | 10 | **+$56,71** | 0,52 | +$5,67 |
+| W2 31 Mar → 30 Jun | 143 | 21 (21 sv) | 9 | **0** | $0,00 | — | — |
+
+- **Semua varian di semua window = BELUM BISA DIVERIFIKASI** (bar: payoff > 1 DAN expectancy > 0 di kedua paruh, min 8 trade/paruh). Paruh IS W1 (30 Jun–15 Agu) = **0 trade** live-eligible; 10 trade W1 semuanya di 44 hari terakhir.
+- Melonggarkan gate **tidak didukung** di universe point-in-time: cov 1,5x → 38 trade tapi **−$61,82** (W1) dan cuma 2 trade (W2); TP 6/8/10% lebih jelek dari TP 5%.
+- Rem pengikat universe: **band TVL $50k–500k** (W1 122 pool, W2 111 pool di luar band) + walk listing cuma 143 dari cap 200 kandidat (W2) → universe 21/60.
+- Caveat dari runner: `k` TVL masih pakai rasio **hari ini** untuk window lama; kandidat dibatasi lifetime volume; pool mati yang lahir sebelum walk urut-pembuatan tidak terlihat.
+
+Implikasi: angka +28,1% (universe 105 pool) itu masih mengandung hindsight; begitu universe dibuat point-in-time, sampelnya **tidak cukup untuk memutuskan** — dan gagasan "turunkan gate" tidak lagi punya dukungan. Grafik: `attachments/wfo-8-pointintime.png`.
+
