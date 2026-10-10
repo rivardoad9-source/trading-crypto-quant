@@ -1,11 +1,21 @@
 # FlowMetrix DLMM AI Agent V1.1 (Official)
 
-Modular AI agent stack for Solana **Meteora DLMM** liquidity research and **zero-capital paper
-trading**, with a local quant dashboard.
+Modular AI agent stack for Solana **Meteora DLMM** liquidity research and automated LP trading,
+with a local quant dashboard. This baseline is paper-only; the engine that was deployed in
+September 2026 was operated live with real capital — see the note below.
 
-> **No real funds are ever deployed.** The engine simulates liquidity positions and never signs a
-> Solana transaction. `DRY_RUN=true` is the default, and the process refuses to boot if it is set
-> to `false` (live execution is not implemented).
+> **The paper-only rule describes this baseline, not the project's history.** In this repository
+> the engine simulates liquidity positions and has no code path that signs a transaction:
+> `DRY_RUN=true` is the default, and the process refuses to boot if it is set to `false`.
+>
+> The deployed engine did trade live. In September 2026 it opened and closed real Meteora DLMM
+> positions on Solana, and the records are kept in this repository: `exports/trades.csv` lists
+> 8 positions closed live (`execution_mode = LIVE`) with their on-chain open/close signatures and
+> a 0.9 SOL deposit per position, and `docs/HANDOFF-2026-09-22-PAUSE-dan-pelajaran.md` records the
+> operator's ledger — $288.27 starting equity → $314.91, **+$26.64 realised**, 8 trades, 75% win
+> rate, 6.67% max drawdown. There were real failures too (`docs/incidents/`, including ~$6.33 lost
+> on 11 Sep 2026 to failed live opens). The lane was stopped on 22 Sep 2026 and the capital was
+> withdrawn, which is why the published baseline is paper-only.
 
 ## V1.1 is the official baseline
 
@@ -363,7 +373,9 @@ read only by the env schema and no function returns it.
 
 **Arming the profile does not enable live trading.** `DRY_RUN=false` still refuses to boot and
 nothing in this repository signs a Solana transaction. The profile changes sizing and screening
-only, so the dry run rehearses the live envelope before any execution code exists.
+only, so the dry run rehearses the live envelope before any execution code exists. This is true of
+the published baseline; the September 2026 deployment did sign and submit transactions — see the
+history note at the top of this file.
 
 ---
 
